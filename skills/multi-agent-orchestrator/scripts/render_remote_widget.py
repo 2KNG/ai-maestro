@@ -40,18 +40,18 @@ def _get_lan_ip() -> str:
 
 def build_remote_html(data: dict, lan_ip: str, target_path: str) -> str:
     template, _ = ruw.pick_template(target_path, SCRIPT_DIR)
-    orig_load_state = ruw.load_widget_state
+    orig_load_state = ruw._load_persisted_widget_state
 
     def _remote_state():
         st = dict(orig_load_state() or {})
         st["pcMonOpen"] = True
         return st
 
-    ruw.load_widget_state = _remote_state
+    ruw._load_persisted_widget_state = _remote_state
     try:
         raw_html = ruw.inject_live_data(template, data) if template else ruw.build_widget_html(data)
     finally:
-        ruw.load_widget_state = orig_load_state
+        ruw._load_persisted_widget_state = orig_load_state
 
     old_bridge = "const BRIDGE_URL = (location.protocol.startsWith('http') && location.host)\n      ? location.origin : 'http://127.0.0.1:18765';"
     new_bridge = (
@@ -68,7 +68,7 @@ def build_remote_html(data: dict, lan_ip: str, target_path: str) -> str:
 
 def build_remote_markdown(data: dict, lan_ip: str) -> str:
     now_kst = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
-    accounts = ruw.build_accounts_from_data(data)
+    accounts = ruw.build_accounts(data)
     pc = pct.collect_pc_telemetry() or {}
 
     q_rows = []
@@ -114,8 +114,8 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
         except Exception:
             pass
 
-    ag_sessions = ((data.get("antigravity") or {}).get("agent_tree") or [])
-    cdx_sessions = ((data.get("codex") or {}).get("agent_tree") or [])
+    ag_sessions = ((data.get("agent_trees") or {}).get("antigravity") or [])
+    cdx_sessions = ((data.get("agent_trees") or {}).get("codex") or [])
 
     sess_rows = []
     for ag in ag_sessions[:12]:
