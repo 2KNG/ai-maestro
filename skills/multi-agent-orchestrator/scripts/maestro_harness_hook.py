@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+ai-maestro Runtime Orchestration Harness Hook (maestro_harness_hook.py)
+-----------------------------------------------------------------------
+Prevents "Solo-Thinking & Solo-Coding Drift" across long multi-turn sessions in:
+- Google Antigravity (`~/.gemini/config/hooks.json` & `.agents/hooks.json`: `PreInvocation`, `PreToolUse`)
+- Claude Code (`~/.claude/settings.json`: `UserPromptSubmit`, `PreToolUse`)
+
+How it works:
+1. Turn-Start Gate (`PreInvocation` / `UserPromptSubmit` / `BeforeAgent`):
+   - Resets the per-turn solo tool counter and injects a high-salience `<MAESTRO_DISPATCH_GATE>`
+     directive right at the current turn boundary, eliminating recency-bias drift.
+2. Tool-Call Gate (`PreToolUse` / `BeforeTool`):
+   - Resets `solo_streak = 0` whenever the agent delegates (`invoke_subagent`, `maestro worker-start`, `agy-orca worker-start`).
+   - Increments `solo_streak` whenever the main agent directly runs `view_file`, `replace_file_content`,
+     `write_to_file`, `run_command`, `Read`, `Edit`, `Write`, `Bash`, etc.
+   - At `solo_streak >= 3`, injects an urgent `[MAESTRO HARNESS INTERRUPT]` forcing immediate delegation.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+STATE_DIR = "/tmp/maestro_harness_state"
+
+SOLO_TOOLS = {
+    "view_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+    "write_to_file",
+    "grep_search",
+    "find_by_name",
+    "Read",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "Grep",
+    "Glob",
+}
+
+DELEGATION_TOOLS = {
+    "invoke_subagent",
+    "send_message",
+    "Task",
+    "Agent",
+}
+
+
+def _load_session_state(session_id: str) -> dict:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    safe_id = "".join(c for c in (session_id or "default") if c.isalnum() or c in ("-", "_"))[:64] or "default"
+    path = os.path.join(STATE_DIR, f"{safe_id}.json")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"solo_streak": 0, "delegated_in_turn": False, "updated_at": time.time()}
+
+
+def _save_session_state(session_id: str, st: dict) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    safe_id = "".join(c for c in (session_id or "default") if c.isalnum() or c in ("-", "_"))[:64] or "default"
+    path = os.path.join(STATE_DIR, f"{safe_id}.json")
+    st["updated_at"] = time.time()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+def _is_delegation_command(cmd_str: str) -> bool:
+    if not cmd_str:
+        return False
+    markers = (
+        "maestro worker-start",
+        "agy-orca worker-start",
+        "maestro.py worker-start",
+        "agy_orca.py worker-start",
+        "codex exec",
+        "claude -p",
+    )
+    return any(m in cmd_str for m in markers)
+
+
+def main() -> int:
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        payload = {}
+
+    event = (
+         (sys.argv[1] if len(sys.argv) > 1 else "")
+        or payload.get("hook_event_name")
+        or payload.get("event")
+        or ("PreToolUse" if ("toolCall" in payload or "tool_name" in payload) else "PreInvocation")
+    )
+    session_id = str(
+        payload.get("conversationId")
+        or payload.get("session_id")
+        or payload.get("conversation_id")
+        or "default"
+    )
+    st = _load_session_state(session_id)
+
+    if event in ("PreInvocation", "UserPromptSubmit", "BeforeAgent", "SessionStart"):
+        st["solo_streak"] = 0
+        st["delegated_in_turn"] = False
+        _save_session_state(session_id, st)
+        reminder = (
+            "[🎼 MAESTRO HARNESS — THIN DISPATCHER GATE (매 턴 강제 적용)]\n"
+            "• 혼자 골똘히 생각 금지: `<thought>`는 최대 3~4줄 이내로 짧게 판단하고 즉시 위임 툴을 호출할 것.\n"
+            "• 첫 툴 즉시 위임 원칙: 코드 탐색·확인·리서치는 직접 읽지 말고 첫 번째 툴로 `invoke_subagent(Model='flash')`에 즉시 위임할 것.\n"
+            "• 코딩·수정 분산: 멀티파일 구현/수정은 `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec \"...\"` 또는 병렬 서브에이전트로 즉시 분산할 것.\n"
+            "• 단독 연속 툴 하드캡: 메인 에이전트 직접 실행(`view_file`/`replace_file_content`/`run_command`)은 연속 최대 2회까지만 허용."
+        )
+        print(reminder)
+        return 0
+
+    if event in ("PreToolUse", "BeforeTool"):
+        tool_call = payload.get("toolCall") if isinstance(payload.get("toolCall"), dict) else {}
+        tool_name = str(
+            tool_call.get("name")
+            or payload.get("tool_name")
+            or payload.get("tool")
+            or ""
+        )
+        tool_input = (
+            tool_call.get("arguments")
+            or payload.get("tool_input")
+            or payload.get("input")
+            or {}
+        )
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except Exception:
+                tool_input = {"raw": tool_input}
+
+        cmd_line = str(
+            tool_input.get("CommandLine")
+            or tool_input.get("command")
+            or tool_input.get("cmd")
+            or ""
+        )
+
+        if tool_name in DELEGATION_TOOLS or _is_delegation_command(cmd_line):
+            st["solo_streak"] = 0
+            st["delegated_in_turn"] = True
+            _save_session_state(session_id, st)
+            return 0
+
+        is_solo = tool_name in SOLO_TOOLS or (
+            tool_name in ("run_command", "Bash")
+            and not _is_delegation_command(cmd_line)
+            and "ai-usage-widget" not in cmd_line
+        )
+        if is_solo:
+            st["solo_streak"] = int(st.get("solo_streak", 0)) + 1
+            _save_session_state(session_id, st)
+            streak = st["solo_streak"]
+            if streak >= 3:
+                warn = (
+                    f"⚠️ [MAESTRO HARNESS INTERRUPT: 메인 에이전트 단독 툴 연속 {streak}회 감지!] "
+                    "직접 파일을 읽거나 혼자 골똘히 생각하며 연속 작업하는 패턴이 감지되었습니다. "
+                    "즉시 단독 작업을 멈추고 `invoke_subagent(Model='flash')` 또는 "
+                    "`~/.local/bin/maestro worker-start --pool auto`로 위임하세요!"
+                )
+                print(warn)
+        return 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
