@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # agy-orca — One-Shot Installer & Live Symlink Manager
-# Repository: https://github.com/2KNG/agy-orca
+# Repository: https://github.com/2KNG/ai-maestro
 # License: MIT
 #
 # Usage:
 #   1) One-liner from anywhere:
-#      curl -fsSL https://raw.githubusercontent.com/2KNG/agy-orca/main/install.sh | bash
+#      curl -fsSL https://raw.githubusercontent.com/2KNG/ai-maestro/main/install.sh | bash
 #   2) Local clone:
-#      git clone https://github.com/2KNG/agy-orca.git ~/dev/agy-orca && ~/dev/agy-orca/install.sh
+#      git clone https://github.com/2KNG/ai-maestro.git ~/dev/ai-maestro && ~/dev/ai-maestro/install.sh
 # ==============================================================================
 set -euo pipefail
 
-REPO_URL="https://github.com/2KNG/agy-orca.git"
-DEFAULT_INSTALL_DIR="${AGY_ORCA_DIR:-$HOME/dev/agy-orca}"
+REPO_URL="https://github.com/2KNG/ai-maestro.git"
+DEFAULT_INSTALL_DIR="${AGY_ORCA_DIR:-$HOME/dev/ai-maestro}"
 
 # Determine if running from inside a cloned repo or via curl|bash
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
@@ -28,7 +28,7 @@ else
   INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 fi
 
-echo "🚀 [agy-orca] Installing / Syncing Multi-Agent Orchestrator & AOH Live Widget..."
+echo "🚀 [ai-maestro] Installing / Syncing Multi-Agent Orchestrator & AOH Live Widget..."
 echo "   📂 Target Repo Path: $INSTALL_DIR"
 
 mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -50,10 +50,11 @@ chmod +x "$SCRIPTS_DIR"/*.py || true
 # 1. Create portable CLI wrappers in repo bin/
 mkdir -p "$INSTALL_DIR/bin"
 
-cat > "$INSTALL_DIR/bin/agy-orca" <<EOF
+cat > "$INSTALL_DIR/bin/maestro" <<EOF
 #!/usr/bin/env bash
-exec python3 "$SCRIPTS_DIR/agy_orca.py" "\$@"
+exec python3 "$SCRIPTS_DIR/maestro.py" "\$@"
 EOF
+cp -a "$INSTALL_DIR/bin/maestro" "$INSTALL_DIR/bin/agy-orca"
 
 cat > "$INSTALL_DIR/bin/ai-usage" <<EOF
 #!/usr/bin/env bash
@@ -81,10 +82,10 @@ chmod +x "$INSTALL_DIR/bin/"*
 
 # 2. Symlink ~/.local/bin executables
 mkdir -p "$HOME/.local/bin"
-for bin_name in agy-orca ai-usage ai-usage-widget ai-usage-web; do
+for bin_name in maestro agy-orca ai-usage ai-usage-widget ai-usage-web; do
   ln -sfn "$INSTALL_DIR/bin/$bin_name" "$HOME/.local/bin/$bin_name"
 done
-echo "   ✓ Linked CLI commands in ~/.local/bin/{agy-orca,ai-usage,ai-usage-widget,ai-usage-web}"
+echo "   ✓ Linked CLI commands in ~/.local/bin/{maestro,agy-orca,ai-usage,ai-usage-widget,ai-usage-web}"
 
 # 3. Symlink Antigravity skills & plugins directly to repo for continuous Git management
 mkdir -p "$HOME/.gemini/config/skills" "$HOME/.gemini/config/plugins" "$HOME/.gemini/antigravity/skills"
@@ -154,7 +155,7 @@ else
 fi
 
 echo ""
-echo "✅ [agy-orca] Installation Complete!"
+echo "✅ [ai-maestro] Installation Complete!"
 echo "   • Live Dashboard : http://127.0.0.1:18765"
 echo "   • CLI Usage Check: ~/.local/bin/ai-usage"
-echo "   • Auto Worker CLI: ~/.local/bin/agy-orca worker-start --pool auto --difficulty high --cwd \"\$PWD\" --wait --spec \"...\""
+echo "   • Auto Worker CLI: ~/.local/bin/maestro worker-start --pool auto --difficulty high --cwd \"\$PWD\" --wait --spec \"...\""

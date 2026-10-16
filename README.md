@@ -1,10 +1,10 @@
-# 🐋 agy-orca — Multi-Agent Quota-Aware Orchestrator & AOH Live Telemetry Suite
+# 🎼 ai-maestro — Multi-Agent Quota-Aware Orchestrator & AOH Live Telemetry Suite
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
 [![Pools](https://img.shields.io/badge/Pools-Antigravity%204.0%20%7C%20Codex%206.1%20%7C%20Claude%20Opus%204.6-3b82f6.svg)](#architecture)
 [![Zero Token Telemetry](https://img.shields.io/badge/Telemetry-0%20LLM%20Tokens-f59e0b.svg)](#aoh-live-widget)
 
-**`agy-orca`**는 **Google Antigravity (`Gemini 4 Argon / 3.8 Flash / Claude Opus 5.5`)**, **OpenAI Codex ProMax CLI (`gpt-6.1-sol`)**, **Anthropic Claude Code CLI (`claude-opus-4-6 / sonnet-4-6`)** 3대 에이전트 풀의 **5시간 단기(5h) · 주간(7d) 쿼터를 실시간 추적**하고, 잔량과 작업 난이도에 맞춰 **자동 분산 라우팅 · 0% 선제 방어 · Git Worktree 병렬 실행 · 실시간 AOH 트리 위젯 시각화**를 수행하는 통합 멀티에이전트 오케스트레이터입니다.
+**`ai-maestro` (CLI: `maestro`)**는 **Google Antigravity (`Gemini 4 Argon / 3.8 Flash / Claude Opus 5.5`)**, **OpenAI Codex ProMax CLI (`gpt-6.1-sol`)**, **Anthropic Claude Code CLI (`claude-opus-4-6 / sonnet-4-6`)** 3대 에이전트 풀의 **5시간 단기(5h) · 주간(7d) 쿼터를 실시간 추적**하고, 잔량과 작업 난이도에 맞춰 **자동 분산 라우팅 · 0% 선제 방어 · Git Worktree 병렬 실행 · 실시간 AOH 트리 위젯 시각화**를 수행하는 통합 멀티에이전트 오케스트레이터입니다.
 
 ---
 
@@ -13,20 +13,20 @@
 ### 방법 A. 다른 PC의 AI 에이전트(Antigravity / Claude Code / Codex)에게 말로 시키기
 다른 PC에서 에이전트 채팅창에 아래 한 줄만 입력하면 에이전트가 알아서 클론·심볼릭 링크·데몬 등록·글로벌 룰 세팅까지 한 번에 끝냅니다:
 
-> **"야 https://github.com/2KNG/agy-orca 설치해줘"**
+> **"야 https://github.com/2KNG/ai-maestro 설치해줘"**
 
 ### 방법 B. 터미널 한 줄 설치 (`curl | bash`)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/2KNG/agy-orca/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2KNG/ai-maestro/main/install.sh | bash
 ```
 
-### 방법 C. Git 클론 후 지속 관리 모드 설치 (`~/dev/agy-orca` 심볼릭 링크 연동)
+### 방법 C. Git 클론 후 지속 관리 모드 설치 (`~/dev/ai-maestro` 심볼릭 링크 연동)
 ```bash
-git clone https://github.com/2KNG/agy-orca.git ~/dev/agy-orca
-chmod +x ~/dev/agy-orca/install.sh
-~/dev/agy-orca/install.sh
+git clone https://github.com/2KNG/ai-maestro.git ~/dev/ai-maestro
+chmod +x ~/dev/ai-maestro/install.sh
+~/dev/ai-maestro/install.sh
 ```
-> **💡 지속 관리 아키텍처**: `install.sh`는 복사본을 방치하지 않고 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{agy-orca,ai-usage,ai-usage-widget,ai-usage-web}`를 모두 `~/dev/agy-orca` 레포지토리 내부로 **심볼릭 링크(Symlink)** 연결합니다. 따라서 기능 수정 후 `~/dev/agy-orca`에서 바로 `git commit && git push`로 지속 관리할 수 있습니다.
+> **💡 지속 관리 아키텍처**: `install.sh`는 복사본을 방치하지 않고 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{agy-orca,ai-usage,ai-usage-widget,ai-usage-web}`를 모두 `~/dev/ai-maestro` 레포지토리 내부로 **심볼릭 링크(Symlink)** 연결합니다. 따라서 기능 수정 후 `~/dev/ai-maestro`에서 바로 `git commit && git push`로 지속 관리할 수 있습니다.
 
 ---
 

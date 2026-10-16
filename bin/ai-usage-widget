@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec python3 "/home/u24c9g5090r64/dev/agy-orca/skills/multi-agent-orchestrator/scripts/render_usage_widget.py" "$@"
+exec python3 "/home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/render_usage_widget.py" "$@"
