@@ -403,6 +403,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 accounts = ruw.build_accounts(data)
                 st = load_state()
                 active_html, closed_html, act_cnt, cls_cnt = ruw.build_active_and_closed_trees_html(data, st)
+                pc_html = ruw.build_optional_pc_telemetry_html() if hasattr(ruw, "build_optional_pc_telemetry_html") else ""
                 # Only write missing directories on /api/refresh unless write_disk=1 is explicitly requested,
                 # so open artifact iframes are updated in-place via JSON without triggering IDE file-watcher reloads.
                 if is_refresh:
@@ -421,6 +422,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                             "timestamp_kst": data.get("timestamp_kst"),
                             "recommended_routing": data.get("recommended_routing"),
                             "accounts": accounts,
+                            "pcTelemetryHtml": pc_html,
                             "activeTreeHtml": active_html,
                             "closedTreeHtml": closed_html,
                             "activeCount": act_cnt,
@@ -433,6 +435,16 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._set_cors(500)
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+            return
+
+        if parsed.path == "/api/pc":
+            try:
+                import pc_telemetry_ext as pc_ext
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": True, "pc": pc_ext.collect_pc_telemetry(force=True)}, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": False, "enabled": False, "error": str(e)}).encode("utf-8"))
             return
 
         if parsed.path == "/api/state":

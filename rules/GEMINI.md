@@ -8,8 +8,8 @@
    - **Codex Tier**: Default `--tier priority` (`Fast` ⚡); use `--urgent` (`ultrafast` ⚡⚡⚡) ONLY when urgent real-time response is required.
    - **Fast Lookups**: Use `invoke_subagent(Model='flash')` (`3.8 Flash`) for read-only lookups.
 
-2. **AI Wall-Clock ETA Rule (직관적 실제 소요시간 · 한글 토큰 규모 + 원화 + 구독 소모율 % 안내)**:
-   - When asked how long a task will take, NEVER give human calendar estimates ("며칠/1주일") or raw `k/M` units. Always report **AI parallel wall-clock time + Korean token scale with KRW & subscription quota % (`⏱ 30초~1분 · 8천~1만5천 토큰 규모 (5백원대 · 구독 5h 0.3%)` / `⏱ 1~3분 · 10만~15만 토큰 규모 (5천원대 · 구독 5h 2~4% / 7d 0.5%)` / `⏱ 3~6분 · 100만~150만 토큰 규모 (5만원대 · 구독 5h 20~30% / 7d 3~5%)` / `⏱ 7~12분 · 1천만 토큰 규모 (53만원대 · 구독 7d 15~25% 분산)`) + target pools** (omit "약").
+2. **AI Wall-Clock ETA Rule (직관적 실제 소요시간 · 한글 토큰 + 원화 + 5h/7d 소모율 % 안내)**:
+   - When asked how long a task will take, NEVER give human calendar estimates ("며칠/1주일") or raw `k/M` units. Always report **AI parallel wall-clock time + Korean token count with KRW & 5h/7d quota % (`⏱ 30초~1분 · 8천~1만5천 토큰 (5백원대 · 5h 0.3%)` / `⏱ 1~3분 · 10만~15만 토큰 (5천원대 · 5h 2~4% / 7d 0.5%)` / `⏱ 3~6분 · 100만~150만 토큰 (5만원대 · 5h 20~30% / 7d 3~5%)` / `⏱ 7~12분 · 1천만 토큰 (53만원대 · 7d 15~25% 분산)`) + target pools** (omit "약").
 
 3. **Silent Background Widget Sync (`usage_widget.html`) — NO Inline `<agent-embed>` in Chat**:
    - Update `/home/u24c9g5090r64/.gemini/antigravity/brain/<conversation-id>/usage_widget.html` silently in the background via `/home/u24c9g5090r64/.local/bin/ai-usage-widget <path>` (so the right-hand Artifact panel & `http://127.0.0.1:18765` stay live).

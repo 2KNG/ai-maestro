@@ -2759,8 +2759,25 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
     return "".join(parts)
 
 
+PC_TELEMETRY_BLOCK_RE = re.compile(
+    r"<!--__PC_TELEMETRY_HTML_START__-->.*?<!--__PC_TELEMETRY_HTML_END__-->",
+    re.S,
+)
+
+
+def build_optional_pc_telemetry_html() -> str:
+    """Return rendered PC telemetry HTML if pc_telemetry_ext.py is installed and enabled; otherwise empty markers."""
+    try:
+        import pc_telemetry_ext as pc_ext
+        if pc_ext.is_enabled():
+            return pc_ext.render_pc_telemetry_html()
+    except Exception:
+        pass
+    return "<!--__PC_TELEMETRY_HTML_START__--><!--__PC_TELEMETRY_HTML_END__-->"
+
+
 def inject_live_data(template: str, data: dict) -> str:
-    """Replace all live-data regions (SERVER_STATE, ACCOUNTS, QUOTA_GRID, ACTIVE_TREE, CLOSED_TREE) at render time for 0ms first paint."""
+    """Replace all live-data regions (SERVER_STATE, ACCOUNTS, QUOTA_GRID, PC_TELEMETRY, ACTIVE_TREE, CLOSED_TREE) at render time for 0ms first paint."""
     accounts = build_accounts(data)
     state = _load_persisted_widget_state()
 
@@ -2784,6 +2801,10 @@ def inject_live_data(template: str, data: dict) -> str:
     if QUOTA_GRID_BLOCK_RE.search(html):
         static_grid = build_static_quota_grid_html(accounts)
         html = QUOTA_GRID_BLOCK_RE.sub(lambda _m: static_grid, html, count=1)
+
+    if PC_TELEMETRY_BLOCK_RE.search(html):
+        pc_html = build_optional_pc_telemetry_html()
+        html = PC_TELEMETRY_BLOCK_RE.sub(lambda _m: pc_html, html, count=1)
 
     active_html, closed_html, act_cnt, cls_cnt = build_active_and_closed_trees_html(data, state)
     if ACTIVE_TREE_BLOCK_RE.search(html):
