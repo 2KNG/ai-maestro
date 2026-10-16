@@ -1,0 +1,14 @@
+[Unit]
+Description=Antigravity Multi-Agent Usage Widget HTTP Bridge Daemon (Port 18765)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 /home/u24c9g5090r64/dev/agy-orca/skills/multi-agent-orchestrator/scripts/widget_bridge_daemon.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/u24c9g5090r64/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

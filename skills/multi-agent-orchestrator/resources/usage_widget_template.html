@@ -1,0 +1,1727 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: var(--background, #0d131f);
+      --panel: var(--card, #121a29);
+      --surface: rgba(128, 145, 175, 0.06);
+      --surface-2: rgba(128, 145, 175, 0.14);
+      --border: var(--border, rgba(148, 163, 184, 0.2));
+      --text: var(--foreground, #e6edf7);
+      --muted: var(--muted-foreground, #8b9bb4);
+      --blue: #3b82f6;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #f43f5e;
+      --claude: #D97757;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "NanumSquareRound", "Segoe UI", sans-serif;
+      background: transparent;
+      color: var(--text);
+      padding: 4px;
+      font-size: 12px;
+      line-height: 1.35;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .widget-shell {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    /* ── 1. AOH QUOTA PANEL (바깥 링: 잔여 한도 / 안쪽 원: 기간 진행 시계 파이) ── */
+    .usage-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+    }
+    .usage-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-height: 22px;
+    }
+    .usage-toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .usage-hint {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-toolbar-btns {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: none;
+    }
+    .mini-btn {
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .mini-btn:hover { background: var(--surface-2); }
+
+    .usage-panel-body {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 5px;
+      min-width: 0;
+    }
+    @media (max-width: 480px) {
+      .usage-panel-body {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .usage-account[data-provider="antigravity"] { grid-column: span 2 !important; }
+      .usage-account[data-provider="codex"] { grid-column: span 1 !important; }
+      .usage-account[data-provider="claude"] { grid-column: span 3 !important; }
+    }
+
+    fieldset.usage-account {
+      min-width: 0;
+      min-inline-size: 0;
+      margin: 0;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 4px 4px 5px;
+      background: var(--surface);
+      grid-column: span var(--span, 1);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    fieldset.usage-account[data-provider="antigravity"] { --accent: #60a5fa; border-color: rgba(96, 165, 250, 0.45); }
+    fieldset.usage-account[data-provider="codex"] { --accent: var(--green); border-color: rgba(16, 185, 129, 0.45); }
+    fieldset.usage-account[data-provider="claude"] { --accent: #df934a; border-color: rgba(223, 147, 74, 0.45); }
+
+    legend.usage-account-heading {
+      width: auto;
+      max-width: 100%;
+      padding: 0 4px;
+      margin: 0 auto 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 10px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    legend.usage-account-heading > strong {
+      color: var(--accent, var(--text));
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-account-windows {
+      display: grid;
+      grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+      gap: 2px;
+      min-width: 0;
+    }
+    .usage-window {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      text-align: center;
+    }
+    .usage-gauge-button {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .usage-gauge-button:hover { background: var(--surface-2); }
+
+    .usage-donut {
+      position: relative;
+      width: 50px;
+      height: 50px;
+      flex: none;
+      color: var(--muted);
+    }
+    .usage-donut.unused { color: var(--blue); }
+    .usage-donut.in-use { color: var(--green); }
+    .usage-donut.exhausted { color: var(--red); }
+    .usage-donut > svg {
+      width: 100%;
+      height: 100%;
+      stroke-width: 5;
+      stroke-linecap: butt;
+      fill: none;
+    }
+    .usage-ring-track { stroke: var(--border); }
+    .usage-ring-remaining { stroke: currentColor; }
+    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); stroke-width: 2.2; }
+    .usage-clock-background { fill: #7397c2; fill-opacity: 0.18; stroke: none; }
+    .usage-clock-fill { fill: #436f9f; fill-opacity: 0.85; stroke: none; }
+
+    .usage-donut-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      color: var(--text);
+    }
+    .usage-donut-center > strong {
+      font-size: 11px;
+      line-height: 1.05;
+      font-weight: 800;
+      letter-spacing: -0.4px;
+      font-variant-numeric: tabular-nums;
+    }
+    .usage-donut-center > small {
+      font-size: 7.5px;
+      line-height: 1.05;
+      color: var(--muted);
+    }
+    .usage-center-period { display: none; }
+
+    .usage-window-title {
+      font-size: 9.5px;
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .usage-quota-state {
+      font-size: 8.5px;
+      line-height: 1.15;
+      font-weight: 500;
+    }
+    .usage-quota-state.unused { color: var(--blue); }
+    .usage-quota-state.in-use { color: var(--green); }
+    .usage-quota-state.exhausted { color: var(--red); }
+
+    .usage-reset {
+      font-size: 8.5px;
+      line-height: 1.2;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    /* ── AOH COMPACT DENSITY MODE (1-line ultra-slim bar) ── */
+    .usage-panel[data-density="compact"] .usage-hint { display: none; }
+    .usage-panel[data-density="compact"] .usage-panel-body {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 2px 0;
+    }
+    .usage-panel[data-density="compact"] fieldset.usage-account {
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      flex: none;
+    }
+    .usage-panel[data-density="compact"] legend.usage-account-heading { display: none; }
+    .usage-provider-inline {
+      display: none;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--accent, var(--text));
+      white-space: nowrap;
+      align-items: center;
+      gap: 3px;
+    }
+    .usage-panel[data-density="compact"] .usage-provider-inline { display: inline-flex; }
+    .usage-panel[data-density="compact"] .usage-account-windows { display: flex; gap: 3px; }
+    .usage-panel[data-density="compact"] .usage-window-title,
+    .usage-panel[data-density="compact"] .usage-quota-state,
+    .usage-panel[data-density="compact"] .usage-reset,
+    .usage-panel[data-density="compact"] .usage-center-caption { display: none; }
+    .usage-panel[data-density="compact"] .usage-donut { width: 34px; height: 34px; }
+    .usage-panel[data-density="compact"] .usage-donut > svg { stroke-width: 4.5; }
+    .usage-panel[data-density="compact"] .usage-donut-center > strong { font-size: 9.5px; line-height: 10px; }
+    .usage-panel[data-density="compact"] .usage-center-period {
+      display: block;
+      font-size: 7.5px;
+      line-height: 8.5px;
+      color: var(--muted);
+    }
+
+    /* ── 2. NARROW-SAFE AGENT EXECUTION TREE ── */
+    .tree-section {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 6px 7px;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .tree-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .tree-header-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 4px 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      min-width: 0;
+      transition: background 0.12s;
+    }
+    .agent-row:hover { background: var(--surface-2); }
+    .agent-row.parent { background: rgba(128, 145, 175, 0.07); }
+    .agent-row.parent:hover { background: var(--surface-2); }
+    .agent-row.child { padding-left: 14px; }
+
+    .agent-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      flex: 1;
+    }
+    .chevron-btn {
+      width: 15px;
+      height: 15px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      cursor: pointer;
+      flex: none;
+    }
+    .chevron-btn:hover { background: var(--surface-2); color: var(--text); }
+    .tree-branch-char {
+      font-family: monospace;
+      color: var(--muted);
+      font-size: 11px;
+      flex: none;
+      user-select: none;
+    }
+    .provider-icon {
+      width: 12px;
+      height: 12px;
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      flex: none;
+    }
+    .status-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.idle { background: var(--amber); }
+    .status-dot.done { background: #64748b; }
+
+    .agent-name {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .agent-row.child .agent-name { font-weight: 500; }
+
+    .agent-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+    }
+    .model-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      padding: 1.5px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.35);
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+    }
+    .model-pill.argon { color: #60a5fa; border-color: rgba(96, 165, 250, 0.3); }
+    .model-pill.flash { color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); }
+    .model-pill.claude { color: #D97757; border-color: rgba(217, 119, 87, 0.35); }
+    .model-pill.codex { color: #34d399; border-color: rgba(52, 211, 153, 0.3); }
+
+    /* Pure SVG Lightning Speed Badges (1x Bolt = Fast, 3x Overlapping Bolts = Ultra Fast) */
+    .bolt-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 18px;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: rgba(245, 158, 11, 0.13);
+      border: 1px solid rgba(245, 158, 11, 0.32);
+      color: #fbbf24;
+      flex: none;
+    }
+    .bolt-badge.ultra {
+      padding: 0 5px;
+      background: rgba(245, 158, 11, 0.18);
+      border-color: rgba(251, 191, 36, 0.48);
+      color: #fde047;
+    }
+
+    .ctx-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      color: var(--muted);
+      white-space: nowrap;
+      min-width: 64px;
+      justify-content: flex-end;
+    }
+    .ctx-bar {
+      width: 26px;
+      height: 4px;
+      border-radius: 99px;
+      background: rgba(148, 163, 184, 0.2);
+      overflow: hidden;
+      flex: none;
+    }
+    @media (max-width: 420px) {
+      .ctx-bar { display: none; }
+      .ctx-pill { min-width: 34px; }
+    }
+    .ctx-bar-fill { height: 100%; border-radius: 99px; }
+
+    .open-btn {
+      height: 19px;
+      padding: 0 5px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(96, 165, 250, 0.35);
+      background: rgba(59, 130, 246, 0.14);
+      color: #60a5fa;
+      cursor: pointer;
+      white-space: nowrap;
+      flex: none;
+    }
+    .open-btn:hover { background: rgba(59, 130, 246, 0.25); }
+    .open-btn.codex {
+      border-color: rgba(16, 185, 129, 0.35);
+      background: rgba(16, 185, 129, 0.14);
+      color: #34d399;
+    }
+    .open-btn.codex:hover { background: rgba(16, 185, 129, 0.25); }
+    .open-btn.claude {
+      border-color: rgba(217, 119, 87, 0.4);
+      background: rgba(217, 119, 87, 0.14);
+      color: #D97757;
+    }
+
+    .agent-detail {
+      display: none;
+      margin: 1px 0 3px 20px;
+      padding: 5px 7px;
+      border-radius: 5px;
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .agent-detail.open { display: block; }
+    .agent-detail-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    /* ── WORKTREE CONTROLS: SCOPE FILTER, TABS, IMPORT & DISMISS (✕) ── */
+    .tree-controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .seg-group {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1.5px;
+      gap: 2px;
+    }
+    .seg-btn {
+      height: 19px;
+      padding: 0 6px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 9.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .seg-btn:hover { color: var(--text); }
+    .seg-btn.active {
+      background: var(--surface-2);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    }
+    .tab-badge {
+      font-size: 8.5px;
+      padding: 0 4px;
+      border-radius: 99px;
+      background: rgba(148, 163, 184, 0.18);
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .seg-btn.active .tab-badge {
+      background: rgba(59, 130, 246, 0.22);
+      color: #60a5fa;
+    }
+
+    .icon-btn {
+      height: 21px;
+      padding: 0 6px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 9.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+    .icon-btn:hover { border-color: rgba(148, 163, 184, 0.45); }
+    .icon-btn.spinning svg { animation: spin 0.55s linear; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .dismiss-btn {
+      width: 18px;
+      height: 19px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex: none;
+      opacity: 0.65;
+      transition: all 0.12s;
+    }
+    .agent-row:hover .dismiss-btn { opacity: 1; }
+    .dismiss-btn:hover {
+      background: rgba(239, 68, 68, 0.16);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #f87171;
+    }
+
+    .import-btn {
+      height: 19px;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      border: 1px solid rgba(168, 85, 247, 0.4);
+      background: rgba(168, 85, 247, 0.14);
+      color: #c084fc;
+      cursor: pointer;
+      white-space: nowrap;
+      flex: none;
+    }
+    .import-btn:hover { background: rgba(168, 85, 247, 0.25); }
+
+    .repo-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--muted);
+      white-space: nowrap;
+      flex: none;
+    }
+    .age-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(245, 158, 11, 0.12);
+      color: #fbbf24;
+      white-space: nowrap;
+      flex: none;
+    }
+
+    .toast-bar {
+      position: fixed;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 95;
+      background: #1e293b;
+      border: 1px solid rgba(96, 165, 250, 0.4);
+      color: #f8fafc;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+      white-space: nowrap;
+    }
+    .toast-undo {
+      border: 0;
+      background: rgba(59, 130, 246, 0.22);
+      color: #60a5fa;
+      font-size: 9.5px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .cost-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(16, 185, 129, 0.13);
+      border: 1px solid rgba(16, 185, 129, 0.32);
+      color: #34d399;
+      white-space: nowrap;
+      flex: none;
+    }
+    .cost-total-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 5px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+      white-space: nowrap;
+    }
+    .provider-cost {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.28);
+      padding: 0.5px 5px;
+      border-radius: 4px;
+      margin-left: 3px;
+    }
+
+    /* ── 3. BOTTOM MCP & WORKER STRIP ── */
+    .mcp-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      padding-top: 2px;
+    }
+    .mcp-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .mcp-chip svg { width: 11px; height: 11px; flex: none; }
+    .mcp-chip .dot { width: 5px; height: 5px; border-radius: 99px; background: var(--green); }
+
+    #usage-tooltip {
+      position: fixed;
+      z-index: 99;
+      max-width: 280px;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 6px;
+      padding: 6px 9px;
+      font-size: 10px;
+      line-height: 1.5;
+      white-space: pre-line;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+      pointer-events: none;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <!-- Reusable SVG Defs for Brand Icons & Lightning Bolts -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <linearGradient id="gem-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#4E82EE"/>
+        <stop offset="0.5" stop-color="#9B72CB"/>
+        <stop offset="1" stop-color="#D96570"/>
+      </linearGradient>
+      <!-- Gemini Sparkle -->
+      <symbol id="ico-gemini" viewBox="0 0 24 24">
+        <path d="M12 2C12 7.52 7.52 12 2 12C7.52 12 12 16.48 12 22C12 16.48 16.48 12 22 12C16.48 12 12 7.52 12 2Z" fill="url(#gem-grad)"/>
+      </symbol>
+      <!-- Claude / Anthropic Logo -->
+      <symbol id="ico-claude" viewBox="0 0 24 24">
+        <path d="M13.827 3.5h3.676L24 20.5h-3.676l-1.897-4.5H9.597l-1.897 4.5H4L10.5 3.5h3.327zm-3.08 9.94h5.52l-2.76-6.56-2.76 6.56z" fill="#D97757"/>
+      </symbol>
+      <!-- OpenAI Codex Knot -->
+      <symbol id="ico-codex" viewBox="0 0 24 24">
+        <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.0993 3.8558L12.5973 8.3829l2.02-1.1685a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.4022-.6813zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6814v6.7226zm1.1072-2.1296l2.5833-1.4904 2.5833 1.4904v2.9808l-2.5833 1.4904-2.5833-1.4904z" fill="currentColor"/>
+      </symbol>
+      <!-- Single Lightning Bolt (Codex service_tier: priority = Fast) -->
+      <symbol id="ico-bolt-1" viewBox="0 0 14 16">
+        <path d="M8.5 1L1.5 9.5H7L6 15L13 6.5H7.5L8.5 1Z" fill="currentColor"/>
+      </symbol>
+      <!-- Triple Overlapping Lightning Bolts (Codex service_tier: ultrafast = Ultrafast) -->
+      <symbol id="ico-bolt-3" viewBox="0 0 26 16">
+        <path d="M7.5 1.5L1.5 9H6.2L5.2 14.5L11.2 7H6.5L7.5 1.5Z" fill="currentColor" opacity="0.55"/>
+        <path d="M13.5 1L7.2 9H12.2L11.2 15L17.5 7H12.5L13.5 1Z" fill="currentColor" opacity="0.82"/>
+        <path d="M19.8 1L13.5 9H18.5L17.5 15L24 7H19L19.8 1Z" fill="currentColor"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div class="widget-shell">
+
+    <!-- 1. TOP: AOH DUAL-RING + INNER CLOCK PIE QUOTA PANEL (+ API 환산 비용 표시) -->
+    <div class="usage-panel" id="usage-panel" data-density="expanded">
+      <div class="usage-toolbar">
+        <div class="usage-toolbar-left">
+          <span class="usage-hint">바깥 링: 잔여 한도 · 안쪽 시계원: 기간 경과율</span>
+        </div>
+        <div class="usage-toolbar-btns">
+          <button type="button" class="mini-btn" id="density-btn" onclick="toggleDensity()">컴팩트 바 전환</button>
+        </div>
+      </div>
+
+      <div class="usage-panel-body" id="quota-grid"></div>
+    </div>
+
+    <!-- 2. MIDDLE: WORKTREE & MULTI-AGENT EXECUTION TREE (삭제 ✕ / 가져오기 / 범위 새로고침 / 7일+ 보관함 탭 / 세션별 비용 $) -->
+    <div class="tree-section">
+      <div class="tree-header">
+        <div class="tree-header-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+          </svg>
+          <span>워크트리 &amp; 에이전트 트리</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px">
+          <button type="button" class="mini-btn hidden" id="btn-restore-hidden" onclick="restoreAllDismissed()" title="삭제/숨김 처리한 워크트리 다시 보기"></button>
+          <button type="button" class="mini-btn" id="btn-toggle-all" onclick="toggleAllBranches()">전체 접기</button>
+        </div>
+      </div>
+
+      <!-- Scope Selector (현재 범위 vs 전체 레포) + Refresh + Tabs (활성 <7일 vs 7일+ 보관함) -->
+      <div class="tree-controls-bar">
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <!-- Tab: Active (<7d) vs Archive (7d+) -->
+          <div class="seg-group" title="7일 경과 세션은 보관함 탭으로 자동 분리됩니다">
+            <button type="button" class="seg-btn active" id="tab-active" onclick="switchTab('active')">
+              <span>활성 (&lt;7일)</span>
+              <span class="tab-badge" id="badge-active-cnt">3</span>
+            </button>
+            <button type="button" class="seg-btn" id="tab-archive" onclick="switchTab('archive')">
+              <span>7일+ 보관함</span>
+              <span class="tab-badge" id="badge-archive-cnt">69</span>
+            </button>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:4px">
+          <!-- Scope: Current Workspace vs All Repos -->
+          <div class="seg-group" title="새로고침 및 표시 범위 선택">
+            <button type="button" class="seg-btn active" id="scope-current" onclick="setScope('current')">현재 범위</button>
+            <button type="button" class="seg-btn" id="scope-all" onclick="setScope('all')">전체 레포</button>
+          </div>
+          <button type="button" class="icon-btn" id="btn-refresh-scope" onclick="refreshByScope()" title="선택된 범위(현재 범위 / 전체 레포) 기준으로 새로고침 (삭제한 항목은 다시 나타나지 않음)">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M4 9a9 9 0 0114.65-3.36L20 7M20 15a9 9 0 01-14.65 3.36L4 17"/>
+            </svg>
+            <span id="refresh-label">새로고침</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- TAB 1: ACTIVE TREE (< 7 DAYS) -->
+      <div id="view-active">
+        <!-- Root 1: Antigravity Main Orchestrator + Subagents (Current Scope: /home/u24c9g5090r64/dev) -->
+        <div class="tree-node" data-node-id="node-agy-root" data-scope="current">
+          <div class="agent-row parent" onclick="toggleDetail('det-agy-main')">
+            <div class="agent-left">
+              <button type="button" class="chevron-btn" onclick="event.stopPropagation(); toggleBranch('br-agy', 'ic-agy')" title="접기/펴기">
+                <span id="ic-agy">▼</span>
+              </button>
+              <svg class="provider-icon" width="12" height="12"><use href="#ico-gemini"/></svg>
+              <span class="status-dot running" title="RUNNING"></span>
+              <span class="agent-name">Main Orchestrator (AI Collaboration)</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill argon">Argon · High</span>
+              <span class="ctx-pill" title="254.8k / 1M (25.5%)">
+                <span class="ctx-bar"><span class="ctx-bar-fill" style="width:25.5%;background:var(--green)"></span></span>
+                <span>25.5%</span>
+              </span>
+              <a href="conversation://521b781e-43da-4647-b411-585e65e5f002" target="_top" onclick="event.stopPropagation()" class="open-btn" title="대화창 띄우기">열기 ↗</a>
+              <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-agy-root', 'Main Orchestrator')" title="목록에서 지우기 (다시 표시 안 함)">✕</button>
+            </div>
+          </div>
+          <div id="det-agy-main" class="agent-detail">
+            <div class="agent-detail-row">
+              <span>ID: 521b781e-43da-4647-b411-585e65e5f002 · 워크스페이스: /home/u24c9g5090r64/dev</span>
+              <span>254.8k / 1M</span>
+            </div>
+          </div>
+
+          <div id="br-agy">
+            <!-- Subagent 1: REAL Claude Opus 5.5 (High · M402) Cascade (822d62b1-ce17-40a8-91ea-5211f704ce79) -->
+            <div class="tree-node" data-node-id="node-opus-m402" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-claude-opus')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12"><use href="#ico-claude"/></svg>
+                  <span class="status-dot running" title="ACTIVE (Claude Opus 5.5 High)"></span>
+                  <span class="agent-name">Claude Opus 5.5 · Worktree &amp; Spec Subagent</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill claude" title="Antigravity Claude Opus 5.5 (High · M402)">Opus 5.5 · High</span>
+                  <span class="ctx-pill" title="48.2k / 200k (24.1%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:24.1%;background:#D97757"></span></span>
+                    <span>24.1%</span>
+                  </span>
+                  <a href="conversation://822d62b1-ce17-40a8-91ea-5211f704ce79" target="_top" onclick="event.stopPropagation()" class="open-btn claude" title="Claude Opus 5.5 서브에이전트 열기">열기 ↗</a>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-opus-m402', 'Claude Opus 5.5 Subagent')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-claude-opus" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Subagent ID: 822d62b1-ce17-40a8-91ea-5211f704ce79 · MODEL_PLACEHOLDER_M402</span>
+                  <span>Claude Opus 5.5 (High) · check_all_usage.py &amp; SQLite 쿼리 검증</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Subagent 2: Codex Worker (Active on render_usage_widget.py & cost calculator) -->
+            <div class="tree-node" data-node-id="node-codex-worker-active" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-codex-worker-active')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+                  <span class="status-dot running" title="RUNNING (Codex Worker)"></span>
+                  <span class="agent-name">Codex Worker · Cost &amp; Archive SQLite Sync</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: high">6.1-sol · high</span>
+                  <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                    <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+                  </span>
+                  <span class="ctx-pill" title="64.2k / 475k (13.5%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:13.5%;background:var(--green)"></span></span>
+                    <span>13.5%</span>
+                  </span>
+                  <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-codex-worker-active', 'codex exec -C /home/u24c9g5090r64/dev', this)" class="open-btn codex">복사</button>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-codex-worker-active', 'Codex Worker')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-codex-worker-active" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>codex-worker · gpt-6.1-sol (effort: high · service_tier: priority)</span>
+                  <span>check_all_usage.py 비용 환산 및 7일+ 보관함 동기화</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Subagent 3: Argon Auditor -->
+            <div class="tree-node" data-node-id="node-agy-sub3" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-agy-sub3')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12"><use href="#ico-gemini"/></svg>
+                  <span class="status-dot done" title="DONE"></span>
+                  <span class="agent-name">Argon Widget &amp; Architecture Auditor</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill argon">Argon · High</span>
+                  <span class="ctx-pill" title="142.1k / 1M (14.2%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:14.2%;background:var(--green)"></span></span>
+                    <span>14.2%</span>
+                  </span>
+                  <a href="conversation://4164c890-c106-41b2-b88d-b981cb58b500" target="_top" onclick="event.stopPropagation()" class="open-btn" title="서브에이전트 대화창 띄우기">열기 ↗</a>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-agy-sub3', 'Argon Auditor')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-agy-sub3" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Subagent ID: 4164c890-c106-41b2-b88d-b981cb58b500 · Gemini 4 Argon</span>
+                  <span>142.1k / 1M tokens</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Subagent 4: Quota API Engineer -->
+            <div class="tree-node" data-node-id="node-agy-sub1" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-agy-sub1')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">└─</span>
+                  <svg class="provider-icon" width="12" height="12"><use href="#ico-gemini"/></svg>
+                  <span class="status-dot done" title="DONE"></span>
+                  <span class="agent-name">Quota API &amp; CLI Engineer</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill flash" title="모델: Gemini 3.8 Flash">Flash</span>
+                  <span class="ctx-pill" title="114.3k / 1M (11.4%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:11.4%;background:var(--green)"></span></span>
+                    <span>11.4%</span>
+                  </span>
+                  <a href="conversation://15350b2b-b765-4d73-b325-dc6ac5a4277c" target="_top" onclick="event.stopPropagation()" class="open-btn" title="서브에이전트 대화창 띄우기">열기 ↗</a>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-agy-sub1', 'Quota API Engineer')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-agy-sub1" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Subagent ID: 15350b2b-b765-4d73-b325-dc6ac5a4277c · Gemini 3.8 Flash</span>
+                  <span>114.3k / 1M</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Root 2: Codex Discord Translation Bot (Current Scope: /home/u24c9g5090r64/dev) -->
+        <div class="tree-node" data-node-id="node-cdx-discord" data-scope="current">
+          <div class="agent-row parent" onclick="toggleDetail('det-cdx-discord')">
+            <div class="agent-left">
+              <span class="chevron-btn" style="cursor:default">•</span>
+              <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+              <span class="status-dot running" title="RUNNING"></span>
+              <span class="agent-name">Discord Translation Bot</span>
+              <span class="repo-tag">dev</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: high">6.1-sol · high</span>
+              <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+              </span>
+              <span class="ctx-pill" title="184.5k / 475k (38.8%)">
+                <span class="ctx-bar"><span class="ctx-bar-fill" style="width:38.8%;background:var(--blue)"></span></span>
+                <span>38.8%</span>
+              </span>
+              <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-discord', 'codex resume 01a13428-8495-7063-8f2e-9ba8a04c4a6e', this)" class="open-btn codex" title="현재 창으로 명령어 복사/가져오기">복사</button>
+              <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-discord', 'Discord Translation Bot')" title="목록에서 지우기 (다시 표시 안 함)">✕</button>
+            </div>
+          </div>
+          <div id="det-cdx-discord" class="agent-detail">
+            <div class="agent-detail-row">
+              <span>Codex Thread: 01a13428-8495-7063-8f2e-9ba8a04c4a6e · cwd: /home/u24c9g5090r64/dev</span>
+              <span>184.5k / 475k · effort: high · service_tier: priority (Fast ⚡)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Root 3: Codex SYNAPSE Desk Production + Subagents -->
+        <div class="tree-node" data-node-id="node-cdx-synapse" data-scope="current" data-external="true">
+          <div class="agent-row parent" onclick="toggleDetail('det-cdx-synapse')">
+            <div class="agent-left">
+              <button type="button" class="chevron-btn" onclick="event.stopPropagation(); toggleBranch('br-synapse', 'ic-synapse')" title="접기/펴기">
+                <span id="ic-synapse">▼</span>
+              </button>
+              <svg class="provider-icon" width="12" height="12" style="color:#f59e0b"><use href="#ico-codex"/></svg>
+              <span class="status-dot idle" title="IDLE"></span>
+              <span class="agent-name">SYNAPSE Desk Production</span>
+              <span class="repo-tag">keti-synapse</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: ultra">6.1-sol · ultra</span>
+              <span class="bolt-badge ultra" title="Codex service_tier: ultrafast (Ultrafast · The fastest available responses)">
+                <svg width="18" height="11"><use href="#ico-bolt-3"/></svg>
+              </span>
+              <span class="ctx-pill" title="268.4k / 475k (56.5%)">
+                <span class="ctx-bar"><span class="ctx-bar-fill" style="width:56.5%;background:var(--amber)"></span></span>
+                <span>56.5%</span>
+              </span>
+              <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-synapse', 'codex resume 01a12102-fd5e-7523-8f72-5b177776fe5f', this)" class="import-btn" title="다른 창/레포 세션을 현재 작업 범위로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-synapse', 'SYNAPSE Desk Production')" title="목록에서 지우기 (다시 표시 안 함)">✕</button>
+            </div>
+          </div>
+          <div id="det-cdx-synapse" class="agent-detail">
+            <div class="agent-detail-row">
+              <span>Parent Thread: 01a12102-fd5e-7523-8f72-5b177776fe5f</span>
+              <span>268.4k / 475k · reasoning_effort: ultra · service_tier: ultrafast (⚡⚡⚡)</span>
+            </div>
+          </div>
+
+          <div id="br-synapse">
+            <div class="tree-node" data-node-id="node-cdx-darwin" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-cdx-darwin')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+                  <span class="status-dot running" title="OPEN"></span>
+                  <span class="agent-name">Darwin · embed gateway.py &amp; tests</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: ultra">6.1-sol · ultra</span>
+                  <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                    <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+                  </span>
+                  <span class="ctx-pill" title="55.6k / 475k (11.7%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:11.7%;background:var(--green)"></span></span>
+                    <span>11.7%</span>
+                  </span>
+                  <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-darwin', 'codex resume 01a13955-0ac4-75d0-a17f-78250a4b784f', this)" class="open-btn codex">복사</button>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-darwin', 'Darwin Subagent')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-cdx-darwin" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Darwin · 01a13955-0ac4-75d0-a17f-78250a4b784f</span>
+                  <span>55.6k / 475k · effort: ultra · service_tier: priority (Fast ⚡)</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tree-node" data-node-id="node-cdx-euler" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-cdx-euler')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+                  <span class="status-dot done" title="DONE"></span>
+                  <span class="agent-name">Euler · gateway.py &amp; 74 tests</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: ultra">6.1-sol · ultra</span>
+                  <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                    <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+                  </span>
+                  <span class="ctx-pill" title="113.3k / 475k (23.8%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:23.8%;background:var(--green)"></span></span>
+                    <span>23.8%</span>
+                  </span>
+                  <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-euler', 'codex resume 01a138af-c352-7820-9e5c-f88e58f8a2e8', this)" class="open-btn codex">복사</button>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-euler', 'Euler Subagent')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-cdx-euler" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Euler (explorer) · 01a138af-c352-7820-9e5c-f88e58f8a2e8</span>
+                  <span>113.3k / 475k · effort: ultra · service_tier: priority (Fast ⚡)</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tree-node" data-node-id="node-cdx-jason" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-cdx-jason')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">├─</span>
+                  <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+                  <span class="status-dot done" title="DONE"></span>
+                  <span class="agent-name">Jason · TOM setup &amp; GPL boundary</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: ultra">6.1-sol · ultra</span>
+                  <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                    <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+                  </span>
+                  <span class="ctx-pill" title="147.1k / 475k (31.0%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:31.0%;background:var(--green)"></span></span>
+                    <span>31.0%</span>
+                  </span>
+                  <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-jason', 'codex resume 01a138ad-38d1-7b52-97e9-6bcb028afe85', this)" class="open-btn codex">복사</button>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-jason', 'Jason Subagent')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-cdx-jason" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Jason (explorer) · 01a138ad-38d1-7b52-97e9-6bcb028afe85</span>
+                  <span>147.1k / 475k · effort: ultra · service_tier: priority (Fast ⚡)</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tree-node" data-node-id="node-cdx-turing" data-scope="current">
+              <div class="agent-row child" onclick="toggleDetail('det-cdx-turing')">
+                <div class="agent-left">
+                  <span class="tree-branch-char">└─</span>
+                  <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+                  <span class="status-dot done" title="DONE"></span>
+                  <span class="agent-name">Turing · terminal.mjs window</span>
+                </div>
+                <div class="agent-right">
+                  <span class="model-pill codex" title="Codex 모델: gpt-6.1-sol · reasoning_effort: ultra">6.1-sol · ultra</span>
+                  <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                    <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+                  </span>
+                  <span class="ctx-pill" title="118.4k / 475k (24.9%)">
+                    <span class="ctx-bar"><span class="ctx-bar-fill" style="width:24.9%;background:var(--green)"></span></span>
+                    <span>24.9%</span>
+                  </span>
+                  <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-turing', 'codex resume 01a13881-b756-79c3-bae1-6a444e4f6ffe', this)" class="open-btn codex">복사</button>
+                  <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-turing', 'Turing Subagent')" title="목록에서 지우기">✕</button>
+                </div>
+              </div>
+              <div id="det-cdx-turing" class="agent-detail">
+                <div class="agent-detail-row">
+                  <span>Turing (worker) · 01a13881-b756-79c3-bae1-6a444e4f6ffe</span>
+                  <span>118.4k / 475k · effort: ultra · service_tier: priority (Fast ⚡)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Root 4 (ALL-REPO SCOPE ONLY unless imported): AOH Web Orchestration Hub -->
+        <div class="tree-node hidden" data-node-id="node-cdx-aoh" data-scope="all">
+          <div class="agent-row parent" onclick="toggleDetail('det-cdx-aoh')">
+            <div class="agent-left">
+              <span class="chevron-btn" style="cursor:default">•</span>
+              <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+              <span class="status-dot idle" title="IDLE"></span>
+              <span class="agent-name">AOH Web Orchestrator (agent-workbench)</span>
+              <span class="repo-tag">keti-synapse</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · ultra</span>
+              <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+              </span>
+              <span class="ctx-pill"><span>41.2%</span></span>
+              <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-aoh', 'codex resume 01a10f85-6f2b-7d92-a2a0-eb8bfeaa5cd1', this)" class="import-btn" title="현재 범위로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-aoh', 'AOH Web Orchestrator')" title="목록에서 지우기 (다시 표시 안 함)">✕</button>
+            </div>
+          </div>
+          <div id="det-cdx-aoh" class="agent-detail">
+            <div class="agent-detail-row">
+              <span>Codex Thread: 01a10f85-6f2b-7d92-a2a0-eb8bfeaa5cd1</span>
+              <span>다른 창/레포 세션 · [가져오기] 클릭 시 현재 범위로 고정됩니다</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Root 5 (ALL-REPO SCOPE ONLY unless imported): Construction Robot Update -->
+        <div class="tree-node hidden" data-node-id="node-cdx-robot" data-scope="all">
+          <div class="agent-row parent" onclick="toggleDetail('det-cdx-robot')">
+            <div class="agent-left">
+              <span class="chevron-btn" style="cursor:default">•</span>
+              <svg class="provider-icon" width="12" height="12" style="color:#10b981"><use href="#ico-codex"/></svg>
+              <span class="status-dot idle" title="IDLE"></span>
+              <span class="agent-name">Construction Robot &amp; TOM Status</span>
+              <span class="repo-tag">tom_and_gerri</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · ultra</span>
+              <span class="bolt-badge" title="Codex service_tier: priority (Fast · 2x speed)">
+                <svg width="10" height="11"><use href="#ico-bolt-1"/></svg>
+              </span>
+              <span class="ctx-pill"><span>29.4%</span></span>
+              <button type="button" onclick="event.stopPropagation(); importOrCopySession('node-cdx-robot', 'codex resume 01a12e01-b79f-7060-a7d9-c9025c45ce28', this)" class="import-btn" title="현재 범위로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode('node-cdx-robot', 'Construction Robot')" title="목록에서 지우기 (다시 표시 안 함)">✕</button>
+            </div>
+          </div>
+          <div id="det-cdx-robot" class="agent-detail">
+            <div class="agent-detail-row">
+              <span>Codex Thread: 01a12e01-b79f-7060-a7d9-c9025c45ce28</span>
+              <span>다른 창/레포 세션 · [가져오기] 클릭 시 현재 범위로 고정됩니다</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: 7-DAY+ ARCHIVE TAB (7일 지난 루트 세션 69개 / 전체 158개 자동 분리 보관함) -->
+      <div id="view-archive" class="hidden">
+        <div style="font-size:9.5px;color:var(--muted);padding:2px 4px 4px;display:flex;justify-content:space-between;align-items:center">
+          <span>7일 이상 경과된 루트 세션 69개(하위 포함 158개)가 자동 보관되었습니다.</span>
+          <span>[가져오기] 클릭 시 활성 트리로 복원</span>
+        </div>
+
+        <div class="tree-node" data-node-id="arch-1" data-scope="all" data-archived="true">
+          <div class="agent-row parent">
+            <div class="agent-left">
+              <svg class="provider-icon" width="12" height="12" style="color:#64748b"><use href="#ico-codex"/></svg>
+              <span class="status-dot done"></span>
+              <span class="agent-name">Workbench Agent dea03ff8 · KETI-SYNAPSE</span>
+              <span class="age-tag">7.1일 전</span>
+              <span class="repo-tag">keti-synapse</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · ultra</span>
+              <button type="button" onclick="restoreArchivedNode('arch-1', 'codex resume 01a11219-ecc2-7182-a2e2-0d54080dd500', this)" class="import-btn" title="활성 트리로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="dismissNode('arch-1', 'Workbench Agent dea03ff8')" title="영구 숨김">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-node" data-node-id="arch-2" data-scope="all" data-archived="true">
+          <div class="agent-row parent">
+            <div class="agent-left">
+              <svg class="provider-icon" width="12" height="12" style="color:#64748b"><use href="#ico-codex"/></svg>
+              <span class="status-dot done"></span>
+              <span class="agent-name">codex_rev2 · 최종 재리뷰 &amp; 패치 검증</span>
+              <span class="age-tag">7.4일 전</span>
+              <span class="repo-tag">scratchpad</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · high</span>
+              <button type="button" onclick="restoreArchivedNode('arch-2', 'codex resume 01a11316-d553-7e80-8d6e-e1747e44b4ec', this)" class="import-btn" title="활성 트리로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="dismissNode('arch-2', 'codex_rev2 최종 재리뷰')" title="영구 숨김">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-node" data-node-id="arch-3" data-scope="all" data-archived="true">
+          <div class="agent-row parent">
+            <div class="agent-left">
+              <svg class="provider-icon" width="12" height="12" style="color:#64748b"><use href="#ico-codex"/></svg>
+              <span class="status-dot done"></span>
+              <span class="agent-name">Bounded Independent STATIC REVIEW</span>
+              <span class="age-tag">7.4일 전</span>
+              <span class="repo-tag">keti-synapse</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · ultra</span>
+              <button type="button" onclick="restoreArchivedNode('arch-3', 'codex resume 01a11304-996f-7521-97f5-9b556eff96ed', this)" class="import-btn" title="활성 트리로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="dismissNode('arch-3', 'STATIC REVIEW')" title="영구 숨김">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-node" data-node-id="arch-4" data-scope="all" data-archived="true">
+          <div class="agent-row parent">
+            <div class="agent-left">
+              <svg class="provider-icon" width="12" height="12" style="color:#64748b"><use href="#ico-codex"/></svg>
+              <span class="status-dot done"></span>
+              <span class="agent-name">Bounded READONLY remaining-source audit</span>
+              <span class="age-tag">7.4일 전</span>
+              <span class="repo-tag">keti-synapse</span>
+            </div>
+            <div class="agent-right">
+              <span class="model-pill codex">6.1-sol · high</span>
+              <button type="button" onclick="restoreArchivedNode('arch-4', 'codex resume 01a112fe-c5ae-7973-80a0-227be0873daf', this)" class="import-btn" title="활성 트리로 가져오기 &amp; 명령어 복사">가져오기</button>
+              <button type="button" class="dismiss-btn" onclick="dismissNode('arch-4', 'READONLY Audit')" title="영구 숨김">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. BOTTOM: COMPACT MCP & WORKER STRIP -->
+    <div class="mcp-strip">
+      <span class="mcp-chip">
+        <svg width="11" height="11" style="color:#10b981"><use href="#ico-codex"/></svg>
+        <span>codex-worker</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11"><use href="#ico-claude"/></svg>
+        <span>claude-worker</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="5" fill="currentColor"/><path d="M10.57 15.26C10.57 17.5 9.66 19.38 8.18 21.1h3.45v1.68H6.33v-1.59c1.62-1.83 2.25-3.33 2.25-5.93h1.99z" fill="#121a29"/><path d="M17.43 15.26C17.43 17.5 18.34 19.38 19.82 21.1h-3.45v1.68h5.3v-1.59c-1.62-1.83-2.25-3.33-2.25-5.93h-1.99z" fill="#121a29"/><path d="M10.57 12.74C10.57 10.5 9.66 8.62 8.18 6.9h3.45V5.22H6.33v1.59c1.62 1.83 2.25 3.33 2.25 5.93h1.99z" fill="#121a29"/><path d="M17.43 12.74C17.43 10.5 18.34 8.62 19.82 6.9h-3.45V5.22h5.3v1.59c-1.62 1.83-2.25 3.33-2.25 5.93h-1.99z" fill="#121a29"/></svg>
+        <span>Context7</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="14" height="10" viewBox="0 0 139 64" fill="currentColor" style="width:14px"><path d="M84.3504 64H48.1695V47.315L32.569 63.9989L0 63.9841V29.9515L28.31 0H67.4439V15.9214L82.6881 0H116.593V26.1874H139V64H99.1163V48.208L84.3504 64Z"/></svg>
+        <span>Mobbin</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 87.3 78"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25 29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44A9.06 9.06 0 0 0 0 53h27.5z" fill="#00ac47"/><path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.2z" fill="#ea4335"/><path d="M43.65 25 57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="M59.8 53H87.3c0-1.55-.4-3.1-1.2-4.5l-22.5-39c-.8-1.4-1.95-2.5-3.3-3.3L46.55 30z" fill="#ffba00"/><path d="M27.5 53h32.3l-13.25-23-3-5.2z" fill="#2684fc"/></svg>
+        <span>Drive</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 24 24"><path fill="#4285F4" d="M2 7v11c0 1.1.9 2 2 2h3V9.5L2 7z"/><path fill="#34A853" d="M22 7v11c0 1.1-.9 2-2 2h-3V9.5L22 7z"/><path fill="#EA4335" d="M7 20h10V9.5L12 13.5 7 9.5V20z"/><path fill="#FBBC04" d="M17 4H7C5.3 4 4 5.3 4 7l8 6 8-6c0-1.7-1.3-3-3-3z"/></svg>
+        <span>Gmail</span><span class="dot"></span>
+      </span>
+    </div>
+
+  </div>
+
+  <div id="usage-tooltip" class="hidden"></div>
+  <div id="toast-bar" class="toast-bar hidden">
+    <span id="toast-msg"></span>
+    <button type="button" id="toast-undo-btn" class="toast-undo hidden" onclick="undoLastDismiss()">실행 취소</button>
+  </div>
+
+  <script>
+    /* Safe storage wrapper so sandboxed <agent-embed> iframes NEVER throw SecurityError */
+    const memStore = {};
+    function safeGet(key, fallback) {
+      try {
+        const v = window.localStorage ? window.localStorage.getItem(key) : null;
+        return v !== null ? v : (memStore[key] ?? fallback);
+      } catch (_) {
+        return memStore[key] ?? fallback;
+      }
+    }
+    function safeSet(key, val) {
+      memStore[key] = val;
+      try {
+        if (window.localStorage) window.localStorage.setItem(key, val);
+      } catch (_) {}
+    }
+
+    /*__ACCOUNTS_JSON__*/
+    const ACCOUNTS = [
+      {
+        provider: 'antigravity',
+        name: 'Antigravity',
+        short: 'AGY',
+        windows: [
+          {
+            label: 'Gemini · 5시간',
+            shortPeriod: 'G·5h',
+            remaining: 60.3,
+            windowMinutes: 300,
+            resetsAt: Math.floor(new Date('2026-10-14T18:41:20+09:00').getTime() / 1000),
+            resetText: '18:41 리셋'
+          },
+          {
+            label: 'Claude/GPT · 5시간',
+            shortPeriod: 'C·5h',
+            remaining: 99.9,
+            windowMinutes: 300,
+            resetsAt: Math.floor(new Date('2026-10-14T19:50:21+09:00').getTime() / 1000),
+            resetText: '19:50 리셋'
+          }
+        ]
+      },
+      {
+        provider: 'codex',
+        name: 'Codex · ProMax',
+        short: 'Codex',
+        windows: [
+          {
+            label: '주간 (7일)',
+            shortPeriod: '7d',
+            remaining: 62.0,
+            windowMinutes: 10080,
+            resetsAt: 1792472678,
+            resetText: '10/20 14:04'
+          }
+        ]
+      },
+      {
+        provider: 'claude',
+        name: 'Claude · Team',
+        short: 'Claude',
+        windows: [
+          {
+            label: '세션 (5시간)',
+            shortPeriod: '5h',
+            remaining: 100.0,
+            windowMinutes: 300,
+            resetsAt: null,
+            resetText: '대기'
+          },
+          {
+            label: '전체 (7일)',
+            shortPeriod: '7d',
+            remaining: 0.0,
+            windowMinutes: 10080,
+            resetsAt: Math.floor(new Date('2026-10-17T05:00:00+09:00').getTime() / 1000),
+            resetText: '10/17 05:00'
+          },
+          {
+            label: 'Fable · 7일',
+            shortPeriod: 'F·7d',
+            remaining: 100.0,
+            windowMinutes: 10080,
+            resetsAt: Math.floor(new Date('2026-10-17T05:00:00+09:00').getTime() / 1000),
+            resetText: '10/17 05:00'
+          }
+        ]
+      }
+    ];
+
+    function clockPath(progress) {
+      if (progress === null || progress <= 0) return '';
+      if (progress >= 1) return 'M32 10 A22 22 0 1 1 32 54 A22 22 0 1 1 32 10 Z';
+      const angle = 2 * Math.PI * progress;
+      const x = (32 + 22 * Math.sin(angle)).toFixed(2);
+      const y = (32 - 22 * Math.cos(angle)).toFixed(2);
+      return `M32 32 L32 10 A22 22 0 ${progress > 0.5 ? 1 : 0} 1 ${x} ${y} Z`;
+    }
+
+    function timeProgress(w) {
+      if (!w.windowMinutes || !w.resetsAt) return null;
+      const nowSec = Date.now() / 1000;
+      return Math.max(0, Math.min(1, 1 - (w.resetsAt - nowSec) / (w.windowMinutes * 60)));
+    }
+
+    function quotaState(rem) {
+      if (rem >= 100) return { id: 'unused', label: '미사용' };
+      if (rem <= 0) return { id: 'exhausted', label: '소진 · 리셋 대기' };
+      return { id: 'in-use', label: '사용중' };
+    }
+
+    function compactRemaining(resetsAt, fallback) {
+      if (!resetsAt) return fallback || '-';
+      const sec = Math.ceil(resetsAt - Date.now() / 1000);
+      if (sec <= 0) return '곧 리셋';
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function renderQuotas() {
+      const grid = document.getElementById('quota-grid');
+      grid.innerHTML = '';
+      ACCOUNTS.forEach(acc => {
+        const span = acc.windows.length;
+        const fs = document.createElement('fieldset');
+        fs.className = 'usage-account';
+        fs.dataset.provider = acc.provider;
+        fs.style.setProperty('--span', span);
+        fs.style.setProperty('--cols', span);
+
+        const legend = document.createElement('legend');
+        legend.className = 'usage-account-heading';
+        legend.innerHTML = `<strong>${acc.name}</strong>`;
+        fs.appendChild(legend);
+
+        const inlineHead = document.createElement('span');
+        inlineHead.className = 'usage-provider-inline';
+        inlineHead.innerHTML = `<strong>${acc.short}</strong>`;
+        fs.appendChild(inlineHead);
+
+        const winWrap = document.createElement('div');
+        winWrap.className = 'usage-account-windows';
+
+        acc.windows.forEach(w => {
+          const st = quotaState(w.remaining);
+          const prog = timeProgress(w);
+          const pathD = clockPath(prog);
+          const dispPct = w.remaining >= 100 ? '100%' : w.remaining <= 0 ? '0%' : `${Math.min(Math.floor(w.remaining * 10) / 10, 99.9).toFixed(1)}%`;
+          const remCountdown = compactRemaining(w.resetsAt, w.resetText);
+          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)`;
+
+          const winEl = document.createElement('div');
+          winEl.className = `usage-window ${st.id}`;
+          winEl.innerHTML = `
+            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}">
+              <div class="usage-donut ${st.id}">
+                <svg viewBox="0 0 64 64" aria-hidden="true">
+                  <circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>
+                  <path class="usage-clock-fill" d="${pathD}"></path>
+                  <circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-track"></circle>
+                  <circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-remaining" stroke-dasharray="${w.remaining} 100" transform="rotate(-90 32 32)"></circle>
+                </svg>
+                <div class="usage-donut-center">
+                  <strong>${dispPct}</strong>
+                  <small class="usage-center-caption">남음</small>
+                  <small class="usage-center-period">${w.shortPeriod}</small>
+                </div>
+              </div>
+            </button>
+            <strong class="usage-window-title">${w.label}</strong>
+            <span class="usage-quota-state ${st.id}">${st.label}</span>
+            <span class="usage-reset">${remCountdown}</span>
+          `;
+          const btn = winEl.querySelector('.usage-gauge-button');
+          btn.addEventListener('mouseenter', e => showTip(e.currentTarget));
+          btn.addEventListener('mouseleave', hideTip);
+          btn.addEventListener('click', e => { e.stopPropagation(); showTip(e.currentTarget); });
+          winWrap.appendChild(winEl);
+        });
+
+        fs.appendChild(winWrap);
+        grid.appendChild(fs);
+      });
+    }
+
+    const tooltip = document.getElementById('usage-tooltip');
+    function showTip(anchor) {
+      tooltip.textContent = anchor.dataset.tip || '';
+      tooltip.classList.remove('hidden');
+      const r = anchor.getBoundingClientRect();
+      const left = Math.max(6, Math.min(window.innerWidth - 260, r.left + r.width / 2 - 120));
+      const top = r.bottom + 6;
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+    }
+    function hideTip() { tooltip.classList.add('hidden'); }
+    document.addEventListener('click', hideTip);
+
+    function toggleDensity() {
+      const panel = document.getElementById('usage-panel');
+      const btn = document.getElementById('density-btn');
+      const next = panel.dataset.density === 'compact' ? 'expanded' : 'compact';
+      panel.dataset.density = next;
+      btn.textContent = next === 'compact' ? '확장 게이지 전환' : '컴팩트 바 전환';
+    }
+
+    let allCollapsed = false;
+    function toggleBranch(branchId, iconId) {
+      const el = document.getElementById(branchId);
+      const ic = document.getElementById(iconId);
+      if (!el) return;
+      const hidden = el.classList.toggle('hidden');
+      if (ic) ic.textContent = hidden ? '▶' : '▼';
+    }
+
+    function toggleAllBranches() {
+      allCollapsed = !allCollapsed;
+      [['br-agy', 'ic-agy'], ['br-synapse', 'ic-synapse']].forEach(([bId, iId]) => {
+        const el = document.getElementById(bId);
+        const ic = document.getElementById(iId);
+        if (el) el.classList.toggle('hidden', allCollapsed);
+        if (ic) ic.textContent = allCollapsed ? '▶' : '▼';
+      });
+      document.getElementById('btn-toggle-all').textContent = allCollapsed ? '전체 펴기' : '전체 접기';
+    }
+
+    function toggleDetail(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('open');
+    }
+
+    /* ── WORKTREE STATE MANAGEMENT (SAFE IN SANDBOXED IFRAME!) ── */
+    const STORAGE_DISMISSED = 'agy_dismissed_nodes_v1';
+    const STORAGE_IMPORTED = 'agy_imported_nodes_v1';
+    const STORAGE_SCOPE = 'agy_tree_scope_v1';
+
+    let dismissedSet = new Set(JSON.parse(safeGet(STORAGE_DISMISSED, '[]')));
+    let importedSet = new Set(JSON.parse(safeGet(STORAGE_IMPORTED, '[]')));
+    let currentScope = safeGet(STORAGE_SCOPE, 'current');
+    let currentTab = 'active';
+    let lastDismissedId = null;
+    let toastTimer = null;
+
+    function saveState() {
+      safeSet(STORAGE_DISMISSED, JSON.stringify([...dismissedSet]));
+      safeSet(STORAGE_IMPORTED, JSON.stringify([...importedSet]));
+      safeSet(STORAGE_SCOPE, currentScope);
+    }
+
+    function showToast(msg, allowUndo = false) {
+      const bar = document.getElementById('toast-bar');
+      const msgEl = document.getElementById('toast-msg');
+      const undoBtn = document.getElementById('toast-undo-btn');
+      msgEl.textContent = msg;
+      undoBtn.classList.toggle('hidden', !allowUndo);
+      bar.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { bar.classList.add('hidden'); }, 3800);
+    }
+
+    function applyTreeFilters() {
+      const nodes = document.querySelectorAll('.tree-node');
+      let activeRootCount = 0;
+
+      nodes.forEach(node => {
+        const id = node.dataset.nodeId;
+        const nodeScope = node.dataset.scope || 'current';
+        const isArchived = node.dataset.archived === 'true';
+
+        if (dismissedSet.has(id)) {
+          node.classList.add('hidden');
+          return;
+        }
+
+        if (isArchived && !importedSet.has(id)) {
+          node.classList.remove('hidden');
+          return;
+        }
+
+        const inScope = (currentScope === 'all') || (nodeScope === 'current') || importedSet.has(id);
+        node.classList.toggle('hidden', !inScope);
+
+        if (inScope && node.parentElement && node.parentElement.id === 'view-active') {
+          activeRootCount++;
+        }
+      });
+
+      document.getElementById('badge-active-cnt').textContent = activeRootCount;
+      document.getElementById('scope-current').classList.toggle('active', currentScope === 'current');
+      document.getElementById('scope-all').classList.toggle('active', currentScope === 'all');
+
+      const restoreBtn = document.getElementById('btn-restore-hidden');
+      if (dismissedSet.size > 0) {
+        restoreBtn.textContent = `숨김 ${dismissedSet.size} 복원`;
+        restoreBtn.classList.remove('hidden');
+      } else {
+        restoreBtn.classList.add('hidden');
+      }
+    }
+
+    function dismissNode(nodeId, label) {
+      dismissedSet.add(nodeId);
+      lastDismissedId = nodeId;
+      saveState();
+      applyTreeFilters();
+      showToast(`'${label}' 제거됨 (새로고침 시에도 숨김 유지)`, true);
+    }
+
+    function undoLastDismiss() {
+      if (!lastDismissedId) return;
+      dismissedSet.delete(lastDismissedId);
+      lastDismissedId = null;
+      saveState();
+      applyTreeFilters();
+      document.getElementById('toast-bar').classList.add('hidden');
+    }
+
+    function restoreAllDismissed() {
+      dismissedSet.clear();
+      saveState();
+      applyTreeFilters();
+      showToast('숨김 처리된 모든 세션을 복원했습니다.');
+    }
+
+    function importOrCopySession(nodeId, cmdText, btn) {
+      try { if (navigator.clipboard) navigator.clipboard.writeText(cmdText); } catch (_) {}
+      importedSet.add(nodeId);
+      saveState();
+      btn.textContent = '✓ 가져옴';
+      btn.className = 'open-btn codex';
+      applyTreeFilters();
+      showToast(`현재 작업 범위로 가져오고 명령어를 복사했습니다: ${cmdText}`);
+    }
+
+    function restoreArchivedNode(nodeId, cmdText, btn) {
+      try { if (navigator.clipboard) navigator.clipboard.writeText(cmdText); } catch (_) {}
+      importedSet.add(nodeId);
+      const node = document.querySelector(`.tree-node[data-node-id="${nodeId}"]`);
+      if (node) {
+        node.dataset.archived = 'false';
+        node.dataset.scope = 'current';
+        document.getElementById('view-active').appendChild(node);
+      }
+      saveState();
+      switchTab('active');
+      applyTreeFilters();
+      showToast(`보관함 세션을 활성 트리로 가져오고 명령어를 복사했습니다.`);
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      document.getElementById('tab-active').classList.toggle('active', tab === 'active');
+      document.getElementById('tab-archive').classList.toggle('active', tab === 'archive');
+      document.getElementById('view-active').classList.toggle('hidden', tab !== 'active');
+      document.getElementById('view-archive').classList.toggle('hidden', tab !== 'archive');
+    }
+
+    function setScope(scope) {
+      currentScope = scope;
+      saveState();
+      applyTreeFilters();
+      showToast(scope === 'current' ? '범위: 현재 워크스페이스 (/dev) 및 가져온 세션' : '범위: 전체 레포지토리 (keti-synapse, tom_and_gerri 등 포함)');
+    }
+
+    function refreshByScope() {
+      const btn = document.getElementById('btn-refresh-scope');
+      btn.classList.add('spinning');
+      renderQuotas();
+      applyTreeFilters();
+      setTimeout(() => {
+        btn.classList.remove('spinning');
+        const scopeLabel = currentScope === 'current' ? '현재 범위(/dev)' : '전체 레포';
+        showToast(`${scopeLabel} 기준으로 새로고침 완료 (제거된 ${dismissedSet.size}개 항목 제외)`);
+      }, 450);
+    }
+
+    renderQuotas();
+    applyTreeFilters();
+  </script>
+</body>
+</html>

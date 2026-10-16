@@ -1,0 +1,3292 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    /* Prevent Antigravity's injected click/key telemetry listener from re-rendering parent with fresh {} cssVariables and resetting iframe srcdoc */
+    (function() {
+      const origDocAdd = Document.prototype.addEventListener;
+      Document.prototype.addEventListener = function(type, fn, opts) {
+        if ((type === 'click' || type === 'keydown' || type === 'keyup') && fn && String(fn).indexOf('sendInteraction') !== -1) {
+          return;
+        }
+        return origDocAdd.call(this, type, fn, opts);
+      };
+    })();
+  </script>
+  <style>
+    /* Non-cyclic semantic variables for both Dark Theme (default) and Light Theme (html.light) */
+    html, body {
+      --bg: var(--vscode-editor-background, var(--background, #0b111e));
+      --panel: var(--vscode-sideBar-background, var(--card, #111827));
+      --surface: rgba(148, 163, 184, 0.08);
+      --surface-2: rgba(148, 163, 184, 0.16);
+      --bdr: var(--border, rgba(148, 163, 184, 0.24));
+      --bg-card: var(--panel);
+      --text: var(--vscode-editor-foreground, var(--foreground, #ecf2f8));
+      --muted: var(--muted-foreground, #94a3b8);
+      --blue: #3b82f6;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #f43f5e;
+      --claude: #D97757;
+      --agy: #818cf8;
+      --bolt-cut: #1e293b;
+      --shell-bg: linear-gradient(180deg, rgba(30, 41, 59, 0.35) 0%, rgba(15, 23, 42, 0.55) 100%), var(--panel);
+      --shell-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    html.light, html.light body {
+      --bg: var(--vscode-editor-background, var(--background, #f8fafc));
+      --panel: var(--vscode-sideBar-background, var(--card, #ffffff));
+      --surface: #f1f5f9;
+      --surface-2: #e2e8f0;
+      --bdr: #cbd5e1;
+      --text: var(--vscode-editor-foreground, var(--foreground, #0f172a));
+      --muted: var(--muted-foreground, #475569);
+      --blue: #2563eb;
+      --green: #059669;
+      --amber: #d97706;
+      --red: #e11d48;
+      --claude: #c25938;
+      --agy: #4f46e5;
+      --bolt-cut: #fef3c7;
+      --shell-bg: #ffffff;
+      --shell-shadow: 0 2px 10px -2px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html {
+      background: var(--bg);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "NanumSquareRound", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 2px;
+      font-size: 12px;
+      line-height: 1.35;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .widget-shell {
+      background: var(--shell-bg);
+      border: 1px solid var(--bdr);
+      border-radius: 10px;
+      padding: 7px 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+      box-shadow: var(--shell-shadow);
+    }
+    body.standalone-web {
+      min-height: 100vh;
+      padding: 0 12px;
+    }
+    body.standalone-web .widget-shell {
+      max-width: 960px;
+      margin: 12px auto;
+      padding: 12px;
+    }
+    .remote-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1.5px 7px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.11);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      white-space: nowrap;
+    }
+    .route-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1.5px 7px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.13);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.32);
+      white-space: nowrap;
+    }
+    .sub-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 2.5px;
+      font-size: 8.5px;
+      font-weight: 700;
+      padding: 0.5px 5px;
+      border-radius: 4px;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .sub-badge.agy {
+      background: rgba(129, 140, 248, 0.14);
+      color: #a5b4fc;
+      border: 1px solid rgba(129, 140, 248, 0.32);
+    }
+    .sub-badge.direct {
+      background: rgba(16, 185, 129, 0.13);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .sub-badge.direct-claude {
+      background: rgba(217, 119, 87, 0.14);
+      color: #f3a68e;
+      border: 1px solid rgba(217, 119, 87, 0.32);
+    }
+    #view-archive {
+      max-height: 175px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-right: 2px;
+    }
+
+    /* ── 1. AOH QUOTA PANEL (바깥 링: 잔여 한도 / 안쪽 원: 기간 진행 시계 파이) ── */
+    .usage-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+    }
+    .usage-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-height: 22px;
+    }
+    .usage-toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .usage-hint {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-toolbar-btns {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: none;
+    }
+    .mini-btn {
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid var(--bdr);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .mini-btn:hover { background: var(--surface-2); }
+
+    .usage-panel-body {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 0;
+      width: 100%;
+    }
+    @media (max-width: 480px) {
+      .usage-panel-body {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    fieldset.usage-account {
+      min-width: 0;
+      min-inline-size: 0;
+      margin: 0;
+      border: 1px solid var(--bdr);
+      border-radius: 7px;
+      padding: 4px 4px 5px;
+      background: var(--surface);
+      grid-column: span 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    fieldset.usage-account[data-provider="antigravity"] { --accent: #60a5fa; border-color: rgba(96, 165, 250, 0.45); }
+    fieldset.usage-account[data-provider="codex"] { --accent: var(--green); border-color: rgba(16, 185, 129, 0.45); }
+    fieldset.usage-account[data-provider="claude"] { --accent: #df934a; border-color: rgba(223, 147, 74, 0.45); }
+
+    legend.usage-account-heading {
+      width: auto;
+      max-width: 100%;
+      padding: 0 4px;
+      margin: 0 auto 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 10px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    legend.usage-account-heading > strong {
+      color: var(--accent, var(--text));
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-account-windows {
+      display: grid;
+      grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+      gap: 2px;
+      min-width: 0;
+    }
+    .usage-window {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      text-align: center;
+    }
+    .usage-gauge-button {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .usage-gauge-button:hover { background: var(--surface-2); }
+
+    .usage-donut {
+      position: relative;
+      width: 52px;
+      height: 52px;
+      flex: none;
+      color: var(--muted);
+    }
+    .usage-donut.unused { color: var(--blue); }
+    .usage-donut.in-use { color: var(--green); }
+    .usage-donut.exhausted { color: var(--red); }
+    .usage-donut > svg {
+      width: 100%;
+      height: 100%;
+      stroke-width: 5;
+      stroke-linecap: butt;
+      fill: none;
+    }
+    .usage-ring-track { stroke: var(--bdr); }
+    .usage-ring-remaining { stroke: currentColor; }
+    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); stroke-width: 2.2; }
+    .usage-clock-background { fill: #7397c2; fill-opacity: 0.18; stroke: none; }
+    .usage-clock-fill { fill: #436f9f; fill-opacity: 0.85; stroke: none; }
+
+    .usage-donut-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5px;
+      pointer-events: none;
+      color: var(--text);
+    }
+    .usage-donut-center > strong {
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.4px;
+      font-variant-numeric: tabular-nums;
+    }
+    .usage-donut-center > .usage-center-caption {
+      font-size: 6.5px;
+      line-height: 1.05;
+      color: var(--muted);
+    }
+    .usage-center-period {
+      display: inline-block;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 7.5px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.2px;
+    }
+    .usage-center-period.p-5h { color: #38bdf8; }
+    .usage-center-period.p-7d { color: #a78bfa; }
+    html.light .usage-center-period.p-5h { color: #0284c7; }
+    html.light .usage-center-period.p-7d { color: #6d28d9; }
+
+    .compact-pool-lead { display: none; }
+
+    .acc-head-ico, .acc-inline-ico {
+      flex: none;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    fieldset.usage-account[data-provider="codex"] .acc-head-ico,
+    fieldset.usage-account[data-provider="codex"] .acc-inline-ico {
+      color: var(--green);
+    }
+
+    .win-model-icons {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1px;
+      line-height: 1;
+    }
+    .win-ico {
+      flex: none;
+      display: inline-block;
+    }
+    .win-ico.codex-tint {
+      color: var(--green);
+    }
+    .ico-pipe {
+      display: inline-block;
+      width: 1px;
+      height: 8.5px;
+      background: rgba(148, 163, 184, 0.55);
+      margin: 0 0.5px;
+      flex: none;
+    }
+    html.light .ico-pipe {
+      background: rgba(100, 116, 139, 0.45);
+    }
+
+    /* Flat inline row under each donut gauge — ONLY tight model icon(s) */
+    .usage-window-title {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 2px;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      line-height: 1;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+
+    .usage-quota-state {
+      font-size: 8.5px;
+      line-height: 1.15;
+      font-weight: 500;
+    }
+    .usage-quota-state.unused { color: var(--blue); }
+    .usage-quota-state.in-use { color: var(--green); }
+    .usage-quota-state.exhausted { color: var(--red); }
+
+    .usage-reset {
+      font-size: 8.5px;
+      line-height: 1.2;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    /* ── AOH COMPACT DENSITY MODE (Ultra-slim 1-line docked top bar, zero overlap, zero scrollbar) ── */
+    .usage-panel[data-density="compact"] {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 2px 5px;
+      background: var(--surface);
+      border: 1px solid var(--bdr);
+      border-radius: 7px;
+      min-height: 26px;
+      overflow: hidden;
+    }
+    .usage-panel[data-density="compact"] .usage-toolbar {
+      order: 2;
+      min-height: 20px;
+      gap: 3px;
+      flex: none;
+    }
+    .usage-panel[data-density="compact"] #density-btn {
+      height: 20px;
+      padding: 0 5px;
+      font-size: 9px;
+    }
+    .usage-panel[data-density="compact"] .usage-hint,
+    .usage-panel[data-density="compact"] .remote-pill,
+    .usage-panel[data-density="compact"] .route-pill { display: none !important; }
+    .usage-panel[data-density="compact"] .usage-panel-body {
+      order: 1;
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      justify-content: flex-start;
+      gap: 4px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden !important;
+      padding: 0;
+    }
+    .usage-panel[data-density="compact"] fieldset.usage-account {
+      flex-direction: row !important;
+      align-items: center !important;
+      justify-content: flex-start !important;
+      gap: 4px !important;
+      padding: 1px 5px !important;
+      min-height: 20px !important;
+      height: 20px !important;
+      border-radius: 4px;
+      flex: 0 0 auto !important;
+      min-width: max-content !important;
+      width: auto !important;
+      overflow: hidden;
+    }
+    /* When Claude has both 5h and 7d windows in compact mode, show only the 7d window to save horizontal space */
+    .usage-panel[data-density="compact"] fieldset.usage-account[data-provider="claude"] .usage-window:first-child:not(:last-child) {
+      display: none !important;
+    }
+    .usage-panel[data-density="compact"] legend.usage-account-heading { display: none !important; }
+    .usage-provider-inline {
+      display: none;
+      font-size: 8.5px;
+      font-weight: 800;
+      color: var(--accent, var(--text));
+      white-space: nowrap;
+      align-items: center;
+      gap: 2px;
+    }
+    .usage-panel[data-density="compact"] .usage-provider-inline { display: inline-flex !important; }
+    .usage-panel[data-density="compact"] .compact-pool-lead {
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
+      margin-right: 1px;
+    }
+    .usage-panel[data-density="compact"] .compact-pool-lead.pool-sep {
+      margin-left: 3px;
+      padding-left: 4px;
+      border-left: 1px solid var(--bdr);
+    }
+    .usage-panel[data-density="compact"] .usage-account-windows {
+      display: inline-flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 5px !important;
+      width: auto !important;
+      flex: none !important;
+    }
+    .usage-panel[data-density="compact"] .usage-window {
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 2px !important;
+    }
+    .usage-panel[data-density="compact"] .usage-gauge-button {
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 2.5px !important;
+      padding: 0 !important;
+    }
+    .usage-panel[data-density="compact"] .usage-window-title,
+    .usage-panel[data-density="compact"] .usage-quota-state,
+    .usage-panel[data-density="compact"] .usage-reset,
+    .usage-panel[data-density="compact"] .usage-center-caption { display: none !important; }
+    .usage-panel[data-density="compact"] .usage-donut {
+      width: auto !important;
+      height: 16px !important;
+      display: inline-flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 2.5px !important;
+      position: static !important;
+    }
+    .usage-panel[data-density="compact"] .usage-donut > svg {
+      width: 13px !important;
+      height: 13px !important;
+      stroke-width: 7 !important;
+      position: static !important;
+      flex: none;
+    }
+    .usage-panel[data-density="compact"] .usage-donut-center {
+      position: static !important;
+      inset: auto !important;
+      display: inline-flex !important;
+      flex-direction: row !important;
+      align-items: baseline !important;
+      gap: 2px !important;
+    }
+    .usage-panel[data-density="compact"] .usage-donut-center > strong {
+      font-size: 9px !important;
+      line-height: 1 !important;
+      font-weight: 700 !important;
+    }
+    .usage-panel[data-density="compact"] .usage-center-period {
+      display: inline !important;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8px !important;
+      line-height: 1 !important;
+      font-weight: 700 !important;
+      padding: 0 !important;
+      background: transparent !important;
+    }
+    .usage-panel[data-density="compact"] .usage-center-period.p-5h { color: #38bdf8 !important; }
+    .usage-panel[data-density="compact"] .usage-center-period.p-7d { color: #a78bfa !important; }
+    html.light .usage-panel[data-density="compact"] .usage-center-period.p-5h { color: #0284c7 !important; }
+    html.light .usage-panel[data-density="compact"] .usage-center-period.p-7d { color: #6d28d9 !important; }
+
+    /* ── 2. NARROW-SAFE AGENT EXECUTION TREE ── */
+    .tree-section {
+      border: 1px solid var(--bdr);
+      border-radius: 7px;
+      padding: 6px 7px;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .tree-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--bdr);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .tree-header-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 4px 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      min-width: 0;
+      transition: background 0.12s;
+    }
+    .agent-row:hover { background: var(--surface-2); }
+    .agent-row.parent { background: rgba(128, 145, 175, 0.07); }
+    .agent-row.parent:hover { background: var(--surface-2); }
+    .agent-row.child { background: rgba(128, 145, 175, 0.025); }
+
+    .agent-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      flex: 1;
+    }
+    /* Hierarchy decoration must never consume a row column. */
+    .tree-branch-char { display: none; }
+    .tree-children {
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      background: rgba(128, 145, 175, 0.02);
+    }
+    .provider-icon {
+      width: 12px;
+      height: 12px;
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    @keyframes dotBreathBlue {
+      0%, 100% { background: #3b82f6; box-shadow: 0 0 1px rgba(59, 130, 246, 0.18); transform: scale(0.98); opacity: 0.52; }
+      50% { background: #60a5fa; box-shadow: 0 0 4px rgba(96, 165, 250, 0.38); transform: scale(1.03); opacity: 0.85; }
+    }
+    @keyframes dotBreathGreen {
+      0%, 100% { background: #10b981; box-shadow: 0 0 1px rgba(16, 185, 129, 0.14); transform: scale(0.98); opacity: 0.48; }
+      50% { background: #34d399; box-shadow: 0 0 3.5px rgba(52, 211, 153, 0.32); transform: scale(1.03); opacity: 0.80; }
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      flex: none;
+    }
+    .status-dot.busy {
+      background: #3b82f6;
+      animation: dotBreathBlue 2.0s ease-in-out infinite;
+    }
+    .status-dot.idle-fresh, .status-dot.running {
+      background: #10b981;
+      animation: dotBreathGreen 3.0s ease-in-out infinite;
+    }
+    /* 브리딩 종료 후 경과 시간에 따라 익어가는 단계별 상태불 (초록 → 노랑 → 주황 → 빨강) */
+    .status-dot.age-green {
+      background: #10b981;
+      box-shadow: none;
+      opacity: 0.86;
+    }
+    .status-dot.age-yellow, .status-dot.idle {
+      background: #facc15;
+      box-shadow: 0 0 4px rgba(250, 204, 21, 0.28);
+    }
+    .status-dot.age-orange {
+      background: #fb923c;
+      box-shadow: 0 0 4px rgba(251, 146, 60, 0.28);
+    }
+    .status-dot.age-red, .status-dot.done {
+      background: #f87171;
+      box-shadow: 0 0 4px rgba(248, 113, 113, 0.28);
+    }
+
+    .agent-name {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .agent-row.child .agent-name { font-weight: 500; }
+
+    .agent-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+    }
+    .model-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      padding: 1.5px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--bdr);
+      background: rgba(15, 23, 42, 0.35);
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+    }
+    .model-pill.argon { color: #60a5fa; border-color: rgba(96, 165, 250, 0.3); }
+    .model-pill.flash { color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); }
+    .model-pill.claude { color: #D97757; border-color: rgba(217, 119, 87, 0.35); }
+    .model-pill.codex { color: #34d399; border-color: rgba(52, 211, 153, 0.3); }
+
+    /* Pure SVG Lightning Speed Badges (1x Bolt = Fast, 3x Overlapping Bolts = Ultra Fast) */
+    .bolt-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 18px;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: rgba(245, 158, 11, 0.13);
+      border: 1px solid rgba(245, 158, 11, 0.32);
+      color: #fbbf24;
+      flex: none;
+    }
+    .bolt-badge.ultra {
+      padding: 0 5px;
+      background: rgba(245, 158, 11, 0.18);
+      border-color: rgba(251, 191, 36, 0.48);
+      color: #fde047;
+    }
+
+    .ctx-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      color: var(--muted);
+      white-space: nowrap;
+      min-width: 64px;
+      justify-content: flex-end;
+    }
+    .ctx-bar {
+      width: 26px;
+      height: 4px;
+      border-radius: 99px;
+      background: rgba(148, 163, 184, 0.2);
+      overflow: hidden;
+      flex: none;
+    }
+    @media (max-width: 420px) {
+      .ctx-bar { display: none; }
+    }
+    .ctx-bar-fill { height: 100%; border-radius: 99px; }
+
+    .open-btn {
+      height: 19px;
+      padding: 0 5px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(96, 165, 250, 0.35);
+      background: rgba(59, 130, 246, 0.14);
+      color: #60a5fa;
+      cursor: pointer;
+      white-space: nowrap;
+      flex: none;
+    }
+    .open-btn:hover { background: rgba(59, 130, 246, 0.25); }
+    .open-btn.codex {
+      border-color: rgba(16, 185, 129, 0.35);
+      background: rgba(16, 185, 129, 0.14);
+      color: #34d399;
+    }
+    .open-btn.codex:hover { background: rgba(16, 185, 129, 0.25); }
+    .open-btn.claude {
+      border-color: rgba(217, 119, 87, 0.4);
+      background: rgba(217, 119, 87, 0.14);
+      color: #D97757;
+    }
+
+    .agent-detail {
+      display: none;
+      margin: 1px 0 3px 20px;
+      padding: 5px 7px;
+      border-radius: 5px;
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid var(--bdr);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .agent-detail.open { display: block; }
+    .agent-detail-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    /* ── WORKTREE CONTROLS: SCOPE FILTER, TABS, IMPORT & DISMISS (✕) ── */
+    .tree-controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--bdr);
+    }
+    .seg-group {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--bdr);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .seg-btn {
+      height: 20px;
+      padding: 0 7px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 9.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 3.5px;
+      transition: all 0.12s;
+    }
+    .seg-btn:hover {
+      color: var(--text);
+      background: rgba(148, 163, 184, 0.10);
+    }
+    .seg-btn.active {
+      background: rgba(59, 130, 246, 0.22);
+      border-color: rgba(96, 165, 250, 0.45);
+      color: #93c5fd;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.28);
+    }
+    #tab-active.seg-btn.active {
+      background: rgba(16, 185, 129, 0.20);
+      border-color: rgba(16, 185, 129, 0.45);
+      color: #6ee7b7;
+    }
+    .tab-badge {
+      font-size: 8.5px;
+      padding: 0 4.5px;
+      border-radius: 99px;
+      background: rgba(148, 163, 184, 0.18);
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }
+    .seg-btn.active .tab-badge {
+      background: rgba(59, 130, 246, 0.30);
+      color: #bfdbfe;
+    }
+    #tab-active.seg-btn.active .tab-badge {
+      background: rgba(16, 185, 129, 0.28);
+      color: #a7f3d0;
+    }
+
+    .icon-btn {
+      height: 21px;
+      padding: 0 6px;
+      border-radius: 5px;
+      border: 1px solid var(--bdr);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 9.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+    .icon-btn:hover { border-color: rgba(148, 163, 184, 0.45); }
+    .icon-btn.spinning svg { animation: spin 0.55s linear; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .dismiss-btn {
+      width: 18px;
+      height: 19px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex: none;
+      opacity: 0.65;
+      transition: all 0.12s;
+    }
+    .agent-row:hover .dismiss-btn { opacity: 1; }
+    .dismiss-btn:hover {
+      background: rgba(239, 68, 68, 0.16);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #f87171;
+    }
+
+    .import-btn {
+      height: 19px;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 600;
+      border: 1px solid rgba(168, 85, 247, 0.4);
+      background: rgba(168, 85, 247, 0.14);
+      color: #c084fc;
+      cursor: pointer;
+      white-space: nowrap;
+      flex: none;
+    }
+    .import-btn:hover { background: rgba(168, 85, 247, 0.25); }
+
+    .repo-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--muted);
+      white-space: nowrap;
+      flex: none;
+    }
+    .age-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(245, 158, 11, 0.12);
+      color: #fbbf24;
+      white-space: nowrap;
+      flex: none;
+    }
+
+    .cmd-box {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 5px;
+      margin: 2px 0 3px;
+      border-radius: 6px;
+      border: 1px solid rgba(168, 85, 247, 0.45);
+      background: rgba(168, 85, 247, 0.10);
+      min-width: 0;
+    }
+    .cmd-box-label {
+      font-size: 9px;
+      font-weight: 700;
+      color: #c084fc;
+      white-space: nowrap;
+      flex: none;
+    }
+    .cmd-box-label.ok { color: var(--green); }
+    .cmd-box-input {
+      flex: 1;
+      min-width: 0;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 4px;
+      border: 1px solid var(--bdr);
+      background: rgba(15, 23, 42, 0.6);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      user-select: all;
+      -webkit-user-select: all;
+    }
+    .cmd-box-input:focus { outline: 1px solid #a855f7; }
+    .tree-node.imported > .agent-row {
+      box-shadow: inset 2px 0 0 #a855f7;
+      background: rgba(168, 85, 247, 0.08);
+    }
+    .tree-node.flash > .agent-row { animation: importFlash 1.4s ease-out; }
+    @keyframes importFlash { from { background: rgba(168, 85, 247, 0.38); } }
+    .pin-tag {
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(168, 85, 247, 0.16);
+      color: #c084fc;
+      white-space: nowrap;
+      flex: none;
+    }
+
+    .toast-bar {
+      position: fixed;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 95;
+      background: #1e293b;
+      border: 1px solid rgba(96, 165, 250, 0.4);
+      color: #f8fafc;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+      white-space: nowrap;
+    }
+    .toast-undo {
+      border: 0;
+      background: rgba(59, 130, 246, 0.22);
+      color: #60a5fa;
+      font-size: 9.5px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+
+    /* ── 3. BOTTOM MCP & WORKER STRIP ── */
+    .mcp-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      padding-top: 2px;
+    }
+    .mcp-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--bdr);
+      background: var(--surface);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .mcp-chip svg { width: 11px; height: 11px; flex: none; }
+    .mcp-chip .dot { width: 5px; height: 5px; border-radius: 99px; background: var(--green); }
+
+    #usage-tooltip {
+      position: fixed;
+      z-index: 99;
+      max-width: 280px;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 6px;
+      padding: 6px 9px;
+      font-size: 10px;
+      line-height: 1.5;
+      white-space: pre-line;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+      pointer-events: none;
+    }
+    #view-active, #view-archive {
+      min-height: 0;
+    }
+    /* Crisp Light Theme overrides so badges, pills, gauges, and controls never look muddy or washed out */
+    html.light .remote-pill {
+      background: rgba(2, 132, 199, 0.10);
+      color: #0369a1;
+      border-color: rgba(2, 132, 199, 0.30);
+    }
+    html.light .route-pill {
+      background: rgba(5, 150, 105, 0.10);
+      color: #047857;
+      border-color: rgba(5, 150, 105, 0.30);
+    }
+    html.light .sub-badge.agy {
+      background: rgba(79, 70, 229, 0.10);
+      color: #4338ca;
+      border-color: rgba(79, 70, 229, 0.30);
+    }
+    html.light .sub-badge.direct {
+      background: rgba(5, 150, 105, 0.10);
+      color: #047857;
+      border-color: rgba(5, 150, 105, 0.30);
+    }
+    html.light .sub-badge.direct-claude {
+      background: rgba(194, 89, 56, 0.12);
+      color: #9a3412;
+      border-color: rgba(194, 89, 56, 0.32);
+    }
+    html.light fieldset.usage-account[data-provider="antigravity"] {
+      --accent: #1d4ed8;
+      border-color: rgba(37, 99, 235, 0.35);
+      background: rgba(37, 99, 235, 0.03);
+    }
+    html.light fieldset.usage-account[data-provider="codex"] {
+      --accent: #047857;
+      border-color: rgba(5, 150, 105, 0.35);
+      background: rgba(5, 150, 105, 0.03);
+    }
+    html.light fieldset.usage-account[data-provider="claude"] {
+      --accent: #c2410c;
+      border-color: rgba(194, 65, 12, 0.35);
+      background: rgba(194, 65, 12, 0.03);
+    }
+    html.light .usage-clock-background { fill: #64748b; fill-opacity: 0.15; }
+    html.light .usage-clock-fill { fill: #3b82f6; fill-opacity: 0.28; }
+    html.light .seg-group {
+      background: #e2e8f0;
+      border-color: #cbd5e1;
+    }
+    html.light .seg-btn.active {
+      background: #dbeafe;
+      border-color: rgba(37, 99, 235, 0.45);
+      color: #1d4ed8;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    html.light #tab-active.seg-btn.active {
+      background: #d1fae5;
+      border-color: rgba(5, 150, 105, 0.45);
+      color: #047857;
+    }
+    html.light .seg-btn.active .tab-badge {
+      background: rgba(37, 99, 235, 0.18);
+      color: #1e40af;
+    }
+    html.light #tab-active.seg-btn.active .tab-badge {
+      background: rgba(5, 150, 105, 0.18);
+      color: #065f46;
+    }
+    html.light .agent-row.parent {
+      background: rgba(15, 23, 42, 0.035);
+    }
+    html.light .agent-row:hover {
+      background: rgba(15, 23, 42, 0.065);
+    }
+    html.light .model-pill {
+      background: #ffffff;
+    }
+    html.light .model-pill.argon {
+      color: #1d4ed8;
+      border-color: rgba(37, 99, 235, 0.35);
+      background: rgba(37, 99, 235, 0.06);
+    }
+    html.light .model-pill.flash {
+      color: #b45309;
+      border-color: rgba(217, 119, 6, 0.35);
+      background: rgba(245, 158, 11, 0.08);
+    }
+    html.light .model-pill.claude {
+      color: #9a3412;
+      border-color: rgba(194, 89, 56, 0.38);
+      background: rgba(217, 119, 87, 0.08);
+    }
+    html.light .model-pill.codex {
+      color: #047857;
+      border-color: rgba(5, 150, 105, 0.35);
+      background: rgba(16, 185, 129, 0.08);
+    }
+    html.light .bolt-badge {
+      background: #fef3c7;
+      border-color: rgba(217, 119, 6, 0.45);
+      color: #d97706;
+    }
+    html.light .bolt-badge.ultra {
+      background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+      border-color: rgba(180, 83, 9, 0.55);
+      color: #b45309;
+    }
+    html.light .open-btn {
+      background: rgba(37, 99, 235, 0.08);
+      border-color: rgba(37, 99, 235, 0.35);
+      color: #1d4ed8;
+    }
+    html.light .open-btn.codex {
+      background: rgba(5, 150, 105, 0.08);
+      border-color: rgba(5, 150, 105, 0.35);
+      color: #047857;
+    }
+    html.light .open-btn.claude {
+      background: rgba(194, 89, 56, 0.10);
+      border-color: rgba(194, 89, 56, 0.38);
+      color: #9a3412;
+    }
+    html.light .import-btn {
+      background: rgba(126, 34, 206, 0.08);
+      border-color: rgba(126, 34, 206, 0.35);
+      color: #6b21a8;
+    }
+    html.light .age-tag {
+      background: rgba(217, 119, 6, 0.12);
+      color: #b45309;
+    }
+    html.light .agent-detail {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #334155;
+    }
+    html.light .cmd-box-input {
+      background: #ffffff;
+      color: #0f172a;
+    }
+    html.light .mcp-chip {
+      background: #ffffff;
+      border-color: #cbd5e1;
+      color: #1e293b;
+    }
+    /* Wide-screen / Artifact Tab responsive expansion so the widget never looks tiny on large viewports */
+    @media (min-width: 640px) {
+      body { padding: 8px 10px; font-size: 13px; }
+      .widget-shell { padding: 14px 16px; gap: 11px; border-radius: 14px; }
+      .remote-pill, .route-pill { font-size: 10.5px; padding: 2.5px 9px; }
+      .usage-hint { font-size: 11px; }
+      .mini-btn, .icon-btn, .seg-btn { font-size: 10.5px; height: 24px; padding: 0 9px; }
+      .usage-panel-body { gap: 8px; }
+      fieldset.usage-account { padding: 7px 8px 8px; border-radius: 9px; }
+      legend.usage-account-heading { font-size: 11.5px; margin-bottom: 4px; }
+      .usage-donut { width: 64px; height: 64px; }
+      .usage-donut-center > strong { font-size: 13px; }
+      .usage-donut-center > small { font-size: 8.5px; }
+      .usage-window-title { font-size: 11px; margin-top: 2px; }
+      .usage-quota-state, .usage-reset { font-size: 9.5px; }
+      .tree-section { padding: 10px 12px; gap: 7px; border-radius: 10px; }
+      .tree-header { font-size: 12.5px; padding-bottom: 6px; }
+      .agent-row { padding: 6px 8px; border-radius: 6px; }
+      .agent-name { font-size: 12px; }
+      .sub-badge { font-size: 9.5px; padding: 1px 6px; }
+      .model-pill, .ctx-pill { font-size: 10.5px; }
+      .open-btn, .import-btn { height: 22px; padding: 0 8px; font-size: 10.5px; }
+      .agent-detail { font-size: 10.5px; padding: 7px 10px; }
+      #view-archive { max-height: 440px; }
+      .mcp-chip { font-size: 11px; padding: 3px 8px; }
+    }
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      height: 15px;
+      padding: 0 5px;
+      border-radius: 99px;
+      font-size: 8.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      flex: none;
+    }
+    .state-pill.running {
+      background: rgba(16, 185, 129, 0.16);
+      border: 1px solid rgba(16, 185, 129, 0.42);
+      color: #34d399;
+    }
+    .state-pill.closed {
+      background: rgba(148, 163, 184, 0.14);
+      border: 1px solid rgba(148, 163, 184, 0.30);
+      color: var(--muted);
+    }
+    html.light .state-pill.running {
+      background: rgba(5, 150, 105, 0.12);
+      border-color: rgba(5, 150, 105, 0.38);
+      color: #047857;
+    }
+    .codex-direct-bar {
+      position: fixed;
+      bottom: calc(42px + env(safe-area-inset-bottom, 0px));
+      left: 12px;
+      right: 12px;
+      z-index: 92;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border-radius: 9px;
+      border: 1px solid rgba(16, 185, 129, 0.55);
+      background: rgba(15, 23, 42, 0.96);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(16, 185, 129, 0.18);
+      min-width: 0;
+    }
+    html.light .codex-direct-bar {
+      background: rgba(255, 255, 255, 0.97);
+      border-color: rgba(5, 150, 105, 0.45);
+      box-shadow: 0 10px 26px rgba(15, 23, 42, 0.16);
+    }
+    .codex-popover-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+    }
+    .codex-popover-body {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      min-width: 0;
+    }
+    .codex-popover-body .cmd-box-input {
+      height: 28px;
+      font-size: 11.5px;
+      padding: 0 9px;
+      flex: 1;
+      min-width: 120px;
+    }
+    .widget-shell.popover-open,
+    .widget-frame.codex-popover-open,
+    body.codex-popover-open .widget-frame {
+      padding-bottom: max(92px, var(--codex-popover-space, 128px)) !important;
+    }
+    @media (max-width: 360px) {
+      .codex-popover-head, .codex-popover-body { flex-wrap: wrap; }
+    }
+    .codex-direct-target {
+      font-size: 10px;
+      font-weight: 700;
+      color: #34d399;
+      padding: 1.5px 6px;
+      border-radius: 4px;
+      background: rgba(16, 185, 129, 0.15);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    html.light .codex-direct-target { color: #047857; }
+    .brand-icon {
+      width: 15px;
+      height: 15px;
+      flex: none;
+      display: block;
+    }
+    .hidden { display: none !important; }
+
+    /* Expanded cards share the row in proportion to their quota windows. */
+    .usage-panel:not([data-density="compact"]) .usage-panel-body {
+      display: flex !important;
+      flex-wrap: nowrap;
+      gap: 6px;
+      align-items: stretch;
+    }
+    .usage-panel:not([data-density="compact"]) fieldset.usage-account {
+      flex: var(--cols, 1) 1 0% !important;
+      min-width: 0;
+      min-height: 108px;
+      height: 100%;
+      padding: 5px 6px 6px;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .usage-panel:not([data-density="compact"]) .usage-account-windows {
+      display: grid;
+      grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+      align-items: center;
+      justify-items: center;
+      align-content: center;
+      flex: 1;
+      width: 100%;
+    }
+    .agent-row { min-height: 28px; flex-wrap: nowrap; padding: 4px 5px; }
+    .agent-row .agent-left, .agent-row .agent-right { flex-wrap: nowrap; }
+    .agent-row .sub-badge, .agent-row .model-pill, .agent-row .ctx-pill,
+    .agent-row .state-pill, .agent-row .repo-tag, .agent-row .fast-badge,
+    .agent-row .bolt-badge, .agent-row .tab-badge {
+      height: 18px; display: inline-flex; align-items: center; flex-shrink: 0;
+    }
+    .agent-row .open-btn, .agent-row .mini-btn, .agent-row .import-btn,
+    .agent-row .dismiss-btn { height: 18px; }
+    .agy-arch-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      flex: none;
+    }
+    .agy-arch-mark svg { display: block; width: 13px; height: 13px; }
+    .icon-act-btn {
+      width: 22px;
+      height: 20px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 5px;
+      border: 1px solid var(--border, var(--bdr));
+      background: var(--bg-card);
+      color: var(--text);
+      cursor: pointer;
+      flex-shrink: 0;
+      text-decoration: none;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .agent-row .icon-act-btn { height: 20px; }
+    .icon-act-btn svg { display: block; }
+    .icon-act-btn:hover { background: var(--surface-2); border-color: var(--muted); }
+    .icon-act-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    .icon-act-btn.codex {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--green);
+    }
+    .icon-act-btn.open {
+      border-color: rgba(59, 130, 246, 0.4);
+      background: rgba(59, 130, 246, 0.1);
+      color: var(--blue);
+    }
+    .icon-act-btn.codex:hover { background: rgba(16, 185, 129, 0.22); border-color: currentColor; }
+    .icon-act-btn.open:hover { background: rgba(59, 130, 246, 0.22); border-color: currentColor; }
+    html.light .icon-act-btn.codex { color: #047857; }
+    html.light .icon-act-btn.open { color: #1d4ed8; }
+
+    /* Fixed execution columns follow all density, theme and viewport rules. */
+    .agent-row .status-dot { width: 8px; height: 8px; flex: none; }
+    .agent-row .repo-tag {
+      width: 84px; flex: 0 0 84px; box-sizing: border-box;
+      display: block; line-height: 16px; text-align: center;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* Subagent rows replace [status-dot(8px) + gap(5px) + repo-tag(84px) = 97px] with an indented tree branch (├─ / └─) + dot + SUB tag (0px shift!) */
+    .agent-row.child {
+      background: rgba(99, 102, 241, 0.035);
+      border-left: 0 !important;
+    }
+    html.light .agent-row.child {
+      background: rgba(79, 70, 229, 0.035);
+      border-left: 0 !important;
+    }
+    .agent-row .sub-prefix {
+      width: 97px; flex: 0 0 97px; box-sizing: border-box;
+      display: inline-flex; align-items: center; gap: 4.5px;
+      padding-left: 4px; overflow: hidden; white-space: nowrap;
+    }
+    .agent-row .sub-prefix .tree-elbow {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px; font-weight: 700; color: #818cf8;
+      width: 14px; text-align: center; line-height: 1; flex: none;
+    }
+    html.light .agent-row .sub-prefix .tree-elbow { color: #4f46e5; }
+    .agent-row .sub-prefix .status-dot { width: 7.5px; height: 7.5px; flex: none; }
+    .agent-row .sub-prefix .sub-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+      flex: 1 1 auto; min-width: 0; height: 18px; line-height: 16px;
+      padding: 0 5px; border-radius: 4px; box-sizing: border-box;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: rgba(99, 102, 241, 0.13); color: #a5b4fc;
+      border: 1px solid rgba(129, 140, 248, 0.28);
+    }
+    html.light .agent-row .sub-prefix .sub-tag {
+      background: rgba(79, 70, 229, 0.10); color: #4338ca;
+      border-color: rgba(79, 70, 229, 0.28);
+    }
+    /* Soft low-opacity indigo-lavender tint for background tasks (DMN / JOB / CRON / WAIT & Daemon / Job / Cron / Wait) */
+    .agent-row .sub-prefix .sub-tag.bg-tag {
+      background: rgba(129, 140, 248, 0.045); color: rgba(165, 180, 252, 0.72);
+      border-color: rgba(129, 140, 248, 0.16); font-weight: 600;
+    }
+    html.light .agent-row .sub-prefix .sub-tag.bg-tag {
+      background: rgba(79, 70, 229, 0.045); color: rgba(67, 56, 202, 0.72);
+      border-color: rgba(79, 70, 229, 0.18);
+    }
+    .agent-row.bg-task-row .brand-icon { opacity: 0.58; }
+    .agent-row.bg-task-row .agent-name { color: #94a3b8; font-weight: 400; }
+    html.light .agent-row.bg-task-row .agent-name { color: #64748b; }
+    .model-pill.bg-task {
+      color: rgba(165, 180, 252, 0.70);
+      background: rgba(129, 140, 248, 0.04);
+      border-color: rgba(129, 140, 248, 0.16);
+      font-weight: 500;
+    }
+    html.light .model-pill.bg-task {
+      color: rgba(67, 56, 202, 0.70);
+      background: rgba(79, 70, 229, 0.04);
+      border-color: rgba(79, 70, 229, 0.18);
+    }
+    .ctx-pill.bg-time {
+      color: #64748b;
+      justify-content: center;
+      font-weight: 500;
+    }
+    .row-actions.bg-actions {
+      justify-content: flex-end;
+      gap: 5px;
+    }
+    .bg-task-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9.5px;
+      font-weight: 500;
+      color: #64748b;
+      white-space: nowrap;
+      letter-spacing: -0.01em;
+    }
+    /* Responsive & Long-Label Short Model Pill (4-A / 3.8-F / O-5.5 + Color Speedometer Gauge Icon) */
+    .model-pill .mp-full {
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+    .model-pill .mp-short {
+      display: none; align-items: center; gap: 3px; font-weight: 700;
+    }
+    .model-pill.is-long .mp-full { display: none; }
+    .model-pill.is-long .mp-short { display: inline-flex; }
+    .tree-node.sub-evaporating {
+      opacity: 0;
+      transform: translateX(8px);
+      transition: opacity 0.65s ease, transform 0.65s ease;
+      pointer-events: none;
+    }
+    .eff-gauge {
+      width: 13px; height: 13px; flex-shrink: 0; display: inline-block;
+      margin-left: 1.5px;
+    }
+    .eff-gauge.eff-low { color: #38bdf8; }
+    .eff-gauge.eff-med { color: #10b981; }
+    .eff-gauge.eff-high { color: #f59e0b; }
+    .eff-gauge.eff-max { color: #f43f5e; filter: drop-shadow(0 0 2.5px rgba(244, 63, 94, 0.32)); }
+    .eff-gauge.eff-ultra { color: #c084fc; filter: drop-shadow(0 0 3px rgba(192, 132, 252, 0.42)); }
+    html.light .eff-gauge.eff-low { color: #0284c7; }
+    html.light .eff-gauge.eff-med { color: #059669; }
+    html.light .eff-gauge.eff-high { color: #d97706; }
+    html.light .eff-gauge.eff-max { color: #e11d48; }
+    html.light .eff-gauge.eff-ultra { color: #9333ea; }
+    @container (max-width: 640px) {
+      .agent-row .model-pill { width: 68px !important; flex: 0 0 68px !important; padding: 1.5px 4px; }
+      .model-pill .mp-full { display: none !important; }
+      .model-pill .mp-short { display: inline-flex !important; }
+    }
+    @media (max-width: 640px) {
+      .agent-row .model-pill { width: 68px !important; flex: 0 0 68px !important; padding: 1.5px 4px; }
+      .model-pill .mp-full { display: none !important; }
+      .model-pill .mp-short { display: inline-flex !important; }
+    }
+    /* Pin Button Only Highlight (Keep original purple parent row background untouched!) */
+    .icon-act-btn.pin-btn {
+      color: var(--muted); opacity: 0.68; --pin-fill: none;
+    }
+    .icon-act-btn.pin-btn:hover {
+      color: #fda4af; border-color: rgba(244, 63, 94, 0.45); opacity: 1;
+    }
+    .icon-act-btn.pin-btn.active {
+      --pin-fill: currentColor;
+      background: rgba(244, 63, 94, 0.22); color: #fb7185;
+      border-color: rgba(244, 63, 94, 0.68);
+      box-shadow: 0 0 6px rgba(244, 63, 94, 0.28);
+      opacity: 1;
+    }
+    html.light .icon-act-btn.pin-btn.active {
+      --pin-fill: currentColor;
+      background: rgba(225, 29, 72, 0.15); color: #e11d48;
+      border-color: rgba(225, 29, 72, 0.55);
+    }
+    /* Compact single-icon BG Daemon toggle button on parent row */
+    .bg-daemon-chip, .bg-cnt-chip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 19px; height: 18px; padding: 0; border-radius: 4px;
+      background: rgba(148, 163, 184, 0.08); color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.22); flex-shrink: 0;
+      cursor: pointer; transition: all 0.14s ease;
+    }
+    .bg-daemon-chip:hover {
+      background: rgba(148, 163, 184, 0.18); color: #e2e8f0;
+      border-color: rgba(148, 163, 184, 0.42);
+    }
+    .bg-daemon-chip.active {
+      background: rgba(16, 185, 129, 0.14); color: #34d399;
+      border-color: rgba(16, 185, 129, 0.38);
+    }
+    html.light .bg-daemon-chip, html.light .bg-cnt-chip {
+      background: rgba(148, 163, 184, 0.12); color: #64748b; border-color: rgba(148, 163, 184, 0.28);
+    }
+    html.light .bg-daemon-chip.active {
+      background: rgba(5, 150, 105, 0.12); color: #059669; border-color: rgba(5, 150, 105, 0.36);
+    }
+    .bg-daemon-section {
+      margin-top: 4px; padding: 4px 6px; border-radius: 4px;
+      background: rgba(15, 23, 42, 0.48); border: 1px solid var(--bdr);
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    html.light .bg-daemon-section { background: rgba(241, 245, 249, 0.85); }
+    .bg-daemon-head {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 9px; font-weight: 600; color: #38bdf8;
+    }
+    html.light .bg-daemon-head { color: #0284c7; }
+    .bg-daemon-item {
+      display: flex; align-items: center; gap: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .bg-daemon-tag {
+      font-size: 7.8px; font-weight: 700; padding: 0.5px 3.5px; border-radius: 3px;
+      background: rgba(56, 189, 248, 0.15); color: #38bdf8; flex-shrink: 0;
+    }
+    .bg-daemon-tag.timer {
+      background: rgba(245, 158, 11, 0.16); color: #fbbf24;
+    }
+    /* Consolidated Settings & Actions Popover Menu */
+    .settings-menu-wrap { position: relative; display: inline-flex; }
+    .settings-popover {
+      position: absolute; top: calc(100% + 5px); right: 0; z-index: 90;
+      width: 228px; padding: 8px; border-radius: 8px;
+      background: var(--panel); border: 1px solid var(--bdr-hi);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.48);
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    .settings-group {
+      display: flex; flex-direction: column; gap: 3.5px;
+    }
+    .settings-group-lbl {
+      font-size: 8.5px; font-weight: 700; color: var(--muted);
+      letter-spacing: 0.02em; padding: 0 2px;
+    }
+    .settings-row-btns {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .settings-row-btns .seg-btn, .settings-row-btns .mini-btn {
+      flex: 1; justify-content: center; height: 22px; font-size: 9.5px;
+    }
+    .settings-act-btn {
+      display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+      width: 100%; height: 24px; padding: 0 7px; border-radius: 5px;
+      background: var(--card); border: 1px solid var(--bdr);
+      color: var(--text); font-size: 9.5px; font-weight: 600; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .settings-act-btn:hover {
+      background: var(--card-h); border-color: var(--bdr-hi);
+    }
+    /* Mod 5 (Handover Memory) & Mod 6 (On-Demand Live Log Box) */
+    .handover-note-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--bdr);
+    }
+    .handover-badge {
+      font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+      background: rgba(16, 185, 129, 0.14); color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.32); white-space: nowrap;
+    }
+    html.light .handover-badge {
+      background: rgba(5, 150, 105, 0.10); color: #047857;
+      border-color: rgba(5, 150, 105, 0.30);
+    }
+    .handover-text {
+      font-size: 9px; color: var(--text); flex: 1; min-width: 140px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .detail-log-toolbar {
+      display: flex; align-items: center; justify-content: flex-end;
+      margin-top: 4px; gap: 4px;
+    }
+    .log-toggle-btn {
+      height: 18px !important; font-size: 8.5px !important; padding: 0 6px !important;
+    }
+    .live-log-box {
+      margin-top: 4px; padding: 5px 7px; border-radius: 4px;
+      background: rgba(2, 6, 23, 0.72); border: 1px solid var(--bdr);
+      color: #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.8px; line-height: 1.4; max-height: 135px;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+    }
+    html.light .live-log-box {
+      background: #0f172a; color: #e2e8f0;
+    }
+    .agent-row .brand-icon { width: 15px; height: 15px; flex: 0 0 15px; }
+    .agent-row .agent-name {
+      flex: 1 1 0%; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .agent-row .model-pill {
+      width: 92px; flex: 0 0 92px; display: inline-flex;
+      align-items: center; justify-content: center; gap: 3.5px;
+      box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent-row .ctx-pill {
+      width: 78px; min-width: 78px; flex: 0 0 78px; display: inline-flex;
+      align-items: center; justify-content: flex-end; gap: 4px;
+      font-variant-numeric: tabular-nums; box-sizing: border-box;
+    }
+    .agent-row .ctx-bar { display: inline-block; }
+    .agent-row .ctx-bar-fill { display: block; }
+    .agent-row .row-actions {
+      width: 94px; flex: 0 0 94px; display: inline-flex;
+      align-items: center; justify-content: flex-end; gap: 3px;
+      box-sizing: border-box;
+    }
+    #view-closed .row-actions {
+      width: 94px; min-width: 68px; flex-basis: 94px; gap: 3px;
+    }
+    .agent-row .row-actions .icon-act-btn {
+      width: 21px; flex: 0 0 21px; padding: 0; box-sizing: border-box;
+    }
+    .agent-row .row-actions .icon-act-btn:only-child {
+      /* Reserve the dismiss slot on child rows without a dismiss action. */
+      margin-right: 22px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Reusable SVG Defs for Brand Icons, Official Google Antigravity A-Arch Logo & Lightning Bolts -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <linearGradient id="gem-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#4E82EE"/>
+        <stop offset="0.5" stop-color="#9B72CB"/>
+        <stop offset="1" stop-color="#D96570"/>
+      </linearGradient>
+      <!-- Official Google Antigravity A-Arch Logo (traced directly from Antigravity-x64/icon.png) -->
+      <linearGradient id="agy-arch-grad" x1="4" y1="2" x2="20" y2="21" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#f59e0b"/>
+        <stop offset="22%" stop-color="#ef4444"/>
+        <stop offset="46%" stop-color="#4ade80"/>
+        <stop offset="72%" stop-color="#2584fc"/>
+        <stop offset="100%" stop-color="#3b82f6"/>
+      </linearGradient>
+      <symbol id="ico-agy-logo" viewBox="0 0 24 24">
+        <path fill="url(#agy-arch-grad)" d="M12 2.2c-2.6 0-4.3 2.3-5.8 7.2-1.3 4.3-2.5 8.1-4.2 10.1-.6.7-.4 1.7.4 2 .9.3 2.1-.3 3.4-1.8 1.5-1.7 2.7-4.3 3.9-6 0.6-.9 1.4-1.4 2.3-1.4s1.7.5 2.3 1.4c1.2 1.7 2.4 4.3 3.9 6 1.3 1.5 2.5 2.1 3.4 1.8.8-.3 1-1.3.4-2-1.7-2-2.9-5.8-4.2-10.1C16.3 4.5 14.6 2.2 12 2.2z"/>
+      </symbol>
+      <!-- Gemini Sparkle -->
+      <symbol id="ico-gemini" viewBox="0 0 24 24">
+        <path d="M12 2C12 7.52 7.52 12 2 12C7.52 12 12 16.48 12 22C12 16.48 16.48 12 22 12C16.48 12 12 7.52 12 2Z" fill="url(#gem-grad)"/>
+      </symbol>
+      <!-- Official Claude Starburst Logo (직접 구독 Claude Code) -->
+      <symbol id="ico-claude" viewBox="0 0 24 24">
+        <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757"/>
+      </symbol>
+      <!-- Antigravity Included Gemini (AGY 내장 구독 · 외곽 AGY 궤도 프레임 + Gemini 스파클) -->
+      <symbol id="ico-agy-gemini" viewBox="0 0 24 24">
+        <rect x="1.2" y="1.2" width="21.6" height="21.6" rx="6" fill="rgba(78,130,238,0.14)" stroke="url(#gem-grad)" stroke-width="1.8"/>
+        <path d="M12 4.2C12 8.5 8.5 12 4.2 12C8.5 12 12 15.5 12 19.8C12 15.5 15.5 12 19.8 12C15.5 12 12 8.5 12 4.2Z" fill="url(#gem-grad)"/>
+      </symbol>
+      <!-- Antigravity Included Claude (AGY 내장 구독 · 외곽 AGY 보라/블루 프레임 + 안쪽 공식 Claude 스타버스트) -->
+      <symbol id="ico-agy-claude" viewBox="0 0 24 24">
+        <rect x="1.2" y="1.2" width="21.6" height="21.6" rx="6" fill="rgba(217,119,87,0.14)" stroke="#818cf8" stroke-width="1.8"/>
+        <g transform="translate(3.6, 3.6) scale(0.7)">
+          <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757"/>
+        </g>
+      </symbol>
+      <!-- OpenAI Codex Knot -->
+      <symbol id="ico-codex" viewBox="0 0 24 24">
+        <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.0993 3.8558L12.5973 8.3829l2.02-1.1685a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.4022-.6813zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6814v6.7226zm1.1072-2.1296l2.5833-1.4904 2.5833 1.4904v2.9808l-2.5833 1.4904-2.5833-1.4904z" fill="currentColor"/>
+      </symbol>
+      <!-- Compact tree actions -->
+      <symbol id="ico-ubuntu-term" viewBox="0 0 16 16">
+        <rect x="1.5" y="2" width="13" height="12" rx="2.8" fill="#2c001e" stroke="#e95420" stroke-width="1.2"/>
+        <path d="M4.2 5.5L7 7.8L4.2 10.1" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="7.8" y1="10.2" x2="11.2" y2="10.2" stroke="#e95420" stroke-width="1.5" stroke-linecap="round"/>
+      </symbol>
+      <symbol id="ico-cmd-send" viewBox="0 0 16 16">
+        <path d="M2.2 3.2L13.8 8L2.2 12.8L4.2 8L2.2 3.2ZM4.2 8H9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="ico-open-ext" viewBox="0 0 16 16">
+        <path d="M6.5 3.5H3.8C3.08 3.5 2.5 4.08 2.5 4.8V12.2C2.5 12.92 3.08 13.5 3.8 13.5H11.2C11.92 13.5 12.5 12.92 12.5 12.2V9.5M9 2.5H13.5V7M13.2 2.8L7.2 8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <!-- Crisp Upright Pushpin Icon (압정: unpinned = hollow outline, pinned = solid filled head + needle) -->
+      <symbol id="ico-pin" viewBox="0 0 24 24">
+        <path d="M7 3h10l-1.3 5.6 2.8 2.4v2H5.5v-2l2.8-2.4L7 3z" fill="var(--pin-fill, none)" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round"/>
+        <path d="M12 13v8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/>
+      </symbol>
+      <!-- Single Lightning Bolt (Codex service_tier: priority = Fast) -->
+      <symbol id="ico-bolt-1" viewBox="0 0 12 16">
+        <path d="M7.2 0.8L1.0 9.0H6.0L4.6 15.2L11.0 6.8H6.0L7.2 0.8Z" fill="currentColor"/>
+      </symbol>
+      <!-- Triple Tightly Overlapping Lightning Bolts (Codex service_tier: ultrafast = Ultrafast) -->
+      <symbol id="ico-bolt-3" viewBox="0 0 19.5 16">
+        <path d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" opacity="0.65"/>
+        <path transform="translate(4.1, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill" opacity="0.88"/>
+        <path transform="translate(8.2, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill"/>
+      </symbol>
+      <!-- Native Antigravity IDE SpeedIcon / Speed2Icon Geometry (viewBox="0 -960 960 960", flat bottom H756..H204 + teardrop needle) -->
+      <!-- Low Effort: Native Antigravity Speed2Icon (#38bdf8 Sky Blue, needle upper-left -45°) -->
+      <symbol id="ico-eff-low" viewBox="0 -960 960 960">
+        <path fill="currentColor" d="M532.15-348q22.54-22.54 20.73-52.88t-26.73-49.27q-75.92-57.77-156.31-110.96T212.08-667.77q52.85,78 106.42,158.08T428-352q18.08,25.54 49.65,26.23T532.15-348ZM204.62-180q-16.55,0-30.47-7t-22.61-21q-26.08-45.51-39.12-95.3T99.39-405.23q0.62-50.23 15.04-97.85t40.42-91.38l37.61,55.23q-16.62,32-24.85,66.12T159.38-404q0,44 11.12,85.5T204.64-240H756q21-36 32.5-76.5T800-400q0-133-93.5-226.5T480-720q-37,0-72.31,8.62T340-686.77l-56-36.85Q328.16-751 377.65-765.5T480-780q78.94,0 147.89,29.96t120.57,81.58t81.58,120.57T860-400q0,51.07-13.04,99.3t-37.88,91.16q-8.34,14.77-22.75,22.15T756-180H204.62Z"/>
+      </symbol>
+      <!-- Medium Effort: Native Antigravity SpeedIcon dial + needle straight up 0° (#10b981 Emerald) -->
+      <symbol id="ico-eff-med" viewBox="0 -960 960 960">
+        <path fill="currentColor" d="M204-180q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85Q262.38-720 331.5-752.5T390-768l16,58q-48,14-88,43.5T253.5-598Q160-512 160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-400q0-112-93.5-198-24.5-22.5-64.5-52t-88-43.5l16-58q58.5,15.5 127.62,48t120.57,81.58Q830.26-547.38 860-400q0,51.07-13.04,99.3t-37.88,91.16q-8.34,14.77-22.75,22.15T756-180H204Z"/>
+        <path fill="currentColor" transform="rotate(-45 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
+      </symbol>
+      <!-- High Effort: Exact Native Antigravity SpeedIcon (#f59e0b Amber Gold, needle upper-right +45°) -->
+      <symbol id="ico-eff-high" viewBox="0 -960 960 960">
+        <path fill="currentColor" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23ZM480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
+      </symbol>
+      <!-- Max Effort: Red (#f43f5e) Native Antigravity SpeedIcon + Redline Zone Fill & Deeper Redline Needle -->
+      <symbol id="ico-eff-max" viewBox="0 -960 960 960">
+        <path fill="currentColor" fill-opacity="0.24" d="M480-400L695-615A310 310 0 0 1 800-400L756-240H480Z"/>
+        <path fill="currentColor" d="M480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
+        <path fill="currentColor" transform="rotate(16 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
+      </symbol>
+      <!-- Ultra Effort: Purple/Violet (#c084fc) Native Antigravity SpeedIcon + Overdrive Sparkle Star (✦) & Boost Arc -->
+      <symbol id="ico-eff-ultra" viewBox="0 -960 960 960">
+        <path fill="currentColor" fill-opacity="0.22" d="M235-400A245 245 0 0 1 655-575L480-400Z"/>
+        <path fill="currentColor" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23ZM480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
+        <!-- Overdrive 4-Point Sparkle Star (✦) at upper-right needle apex for instant visual distinction from High/Max -->
+        <path fill="currentColor" d="M775-850C775-775 720-720 645-720C720-720 775-665 775-590C775-665 830-720 905-720C830-720 775-775 775-850Z"/>
+      </symbol>
+      <!-- 5-Hour Rolling Session Stopwatch Icon (크라운 + 우측 푸셔 + 5시간 섹터 웨지 & 시침) -->
+      <symbol id="ico-win-5h" viewBox="0 0 24 24">
+        <path d="M9.2 2H14.8M12 2V4.6M18.2 5.2L20.3 3.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="12" cy="13.2" r="8.2" fill="none" stroke="currentColor" stroke-width="2.1"/>
+        <path d="M12 13.2L12 6.2A7 7 0 0 1 15.5 19.2Z" fill="currentColor" fill-opacity="0.32"/>
+        <path d="M12 8.2V13.2L15.3 15.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <!-- 7-Day Weekly Calendar Icon (상단 바인더 링 + 헤더 바 + 캘린더 내부 '7' 주간 심볼) -->
+      <symbol id="ico-win-7d" viewBox="0 0 24 24">
+        <rect x="2.5" y="4.5" width="19" height="17" rx="3.2" fill="none" stroke="currentColor" stroke-width="2.1"/>
+        <path d="M2.5 7.7C2.5 5.9 3.9 4.5 5.7 4.5H18.3C20.1 4.5 21.5 5.9 21.5 7.7V9.3H2.5Z" fill="currentColor" fill-opacity="0.35"/>
+        <path d="M2.5 9.3H21.5M7.5 2V5.6M16.5 2V5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M9.2 12.3H15.0L11.2 18.8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div class="widget-shell widget-frame">
+
+    <!-- 1. TOP: AOH DUAL-RING + INNER CLOCK PIE QUOTA PANEL (Defaults to 1-line docked compact bar) -->
+    <div class="usage-panel" id="usage-panel" data-density="compact">
+      <div class="usage-toolbar">
+        <div class="usage-toolbar-left" style="flex-wrap:wrap;gap:5px">
+          <span class="remote-pill" title="현재 SSH 원격 서버(u24c9g5090r64) 연결됨 · GPU: RTX 5090 · RAM: 64GB">🌐 SSH 원격 · u24c9g5090r64 · RTX 5090</span>
+          <span class="route-pill" id="auto-route-badge" title="실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 자동 스티어링)"><svg width="11" height="10" style="color:var(--amber)"><use href="#ico-bolt-1"/></svg><span id="auto-route-text">자동배분: Codex 6.1-sol · AGY 4 Argon</span></span>
+          <span class="usage-hint">바깥 링: 잔여 · 안쪽: 경과율</span>
+        </div>
+        <div class="usage-toolbar-btns">
+          <button type="button" class="mini-btn" id="density-btn" onclick="toggleDensity()">확장 ▾</button>
+        </div>
+      </div>
+
+      <div class="usage-panel-body" id="quota-grid"><!--__QUOTA_GRID_HTML_START__--><!--__QUOTA_GRID_HTML_END__--></div>
+    </div>
+
+    <!-- 2. MIDDLE: WORKTREE & MULTI-AGENT EXECUTION TREE (Single Clean Toolbar + Consolidated ⚙ Settings Menu) -->
+    <div class="tree-section">
+      <div class="tree-controls-bar" style="padding-top:2px">
+        <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+          <div class="seg-group" title="현재 실제로 실행 중(RUNNING)인 작업과 최근 작업 후 닫은(IDLE/CLOSED) 세션을 전환합니다">
+            <button type="button" class="seg-btn active" id="tab-active" onclick="switchTab('active')">
+              <span class="status-dot running" style="width:5px;height:5px"></span>
+              <span>실제 작업중</span>
+              <span class="tab-badge" id="badge-active-cnt">2</span>
+            </button>
+            <button type="button" class="seg-btn" id="tab-closed" onclick="switchTab('closed')">
+              <span>닫은·완료</span>
+              <span class="tab-badge" id="badge-closed-cnt">9</span>
+            </button>
+          </div>
+          <!-- 7일 / 30일 구분 필터 (닫은·완료 탭일 때만 노출) -->
+          <div class="seg-group hidden" id="closed-days-group" title="최근 7일 이내 또는 30일 이내 작업 후 닫은 세션 필터">
+            <button type="button" class="seg-btn active" id="closed-7d" onclick="setClosedDays(7)">7일</button>
+            <button type="button" class="seg-btn" id="closed-30d" onclick="setClosedDays(30)">30일</button>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:4px">
+          <button type="button" class="open-btn codex" onclick="openCodexDirectBar('', '새 Codex 6.1-sol · fast 작업')" title="Codex(gpt-6.1-sol · fast)에 위젯에서 바로 명령 내리기">
+            <svg width="10" height="10"><use href="#ico-codex"/></svg>
+            <span>+ Codex</span>
+          </button>
+          <button type="button" class="icon-btn" id="btn-refresh-scope" onclick="refreshByScope()" title="실시간 사용량 및 작업중/닫은 세션 상태 새로고침" style="padding:0 6px">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M4 9a9 9 0 0114.65-3.36L20 7M20 15a9 9 0 01-14.65 3.36L4 17"/>
+            </svg>
+          </button>
+          <div class="settings-menu-wrap">
+            <button type="button" class="mini-btn" id="btn-settings-menu" onclick="event.stopPropagation(); toggleSettingsMenu()" title="표시 범위, 트리 접기/펴기, 작업중 가져오기, 완료 세션 정리 등 설정·관리 메뉴">⚙ 설정·관리 ▾</button>
+            <div id="settings-menu-popover" class="settings-popover hidden" onclick="event.stopPropagation()">
+              <div class="settings-group">
+                <span class="settings-group-lbl">표시 범위</span>
+                <div class="settings-row-btns seg-group">
+                  <button type="button" class="seg-btn active" id="scope-current" onclick="setScope('current')">현재 범위 (dev)</button>
+                  <button type="button" class="seg-btn" id="scope-all" onclick="setScope('all')">전체 레포</button>
+                </div>
+              </div>
+              <div class="settings-group">
+                <span class="settings-group-lbl">트리 보기</span>
+                <button type="button" class="settings-act-btn" id="btn-toggle-bg-daemons" onclick="toggleBgDaemons()">⚙ 상시 데몬·타이머 표시: 켜짐</button>
+                <button type="button" class="settings-act-btn" id="btn-toggle-all" onclick="toggleAllBranches(); closeSettingsMenu()">↕ 하위 트리 전체 접기</button>
+              </div>
+              <div class="settings-group">
+                <span class="settings-group-lbl">세션 빠른 정리 &amp; 가져오기</span>
+                <button type="button" class="settings-act-btn" onclick="importRunningSessions(); closeSettingsMenu()">📥 작업중 세션 가져오기</button>
+                <button type="button" class="settings-act-btn" onclick="clearCompletedKeepPinned(); closeSettingsMenu()">🧹 완료 세션 정리 (📌핀·🟢유지)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Direct Codex Interactive Command Popover (스크롤과 무관하게 하단 .mcp-strip 바로 위에 고정되는 2단 팝오버) -->
+      <div id="codex-direct-bar" class="codex-direct-bar hidden">
+        <div class="codex-popover-head">
+          <div style="display:flex;align-items:center;gap:5px;min-width:0">
+            <span class="agy-arch-mark" title="Google Antigravity (AGY) 생성 에이전트"><svg width="13" height="13"><use href="#ico-agy-logo"/></svg></span>
+            <svg class="brand-icon" width="13" height="13" style="color:var(--green)"><use href="#ico-codex"/></svg>
+            <span id="codex-direct-target" class="codex-direct-target">새 Codex 6.1-sol · fast</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;flex:none">
+            <button type="button" class="icon-act-btn term" id="btn-codex-term" onclick="openCodexTerminal()" title="선택한 Codex 세션을 Ubuntu 터미널에서 열기" aria-label="선택한 Codex 세션을 Ubuntu 터미널에서 열기"><svg width="13" height="13" aria-hidden="true" focusable="false"><use href="#ico-ubuntu-term"/></svg></button>
+            <button type="button" class="dismiss-btn" style="opacity:1" onclick="hideCodexDirectBar()" title="닫기">✕</button>
+          </div>
+        </div>
+        <div class="codex-popover-body">
+          <input id="codex-prompt-input" class="cmd-box-input" type="text" placeholder="Codex(gpt-6.1-sol · fast)에 내릴 명령을 입력 후 Enter 또는 [실행 ▶] 클릭..." onkeydown="if(event.key==='Enter'){event.preventDefault();sendCodexDirectCommand();}" />
+          <button type="button" class="open-btn codex" style="height:28px;padding:0 12px;font-size:11px" id="btn-codex-send" onclick="sendCodexDirectCommand()">실행 ▶</button>
+        </div>
+      </div>
+
+      <!-- Inline command copy box -->
+      <div id="cmd-box" class="cmd-box hidden" role="status" aria-live="polite">
+        <span class="cmd-box-label" id="cmd-box-label">명령어</span>
+        <input id="cmd-box-input" class="cmd-box-input" type="text" spellcheck="false" aria-label="재개 명령어" onclick="this.select()" onfocus="this.select()">
+        <button type="button" class="mini-btn" onclick="copyCmdBox(this)">복사</button>
+        <button type="button" class="icon-act-btn term" onclick="openCodexTerminalFromBox()" title="표시된 명령어를 Ubuntu 터미널에서 열기" aria-label="표시된 명령어를 Ubuntu 터미널에서 열기"><svg width="13" height="13" aria-hidden="true" focusable="false"><use href="#ico-ubuntu-term"/></svg></button>
+        <button type="button" class="dismiss-btn" style="opacity:1" onclick="hideCmdBox()" title="닫기">✕</button>
+      </div>
+
+      <!-- TAB 1: LIVE ACTIVE TREE (현재 실제로 작업중인 세션만 표시!) -->
+      <div id="view-active"><!--__ACTIVE_TREE_HTML_START__--><!--__ACTIVE_TREE_HTML_END__--></div>
+
+      <!-- TAB 2: CLOSED / COMPLETED SESSIONS WITHIN 7 DAYS / 30 DAYS (최근 7일/30일 내 작업 후 닫은 세션) -->
+      <div id="view-closed" class="hidden"><!--__CLOSED_TREE_HTML_START__--><!--__CLOSED_TREE_HTML_END__--></div>
+    </div>
+
+    <!-- 3. BOTTOM: COMPACT MCP & WORKER STRIP -->
+    <div class="mcp-strip">
+      <span class="mcp-chip">
+        <svg width="11" height="11" style="color:var(--green)"><use href="#ico-codex"/></svg>
+        <span>Codex · 6.1-sol</span>
+        <span class="bolt-badge" style="height:14px;padding:0 3.5px" title="Codex 기본 service_tier: priority (Fast · 1x lightning, 긴급 시에만 ultrafast 3x)">
+          <svg width="9" height="10"><use href="#ico-bolt-1"/></svg>
+        </span>
+        <span class="dot" id="dot-codex-pool"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11"><use href="#ico-agy-gemini"/></svg>
+        <span>AGY · 4 Argon / 3.8 Flash</span><span class="dot" id="dot-agy-gemini"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11"><use href="#ico-agy-claude"/></svg>
+        <span>AGY · Opus 5.5</span><span class="dot" id="dot-agy-claude"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11"><use href="#ico-claude"/></svg>
+        <span>Claude</span><span class="dot" id="dot-claude-direct" style="background:var(--red)" title="주간 한도 소진 · 자동 스티어링 대기"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="5" fill="currentColor"/><path d="M10.57 15.26C10.57 17.5 9.66 19.38 8.18 21.1h3.45v1.68H6.33v-1.59c1.62-1.83 2.25-3.33 2.25-5.93h1.99z" fill="var(--panel, #111827)"/><path d="M17.43 15.26C17.43 17.5 18.34 19.38 19.82 6.9h-3.45V5.22h5.3v1.59c-1.62 1.83-2.25 3.33-2.25 5.93h-1.99z" fill="var(--panel, #111827)"/><path d="M10.57 12.74C10.57 10.5 9.66 8.62 8.18 6.9h3.45V5.22H6.33v1.59c1.62-1.83 2.25-3.33 2.25 5.93h1.99z" fill="var(--panel, #111827)"/><path d="M17.43 12.74C17.43 10.5 18.34 8.62 19.82 6.9h-3.45V5.22h5.3v1.59c-1.62 1.83-2.25 3.33-2.25 5.93h-1.99z" fill="var(--panel, #111827)"/></svg>
+        <span>Context7</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="14" height="10" viewBox="0 0 139 64" fill="currentColor" style="width:14px"><path d="M84.3504 64H48.1695V47.315L32.569 63.9989L0 63.9841V29.9515L28.31 0H67.4439V15.9214L82.6881 0H116.593V26.1874H139V64H99.1163V48.208L84.3504 64Z"/></svg>
+        <span>Mobbin</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 87.3 78"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25 29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44A9.06 9.06 0 0 0 0 53h27.5z" fill="#00ac47"/><path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.2z" fill="#ea4335"/><path d="M43.65 25 57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="M59.8 53H87.3c0-1.55-.4-3.1-1.2-4.5l-22.5-39c-.8-1.4-1.95-2.5-3.3-3.3L46.55 30z" fill="#ffba00"/><path d="M27.5 53h32.3l-13.25-23-3-5.2z" fill="#2684fc"/></svg>
+        <span>Drive</span><span class="dot"></span>
+      </span>
+      <span class="mcp-chip">
+        <svg width="11" height="11" viewBox="0 0 24 24"><path fill="#4285F4" d="M2 7v11c0 1.1.9 2 2 2h3V9.5L2 7z"/><path fill="#34A853" d="M22 7v11c0 1.1-.9 2-2 2h-3V9.5L22 7z"/><path fill="#EA4335" d="M7 20h10V9.5L12 13.5 7 9.5V20z"/><path fill="#FBBC04" d="M17 4H7C5.3 4 4 5.3 4 7l8 6 8-6c0-1.7-1.3-3-3-3z"/></svg>
+        <span>Gmail</span><span class="dot"></span>
+      </span>
+    </div>
+
+  </div>
+
+  <div id="usage-tooltip" class="hidden"></div>
+  <div id="toast-bar" class="toast-bar hidden">
+    <span id="toast-msg"></span>
+    <button type="button" id="toast-undo-btn" class="toast-undo hidden" onclick="undoLastDismiss()">실행 취소</button>
+  </div>
+
+  <script>
+    /* Safe storage wrapper so sandboxed <agent-embed> iframes NEVER throw SecurityError */
+    const memStore = {};
+    function safeGet(key, fallback) {
+      try {
+        const v = window.localStorage ? window.localStorage.getItem(key) : null;
+        return v !== null ? v : (memStore[key] ?? fallback);
+      } catch (_) {
+        return memStore[key] ?? fallback;
+      }
+    }
+    function safeSet(key, val) {
+      memStore[key] = val;
+      try {
+        if (window.localStorage) window.localStorage.setItem(key, val);
+      } catch (_) {}
+    }
+
+    /*__SERVER_STATE_JSON_START__*/
+    const SERVER_STATE = {"dismissed": ["node-cdx-discord"], "imported": [], "importedCascades": {}, "closedDays": 7, "scope": "current", "tab": "active"};
+    /*__SERVER_STATE_JSON_END__*/
+
+    /*__ACCOUNTS_JSON_START__*/
+    /* live: check_all_usage.py @ 2026-10-15 12:05:46 KST */
+    const ACCOUNTS = [
+  {
+    "provider": "antigravity",
+    "name": "Antigravity",
+    "short": "AGY",
+    "windows": [
+      {
+        "label": "Gemini · 5시간",
+        "shortPeriod": "G·5h",
+        "remaining": 36.9,
+        "windowMinutes": 300,
+        "resetsAt": 1792042030,
+        "resetText": "오늘 14:27"
+      },
+      {
+        "label": "Claude/GPT · 5시간",
+        "shortPeriod": "C·5h",
+        "remaining": 2.3,
+        "windowMinutes": 300,
+        "resetsAt": 1792043000,
+        "resetText": "오늘 14:43"
+      }
+    ]
+  },
+  {
+    "provider": "codex",
+    "name": "Codex",
+    "short": "Codex",
+    "windows": [
+      {
+        "label": "주간 (7일)",
+        "shortPeriod": "7d",
+        "remaining": 57.0,
+        "windowMinutes": 10080,
+        "resetsAt": 1792472678,
+        "resetText": "10/20 14:04"
+      }
+    ]
+  },
+  {
+    "provider": "claude",
+    "name": "Claude",
+    "short": "Claude",
+    "windows": [
+      {
+        "label": "세션 (5시간)",
+        "shortPeriod": "5h",
+        "remaining": 0.0,
+        "windowMinutes": 300,
+        "resetsAt": 1792180800,
+        "resetText": "10/17 05:00"
+      },
+      {
+        "label": "전체 (7일)",
+        "shortPeriod": "7d",
+        "remaining": 0.0,
+        "windowMinutes": 10080,
+        "resetsAt": 1792180800,
+        "resetText": "10/17 05:00"
+      }
+    ]
+  }
+];
+    /*__ACCOUNTS_JSON_END__*/
+
+    function clockPath(progress) {
+      if (progress === null || progress <= 0) return '';
+      if (progress >= 1) return 'M32 10 A22 22 0 1 1 32 54 A22 22 0 1 1 32 10 Z';
+      const angle = 2 * Math.PI * progress;
+      const x = (32 + 22 * Math.sin(angle)).toFixed(2);
+      const y = (32 - 22 * Math.cos(angle)).toFixed(2);
+      return `M32 32 L32 10 A22 22 0 ${progress > 0.5 ? 1 : 0} 1 ${x} ${y} Z`;
+    }
+
+    function timeProgress(w) {
+      if (!w.windowMinutes || !w.resetsAt) return null;
+      const nowSec = Date.now() / 1000;
+      return Math.max(0, Math.min(1, 1 - (w.resetsAt - nowSec) / (w.windowMinutes * 60)));
+    }
+
+    function quotaState(rem) {
+      if (rem >= 100) return { id: 'unused', label: '미사용' };
+      if (rem <= 0) return { id: 'exhausted', label: '소진 · 리셋 대기' };
+      return { id: 'in-use', label: '사용중' };
+    }
+
+    function compactRemaining(resetsAt, fallback) {
+      if (!resetsAt) return fallback || '-';
+      const sec = Math.ceil(resetsAt - Date.now() / 1000);
+      if (sec <= 0) return '곧 리셋';
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function fmtPct(val) {
+      if (val === undefined || val === null) return '-';
+      const n = Number(val);
+      if (n >= 100) return '100%';
+      if (n <= 0) return '0%';
+      return `${Math.min(Math.floor(n * 10) / 10, 99.9).toFixed(1)}%`;
+    }
+
+    function updateRouteBadges() {
+      const agy = ACCOUNTS.find(a => a.provider === 'antigravity');
+      const cdx = ACCOUNTS.find(a => a.provider === 'codex');
+      const cld = ACCOUNTS.find(a => a.provider === 'claude');
+      const findW = (acc, key, period) => (acc && acc.windows)
+        ? (acc.windows.find(w => w.poolKey === key) || acc.windows.find(w => w.periodKind === period))
+        : null;
+
+      const gem5h = findW(agy, 'agy_gemini_5h', '5h');
+      const gem7d = findW(agy, 'agy_gemini_7d', '7d');
+      const clAg5h = findW(agy, 'agy_claude_5h', '5h');
+      const clAg7d = findW(agy, 'agy_claude_7d', '7d');
+      const cdx7d = findW(cdx, 'codex_7d', '7d') || (cdx && cdx.windows ? cdx.windows[0] : null);
+      const cld5h = findW(cld, 'claude_5h', '5h');
+      const cld7d = findW(cld, 'claude_7d', '7d');
+
+      function evalPool(id, name, shortName, fhW, wkW, pref) {
+        const fh = fhW ? Number(fhW.remaining || 0) : null;
+        const wk = wkW ? Number(wkW.remaining || 0) : null;
+        if ((fh !== null && fh <= 0) || (wk !== null && wk <= 0)) {
+          return { id, name, shortName, fh, wk, score: 0, mode: 'exhausted', tag: `${shortName}(소진 차단)`, pref };
+        }
+        if (wk !== null && wk <= 2) {
+          const base = fh !== null ? fh : wk;
+          return { id, name, shortName, fh, wk, score: Math.min(base, wk * 0.3), mode: 'reserve_hold', tag: `${shortName}(7d ${fmtPct(wk)} 비상보존)`, pref };
+        }
+        if (wk !== null && wk <= 10) {
+          const score = fh !== null ? Math.min(fh, wk * 2.5) : wk;
+          return { id, name, shortName, fh, wk, score, mode: 'weekly_conserve', tag: `${shortName}(5h ${fmtPct(fh)}·7d ${fmtPct(wk)} 절약)`, pref };
+        }
+        const score = fh !== null ? fh : (wk !== null ? wk : 0);
+        const winLbl = fh !== null ? `5h ${fmtPct(fh)}` : `7d ${fmtPct(wk)}`;
+        return { id, name, shortName, fh, wk, score, mode: 'normal', tag: `${shortName}(${winLbl})`, pref };
+      }
+
+      const pCodex = evalPool('dot-codex-pool', 'Codex 6.1-sol Fast', 'Codex 6.1-sol', null, cdx7d, 3);
+      const pOpus = evalPool('dot-agy-claude', 'AGY Opus 5.5', 'AGY Opus 5.5', clAg5h, clAg7d, 2);
+      const pArgon = evalPool('dot-agy-gemini', 'AGY 4 Argon', 'AGY 4 Argon', gem5h, gem7d, 1);
+      const pClaude = evalPool('dot-claude-direct', 'Claude Team Opus', 'Claude Team', cld5h, cld7d, 0);
+      const pools = [pCodex, pOpus, pArgon, pClaude];
+
+      for (const p of pools) {
+        const dotEl = document.getElementById(p.id);
+        if (dotEl) {
+          if (p.mode === 'exhausted') {
+            dotEl.style.background = 'var(--red)';
+            dotEl.title = `${p.name}: 한도 0% 소진 (자동 페일오버 스티어링 동작 중)`;
+          } else if (p.mode === 'reserve_hold' || p.mode === 'weekly_conserve') {
+            dotEl.style.background = 'var(--amber)';
+            dotEl.title = `${p.name}: ${p.tag}`;
+          } else {
+            dotEl.style.background = 'var(--green)';
+            dotEl.title = `${p.name}: 정상 가동 (${p.tag})`;
+          }
+        }
+      }
+
+      pools.sort((a, b) => (b.score - a.score) || (b.pref - a.pref));
+      const avail = pools.filter(p => p.score > 0);
+      const top2 = avail.slice(0, 2).map(p => p.tag).join(' · ') || '가용 풀 없음';
+      const fullSummary = pools.map((p, i) => `${p.score > 0 ? `${i + 1}순위` : '제외'} ${p.tag}`).join(' | ');
+
+      const badge = document.getElementById('auto-route-badge');
+      const badgeTxt = document.getElementById('auto-route-text');
+      if (badge) {
+        badge.title = `실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 차단 및 자동 스티어링):\n${fullSummary}`;
+      }
+      if (badgeTxt) {
+        badgeTxt.textContent = `자동배분: ${top2}`;
+      }
+      const detRoute = document.getElementById('det-agy-main-route');
+      if (detRoute) {
+        detRoute.textContent = `자동 라우팅: ${fullSummary}`;
+      }
+    }
+
+    function renderModelIcons(icons, size) {
+      const list = Array.isArray(icons) && icons.length ? icons : ['#ico-gemini'];
+      if (list.length === 1) {
+        const ico = list[0];
+        const cls = ico.includes('codex') ? 'win-ico codex-tint' : 'win-ico';
+        return `<span class="win-model-icons"><svg class="${cls}" width="${size}" height="${size}"><use href="${ico}"/></svg></span>`;
+      }
+      const parts = list.map((ico, i) => {
+        const cls = ico.includes('codex') ? 'win-ico codex-tint' : 'win-ico';
+        const svg = `<svg class="${cls}" width="${size}" height="${size}"><use href="${ico}"/></svg>`;
+        return i > 0 ? `<span class="ico-pipe" aria-hidden="true"></span>${svg}` : svg;
+      });
+      return `<span class="win-model-icons dual">${parts.join('')}</span>`;
+    }
+
+    let lastQuotasSig = '';
+    function renderQuotas(force = false) {
+      const grid = document.getElementById('quota-grid');
+      if (!grid) return;
+      const sig = JSON.stringify(ACCOUNTS);
+      if (!force && sig === lastQuotasSig && grid.querySelector('.usage-account')) {
+        updateRouteBadges();
+        return;
+      }
+      lastQuotasSig = sig;
+      grid.innerHTML = '';
+      const sorted = [...ACCOUNTS].sort((a, b) => {
+        const maxA = Math.max(0, ...(a.windows || []).map(w => w.remaining || 0));
+        const maxB = Math.max(0, ...(b.windows || []).map(w => w.remaining || 0));
+        const activeA = maxA > 0 ? 1 : 0;
+        const activeB = maxB > 0 ? 1 : 0;
+        return activeB - activeA;
+      });
+      const totalCols = sorted.reduce((sum, acc) => sum + Math.max(1, (acc.windows || []).length), 0) || 5;
+      grid.style.setProperty('--total-cols', String(totalCols));
+      sorted.forEach(acc => {
+        const wins = acc.windows || [];
+        const span = Math.max(1, wins.length);
+        const prov = acc.provider || '';
+        const accIco = acc.accountIcon || (prov === 'antigravity' ? '#ico-agy-logo' : `#ico-${prov}`);
+        const fs = document.createElement('fieldset');
+        fs.className = 'usage-account';
+        fs.dataset.provider = prov;
+        fs.style.setProperty('--span', '1');
+        fs.style.setProperty('--cols', span);
+
+        const legend = document.createElement('legend');
+        legend.className = 'usage-account-heading';
+        legend.title = acc.name || '';
+        legend.innerHTML = `<svg class="acc-head-ico" width="13" height="13"><use href="${accIco}"/></svg><strong>${acc.short || acc.name}</strong>`;
+        fs.appendChild(legend);
+
+        const inlineHead = document.createElement('span');
+        inlineHead.className = 'usage-provider-inline';
+        inlineHead.title = acc.name || '';
+        inlineHead.innerHTML = `<svg class="acc-inline-ico" width="13" height="13"><use href="${accIco}"/></svg>`;
+        fs.appendChild(inlineHead);
+
+        const winWrap = document.createElement('div');
+        winWrap.className = 'usage-account-windows';
+
+        wins.forEach((w, idx) => {
+          const st = quotaState(w.remaining);
+          const prog = timeProgress(w);
+          const pathD = clockPath(prog);
+          const dispPct = fmtPct(w.remaining);
+          const remCountdown = compactRemaining(w.resetsAt, w.resetText);
+          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)`;
+          const mIcons = Array.isArray(w.modelIcons) && w.modelIcons.length ? w.modelIcons : [w.modelIcon || accIco];
+          const pKind = w.periodKind || (String(w.shortPeriod || '').includes('5h') ? '5h' : '7d');
+          const shortP = w.shortPeriod || pKind;
+          const prevMIcons = idx > 0 ? (Array.isArray(wins[idx - 1].modelIcons) ? wins[idx - 1].modelIcons : [wins[idx - 1].modelIcon]) : null;
+          const showCompactPool = (prov === 'antigravity') && (idx === 0 || JSON.stringify(prevMIcons) !== JSON.stringify(mIcons));
+          const compactPoolHtml = showCompactPool
+            ? `<span class="compact-pool-lead${idx > 0 ? ' pool-sep' : ''}" title="${(w.label || '').replace(/"/g, '&quot;')}">${renderModelIcons(mIcons, 10)}</span>`
+            : '';
+
+          const winEl = document.createElement('div');
+          winEl.className = `usage-window ${st.id}`;
+          winEl.innerHTML = `
+            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}">
+              ${compactPoolHtml}
+              <div class="usage-donut ${st.id}">
+                <svg viewBox="0 0 64 64" aria-hidden="true">
+                  <circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>
+                  <path class="usage-clock-fill" d="${pathD}"></path>
+                  <circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-track"></circle>
+                  <circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-remaining" stroke-dasharray="${w.remaining} 100" transform="rotate(-90 32 32)"></circle>
+                </svg>
+                <div class="usage-donut-center">
+                  <strong>${dispPct}</strong>
+                  <small class="usage-center-caption">남음</small>
+                  <small class="usage-center-period p-${pKind}">${shortP}</small>
+                </div>
+              </div>
+            </button>
+            <span class="usage-window-title" title="${(w.label || '').replace(/"/g, '&quot;')}">
+              ${renderModelIcons(mIcons, 11)}
+            </span>
+            <span class="usage-quota-state ${st.id}">${st.label}</span>
+            <span class="usage-reset">${remCountdown}</span>
+          `;
+          const btn = winEl.querySelector('.usage-gauge-button');
+          btn.addEventListener('mouseenter', e => showTip(e.currentTarget));
+          btn.addEventListener('mouseleave', hideTip);
+          btn.addEventListener('click', e => { e.stopPropagation(); showTip(e.currentTarget); });
+          winWrap.appendChild(winEl);
+        });
+
+        fs.appendChild(winWrap);
+        grid.appendChild(fs);
+      });
+      updateRouteBadges();
+    }
+
+    const tooltip = document.getElementById('usage-tooltip');
+    function showTip(anchor) {
+      tooltip.textContent = anchor.dataset.tip || '';
+      tooltip.classList.remove('hidden');
+      const r = anchor.getBoundingClientRect();
+      const left = Math.max(6, Math.min(window.innerWidth - 260, r.left + r.width / 2 - 120));
+      const top = r.bottom + 6;
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+    }
+    function hideTip() { tooltip.classList.add('hidden'); }
+    document.addEventListener('click', hideTip);
+
+    function applyDensityState() {
+      const panel = document.getElementById('usage-panel');
+      const btn = document.getElementById('density-btn');
+      if (panel) panel.dataset.density = currentDensity;
+      if (btn) btn.textContent = currentDensity === 'compact' ? '확장 ▾' : '컴팩트 ▴';
+    }
+
+    function toggleDensity() {
+      currentDensity = currentDensity === 'compact' ? 'expanded' : 'compact';
+      applyDensityState();
+      saveState();
+      notifyParentResize();
+    }
+
+    function applyTreeUiState() {
+      document.querySelectorAll('.tree-children, [id^="br-"]').forEach(el => {
+        el.classList.toggle('hidden', allCollapsed);
+      });
+      document.querySelectorAll('.agent-detail[id]').forEach(el => {
+        el.classList.toggle('open', openDetails.has(el.id));
+      });
+      const btn = document.getElementById('btn-toggle-all');
+      if (btn) btn.textContent = allCollapsed ? '↕ 하위 트리 전체 펴기' : '↕ 하위 트리 전체 접기';
+      const bgBtn = document.getElementById('btn-toggle-bg-daemons');
+      if (bgBtn) bgBtn.textContent = showBgDaemons ? '⚙ 상시 데몬·타이머 표시: 켜짐' : '⚙ 상시 데몬·타이머 표시: 꺼짐';
+    }
+
+    function toggleAllBranches() {
+      allCollapsed = !allCollapsed;
+      applyTreeUiState();
+      saveState();
+      notifyParentResize();
+    }
+
+    function toggleBgDaemons() {
+      showBgDaemons = !showBgDaemons;
+      document.querySelectorAll('[id^="br-"]').forEach(br => {
+        delete br.dataset.daemonsState;
+      });
+      applyTreeUiState();
+      applyTreeFilters();
+      saveState();
+      showToast(showBgDaemons ? '⚙ 상시 데몬·타이머 트리 표시: 켜짐' : '⚙ 상시 데몬·타이머 트리 표시: 꺼짐 (아이콘 클릭 시 개별 펼침)');
+      notifyParentResize();
+    }
+
+    function toggleNodeDaemons(branchId, btn) {
+      const br = document.getElementById(branchId);
+      if (!br) return;
+      const curOpen = br.dataset.daemonsState ? (br.dataset.daemonsState === 'open') : showBgDaemons;
+      const nextOpen = !curOpen && !br.classList.contains('hidden') ? false : (!curOpen || br.classList.contains('hidden'));
+      br.dataset.daemonsState = nextOpen ? 'open' : 'closed';
+      if (nextOpen) {
+        br.classList.remove('hidden');
+      }
+      applyTreeFilters();
+      notifyParentResize();
+    }
+
+    function toggleDetail(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (openDetails.has(id)) openDetails.delete(id);
+      else openDetails.add(id);
+      applyTreeUiState();
+      saveState();
+      notifyParentResize();
+    }
+
+    const liveLogTimers = {};
+    async function fetchLiveLogOnce(provider, sessionId, boxEl) {
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/logs/tail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(sessionId)}&lines=20`);
+        const j = await r.json();
+        if (j && j.ok && Array.isArray(j.lines)) {
+          boxEl.textContent = j.lines.length ? j.lines.join('\n') : '(최근 출력 로그 없음)';
+          boxEl.scrollTop = boxEl.scrollHeight;
+        }
+      } catch (_) {
+        boxEl.textContent = '브리지 서버(127.0.0.1:18765)에서 로그를 불러올 수 없습니다.';
+      }
+      notifyParentResize();
+    }
+
+    function toggleLiveLog(provider, sessionId, boxId, btn) {
+      const box = document.getElementById(boxId);
+      if (!box) return;
+      const isHidden = box.classList.contains('hidden');
+      if (!isHidden) {
+        box.classList.add('hidden');
+        if (btn) btn.textContent = '실시간 로그 ▾';
+        if (liveLogTimers[boxId]) {
+          clearInterval(liveLogTimers[boxId]);
+          delete liveLogTimers[boxId];
+        }
+        notifyParentResize();
+        return;
+      }
+      box.classList.remove('hidden');
+      if (btn) btn.textContent = '실시간 로그 ▴';
+      fetchLiveLogOnce(provider, sessionId, box);
+      if (liveLogTimers[boxId]) clearInterval(liveLogTimers[boxId]);
+      liveLogTimers[boxId] = setInterval(() => {
+        if (!document.body.contains(box) || box.classList.contains('hidden')) {
+          clearInterval(liveLogTimers[boxId]);
+          delete liveLogTimers[boxId];
+          return;
+        }
+        fetchLiveLogOnce(provider, sessionId, box);
+      }, 3000);
+    }
+
+    /* ── WORKTREE STATE MANAGEMENT (SAFE IN SANDBOXED IFRAME + SERVER_STATE SYNCED!) ── */
+    const STORAGE_DISMISSED = 'agy_dismissed_nodes_v1';
+    const STORAGE_PINNED = 'agy_pinned_nodes_v1';
+    const STORAGE_IMPORTED = 'agy_imported_nodes_v1';
+    const STORAGE_SCOPE = 'agy_tree_scope_v1';
+    const STORAGE_TAB = 'agy_tree_tab_v1';
+    const STORAGE_CLOSED_DAYS = 'agy_closed_days_v1';
+    const STORAGE_DENSITY = 'agy_density_v1';
+    const STORAGE_ALL_COLLAPSED = 'agy_all_collapsed_v1';
+    const STORAGE_SHOW_BG_DAEMONS = 'agy_show_bg_daemons_v1';
+    const STORAGE_OPEN_DETAILS = 'agy_open_details_v1';
+
+    function storedIdList(key, fallback) {
+      let ids = fallback;
+      try {
+        const raw = safeGet(key, null);
+        if (raw !== null) ids = JSON.parse(raw);
+      } catch (_) {}
+      if (!Array.isArray(ids)) ids = Array.isArray(fallback) ? fallback : [];
+      return ids.filter(id => typeof id === 'string');
+    }
+
+    const initDismissed = [
+      ...(Array.isArray(SERVER_STATE.dismissed) ? SERVER_STATE.dismissed : []),
+      ...JSON.parse(safeGet(STORAGE_DISMISSED, '[]'))
+    ];
+    let dismissedSet = new Set(initDismissed);
+    let pinnedSet = new Set([
+      ...(Array.isArray(SERVER_STATE.pinned) ? SERVER_STATE.pinned : []),
+      ...storedIdList(STORAGE_PINNED, [])
+    ]);
+    let importedSet = new Set([
+      ...(Array.isArray(SERVER_STATE.imported) ? SERVER_STATE.imported : []),
+      ...JSON.parse(safeGet(STORAGE_IMPORTED, '[]'))
+    ]);
+    let importedCascades = (SERVER_STATE.importedCascades && typeof SERVER_STATE.importedCascades === 'object')
+      ? { ...SERVER_STATE.importedCascades }
+      : {};
+    let currentScope = safeGet(STORAGE_SCOPE, SERVER_STATE.scope || 'current');
+    let currentTab = safeGet(STORAGE_TAB, SERVER_STATE.tab || 'active');
+    let closedDays = Number(safeGet(STORAGE_CLOSED_DAYS, String(SERVER_STATE.closedDays || 7))) === 30 ? 30 : 7;
+    let currentDensity = safeGet(STORAGE_DENSITY, SERVER_STATE.density || 'compact') === 'expanded' ? 'expanded' : 'compact';
+    let allCollapsed = safeGet(STORAGE_ALL_COLLAPSED, String(SERVER_STATE.allCollapsed === true)) === 'true';
+    let showBgDaemons = safeGet(STORAGE_SHOW_BG_DAEMONS, String(SERVER_STATE.showBgDaemons !== false)) !== 'false';
+    const openDetails = new Set(storedIdList(STORAGE_OPEN_DETAILS, SERVER_STATE.openDetails));
+    let userTouchedState = false;
+    let userTouchedTab = false;
+    let lastDismissedId = null;
+    let lastDismissedBatch = [];
+    let toastTimer = null;
+
+    const BRIDGE_URL = (location.protocol.startsWith('http') && location.host)
+      ? location.origin : 'http://127.0.0.1:18765';
+    if (window.parent === window) {
+      document.body.classList.add('standalone-web');
+      document.title = 'AI Usage & Multi-Agent Orchestrator';
+    }
+
+    function saveState(extraBody = {}) {
+      userTouchedState = true;
+      safeSet(STORAGE_DISMISSED, JSON.stringify([...dismissedSet]));
+      safeSet(STORAGE_PINNED, JSON.stringify([...pinnedSet]));
+      safeSet(STORAGE_IMPORTED, JSON.stringify([...importedSet]));
+      safeSet(STORAGE_SCOPE, currentScope);
+      safeSet(STORAGE_TAB, currentTab);
+      safeSet(STORAGE_CLOSED_DAYS, String(closedDays));
+      safeSet(STORAGE_DENSITY, currentDensity);
+      safeSet(STORAGE_ALL_COLLAPSED, String(allCollapsed));
+      safeSet(STORAGE_SHOW_BG_DAEMONS, String(showBgDaemons));
+      safeSet(STORAGE_OPEN_DETAILS, JSON.stringify([...openDetails]));
+      fetch(`${BRIDGE_URL}/api/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dismissed: [...dismissedSet],
+          pinned: [...pinnedSet],
+          imported: [...importedSet],
+          scope: currentScope,
+          tab: currentTab,
+          closedDays: closedDays,
+          density: currentDensity,
+          allCollapsed: allCollapsed,
+          showBgDaemons: showBgDaemons,
+          openDetails: [...openDetails],
+          ...extraBody
+        })
+      }).catch(() => {});
+    }
+
+    function showToast(msg, allowUndo = false) {
+      const bar = document.getElementById('toast-bar');
+      const msgEl = document.getElementById('toast-msg');
+      const undoBtn = document.getElementById('toast-undo-btn');
+      if (!bar || !msgEl) return;
+      msgEl.textContent = msg;
+      if (undoBtn) undoBtn.classList.toggle('hidden', !allowUndo);
+      bar.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { bar.classList.add('hidden'); }, 3800);
+    }
+
+    function markImportedButton(node) {
+      const id = node.dataset.nodeId;
+      const btn = node.querySelector(':scope > .agent-row .import-btn');
+      const cid = importedCascades[id];
+      if (btn) {
+        if (cid) {
+          const link = document.createElement('a');
+          link.href = `conversation://${cid}`;
+          link.target = '_top';
+          link.className = 'icon-act-btn open';
+          link.innerHTML = '<svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg>';
+          link.title = '왼쪽 사이드바(dev)로 가져온 대화창 열기';
+          link.setAttribute('aria-label', link.title);
+          link.onclick = e => e.stopPropagation();
+          btn.replaceWith(link);
+        } else {
+          btn.textContent = '✓';
+          btn.title = '현재 범위 및 왼쪽 사이드바(dev)에 고정됨';
+          btn.setAttribute('aria-label', btn.title);
+        }
+      }
+    }
+
+    function pinImportedNodes() {
+      document.querySelectorAll('.tree-node').forEach(node => {
+        const id = node.dataset.nodeId;
+        const isPin = pinnedSet.has(id) || node.dataset.pinned === '1';
+        node.classList.toggle('pinned', isPin);
+        if (isPin) node.dataset.pinned = '1';
+        else delete node.dataset.pinned;
+        const pBtn = node.querySelector(':scope > .agent-row .pin-btn');
+        if (pBtn) pBtn.classList.toggle('active', isPin);
+      });
+      const view = document.getElementById('view-active');
+      if (!view) return;
+      [...importedSet].forEach(id => {
+        if (dismissedSet.has(id) && !pinnedSet.has(id)) return;
+        const node = document.querySelector(`#view-active .tree-node[data-node-id="${CSS.escape(id)}"]`);
+        if (!node) return;
+        node.dataset.scope = 'current';
+        node.classList.add('imported');
+        markImportedButton(node);
+      });
+    }
+
+    function applyTreeFilters() {
+      let activeRootCount = 0;
+      let closedCount = 0;
+
+      // 1. Active View (#view-active > .tree-node)
+      document.querySelectorAll('#view-active > .tree-node').forEach(node => {
+        const id = node.dataset.nodeId;
+        const isPin = pinnedSet.has(id) || node.dataset.pinned === '1';
+        if (!isPin && dismissedSet.has(id)) {
+          node.classList.add('hidden');
+          return;
+        }
+        const inScope = currentScope === 'all' || node.dataset.scope === 'current' || importedSet.has(id) || isPin;
+        node.classList.toggle('hidden', !inScope);
+        if (inScope) activeRootCount++;
+      });
+
+      // Child nodes inside #view-active
+      document.querySelectorAll('#view-active .tree-node .tree-node').forEach(node => {
+        const isDaemonNode = node.classList.contains('bg-daemon-node');
+        const br = node.parentElement;
+        const brDaemonOpen = br && br.dataset.daemonsState
+          ? (br.dataset.daemonsState === 'open')
+          : showBgDaemons;
+        const hide = dismissedSet.has(node.dataset.nodeId) || (isDaemonNode && !brDaemonOpen);
+        node.classList.toggle('hidden', hide);
+      });
+
+      // Sync .bg-daemon-chip active state on each parent row
+      document.querySelectorAll('#view-active > .tree-node').forEach(parentNode => {
+        const chip = parentNode.querySelector(':scope > .agent-row .bg-daemon-chip');
+        const br = parentNode.querySelector(':scope > .tree-children[id^="br-"]');
+        if (chip && br) {
+          const isOpen = !br.classList.contains('hidden') && (br.dataset.daemonsState ? br.dataset.daemonsState === 'open' : showBgDaemons);
+          chip.classList.toggle('active', isOpen);
+        }
+      });
+
+      // Keep tree branch connectors (├─ / └─) clean for visible children in each group
+      document.querySelectorAll('[id^="br-"]').forEach(container => {
+        const vis = [...container.querySelectorAll(':scope > .tree-node:not(.hidden)')].filter(n => n.querySelector('.tree-branch-char, .tree-elbow'));
+        vis.forEach((n, idx) => {
+          const ch = n.querySelector('.tree-branch-char, .tree-elbow');
+          if (ch) ch.textContent = (idx === vis.length - 1) ? '└─' : '├─';
+        });
+      });
+
+      // 2. Closed Sessions View (#view-closed > .tree-node) filtered by 7d / 30d, scope, and not dismissed
+      document.querySelectorAll('#view-closed > .tree-node').forEach(node => {
+        const id = node.dataset.nodeId;
+        const isPin = pinnedSet.has(id) || node.dataset.pinned === '1';
+        if (!isPin && dismissedSet.has(id)) {
+          node.classList.add('hidden');
+          return;
+        }
+        const age = Number(node.dataset.ageDays || 0);
+        const inDays = age <= closedDays || isPin;
+        const inScope = currentScope === 'all' || node.dataset.scope === 'current' || isPin;
+        const show = inDays && inScope;
+        node.classList.toggle('hidden', !show);
+        if (show) closedCount++;
+      });
+
+      const bAct = document.getElementById('badge-active-cnt');
+      if (bAct) bAct.textContent = activeRootCount;
+      const bCls = document.getElementById('badge-closed-cnt');
+      if (bCls) bCls.textContent = closedCount;
+
+      const sCur = document.getElementById('scope-current');
+      const sAll = document.getElementById('scope-all');
+      if (sCur) sCur.classList.toggle('active', currentScope === 'current');
+      if (sAll) sAll.classList.toggle('active', currentScope === 'all');
+
+      const c7 = document.getElementById('closed-7d');
+      const c30 = document.getElementById('closed-30d');
+      if (c7) c7.classList.toggle('active', closedDays === 7);
+      if (c30) c30.classList.toggle('active', closedDays === 30);
+
+      const cLbl = document.getElementById('closed-summary-label');
+      if (cLbl) {
+        cLbl.textContent = `최근 ${closedDays}일 이내 작업 후 완료·닫은 세션 (${closedCount}개)`;
+      }
+    }
+
+    function toggleSettingsMenu() {
+      const pop = document.getElementById('settings-menu-popover');
+      if (!pop) return;
+      pop.classList.toggle('hidden');
+      notifyParentResize();
+    }
+
+    function closeSettingsMenu() {
+      const pop = document.getElementById('settings-menu-popover');
+      if (pop && !pop.classList.contains('hidden')) {
+        pop.classList.add('hidden');
+        notifyParentResize();
+      }
+    }
+
+    document.addEventListener('click', () => {
+      closeSettingsMenu();
+    });
+
+    function switchTab(tab, fromUser = true) {
+      if (fromUser) userTouchedTab = true;
+      currentTab = (tab === 'closed') ? 'closed' : 'active';
+      const tAct = document.getElementById('tab-active');
+      const tCls = document.getElementById('tab-closed');
+      const vAct = document.getElementById('view-active');
+      const vCls = document.getElementById('view-closed');
+      const cDaysGrp = document.getElementById('closed-days-group');
+      if (tAct) tAct.classList.toggle('active', currentTab === 'active');
+      if (tCls) tCls.classList.toggle('active', currentTab === 'closed');
+      if (vAct) vAct.classList.toggle('hidden', currentTab !== 'active');
+      if (vCls) vCls.classList.toggle('hidden', currentTab !== 'closed');
+      if (cDaysGrp) cDaysGrp.classList.toggle('hidden', currentTab !== 'closed');
+      applyTreeFilters();
+      if (fromUser) saveState();
+      notifyParentResize();
+    }
+
+    function setClosedDays(days) {
+      closedDays = (Number(days) === 30) ? 30 : 7;
+      if (currentTab !== 'closed') {
+        switchTab('closed', true);
+      } else {
+        applyTreeFilters();
+        saveState();
+        notifyParentResize();
+      }
+      showToast(`닫은·완료 세션 필터: 최근 ${closedDays}일 이내`);
+    }
+
+    function togglePin(nodeId, label, btn) {
+      const node = document.querySelector(`.tree-node[data-node-id="${CSS.escape(nodeId)}"]`);
+      if (pinnedSet.has(nodeId)) {
+        pinnedSet.delete(nodeId);
+        if (node) {
+          node.classList.remove('pinned');
+          delete node.dataset.pinned;
+        }
+        if (btn) btn.classList.remove('active');
+        saveState();
+        applyTreeFilters();
+        showToast(`고정 해제됨: '${label}'`);
+      } else {
+        pinnedSet.add(nodeId);
+        dismissedSet.delete(nodeId);
+        if (node) {
+          node.classList.add('pinned');
+          node.dataset.pinned = '1';
+          if (node.parentElement && node.parentElement.id === 'view-closed') {
+            const va = document.getElementById('view-active');
+            if (va) va.appendChild(node);
+          }
+        }
+        if (btn) btn.classList.add('active');
+        saveState({ removeDismissed: [nodeId] });
+        applyTreeFilters();
+        showToast(`📌 '${label}' 고정됨 (완료 정리 시에도 지워지지 않습니다)`);
+      }
+      notifyParentResize();
+    }
+
+    function clearCompletedKeepPinned() {
+      const batch = [];
+      let pinnedKept = 0;
+      document.querySelectorAll('#view-active > .tree-node, #view-closed > .tree-node').forEach(node => {
+        const id = node.dataset.nodeId;
+        if (!id || dismissedSet.has(id)) return;
+        const isPin = pinnedSet.has(id) || node.dataset.pinned === '1' || node.classList.contains('pinned');
+        if (isPin) {
+          pinnedKept++;
+          return;
+        }
+        const isRunning = node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.busy, :scope > .agent-row .status-dot.idle-fresh, :scope > .agent-row .status-dot.running'));
+        if (isRunning && node.parentElement && node.parentElement.id === 'view-active') {
+          return;
+        }
+        dismissedSet.add(id);
+        batch.push(id);
+      });
+      if (!batch.length) {
+        showToast(`정리할 완료 세션이 없습니다 (📌 고정 ${pinnedKept}개 · 🟢 작업중 유지)`);
+        return;
+      }
+      lastDismissedBatch = batch;
+      lastDismissedId = batch[0];
+      saveState({ addDismissed: batch });
+      applyTreeFilters();
+      showToast(`🧹 완료된 세션 ${batch.length}개 정리됨 (📌 핀 고정 ${pinnedKept}개 · 🟢 작업중 유지)`, true);
+      notifyParentResize();
+    }
+
+    async function importRunningSessions() {
+      showToast('📥 현재 돌아가고 있는 세션을 스캔하여 가져오는 중...');
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/refresh?scope=all`);
+        const j = await r.json();
+        if (j && j.ok) {
+          if (Array.isArray(j.accounts)) ACCOUNTS.splice(0, ACCOUNTS.length, ...j.accounts);
+          if (j.activeTreeHtml) {
+            const va = document.getElementById('view-active');
+            if (va) va.innerHTML = j.activeTreeHtml;
+          }
+          if (j.closedTreeHtml) {
+            const vc = document.getElementById('view-closed');
+            if (vc) vc.innerHTML = j.closedTreeHtml;
+          }
+        }
+      } catch (_) {}
+
+      let importedCount = 0;
+      const runningNodes = [...document.querySelectorAll('#view-active > .tree-node')].filter(node => {
+        return node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.running'));
+      });
+      for (const node of runningNodes) {
+        const id = node.dataset.nodeId;
+        if (!id) continue;
+        dismissedSet.delete(id);
+        importedSet.add(id);
+        node.dataset.scope = 'current';
+        importedCount++;
+        const impBtn = node.querySelector(':scope > .agent-row .import-btn');
+        if (impBtn && !importedCascades[id]) {
+          const onclickAttr = impBtn.getAttribute('onclick') || '';
+          const m = onclickAttr.match(/codex resume [0-9a-f-]+/i);
+          if (m) {
+            const nameEl = node.querySelector(':scope > .agent-row .agent-name');
+            const label = nameEl ? nameEl.textContent.trim() : id;
+            fetch(`${BRIDGE_URL}/api/import`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ nodeId: id, cmdText: m[0], label })
+            }).then(res => res.json()).then(ij => {
+              if (ij && ij.ok && ij.cascadeId) {
+                importedCascades[id] = ij.cascadeId;
+                markImportedButton(node);
+              }
+            }).catch(() => {});
+          }
+        }
+      }
+      saveState({ removeDismissed: runningNodes.map(n => n.dataset.nodeId).filter(Boolean) });
+      renderQuotas();
+      applyDensityState();
+      pinImportedNodes();
+      applyTreeUiState();
+      switchTab('active', false);
+      showToast(`✓ 현재 돌아가고 있는 세션 ${importedCount}개를 작업 트리로 가져왔습니다.`);
+      notifyParentResize();
+    }
+
+    function dismissNode(nodeId, label) {
+      if (pinnedSet.has(nodeId)) {
+        pinnedSet.delete(nodeId);
+      }
+      dismissedSet.add(nodeId);
+      lastDismissedId = nodeId;
+      lastDismissedBatch = [nodeId];
+      saveState({ addDismissed: [nodeId] });
+      applyTreeFilters();
+      showToast(`'${label}' 목록에서 숨김 처리됨`, true);
+      notifyParentResize();
+    }
+
+    function restoreClosedSession(nodeId, label) {
+      dismissedSet.delete(nodeId);
+      saveState({ removeDismissed: [nodeId] });
+      applyTreeFilters();
+      showToast(`'${label}' 세션을 복원했습니다.`);
+      notifyParentResize();
+    }
+
+    function undoLastDismiss() {
+      const batch = (Array.isArray(lastDismissedBatch) && lastDismissedBatch.length)
+        ? lastDismissedBatch
+        : (lastDismissedId ? [lastDismissedId] : []);
+      if (!batch.length) return;
+      batch.forEach(id => dismissedSet.delete(id));
+      lastDismissedId = null;
+      lastDismissedBatch = [];
+      saveState({ removeDismissed: batch });
+      applyTreeFilters();
+      document.getElementById('toast-bar').classList.add('hidden');
+      notifyParentResize();
+    }
+
+    /* ── DIRECT CODEX COMMAND BAR ([+ Codex 직접 명령] / [명령 ▶] / [터미널 ↗]) ── */
+    let activeCodexThreadId = '';
+    let activeCodexCwd = '/home/u24c9g5090r64/dev';
+
+    function updateCodexPopoverSpace() {
+      const bar = document.getElementById('codex-direct-bar');
+      if (!bar || bar.classList.contains('hidden')) return;
+      const rect = bar.getBoundingClientRect();
+      const bottomInset = Math.max(0, window.innerHeight - rect.bottom);
+      // Include the fixed bottom inset so the footer clears the entire overlay.
+      const space = `${Math.max(92, Math.ceil(rect.height + bottomInset + 8))}px`;
+      if (document.body.style.getPropertyValue('--codex-popover-space') !== space) {
+        document.body.style.setProperty('--codex-popover-space', space);
+      }
+    }
+
+    function openCodexDirectBar(threadId, label, cwd) {
+      activeCodexThreadId = threadId || '';
+      activeCodexCwd = cwd || '/home/u24c9g5090r64/dev';
+      const bar = document.getElementById('codex-direct-bar');
+      const tgt = document.getElementById('codex-direct-target');
+      const inp = document.getElementById('codex-prompt-input');
+      const shell = document.querySelector('.widget-shell');
+      if (tgt) {
+        tgt.textContent = activeCodexThreadId
+          ? `이어서 명령 · ${label || activeCodexThreadId.slice(0, 8)}`
+          : '새 Codex 6.1-sol · fast';
+      }
+      if (bar) {
+        bar.classList.remove('hidden');
+        bar.classList.add('open');
+      }
+      if (shell) shell.classList.add('popover-open', 'codex-popover-open');
+      document.body.classList.add('codex-popover-open');
+      updateCodexPopoverSpace();
+      if (inp) {
+        inp.focus();
+        inp.select();
+      }
+      notifyHostResize();
+    }
+
+    function hideCodexDirectBar() {
+      const bar = document.getElementById('codex-direct-bar');
+      const shell = document.querySelector('.widget-shell');
+      if (bar) {
+        bar.classList.add('hidden');
+        bar.classList.remove('open');
+      }
+      if (shell) shell.classList.remove('popover-open', 'codex-popover-open');
+      document.body.classList.remove('codex-popover-open');
+      document.body.style.removeProperty('--codex-popover-space');
+      notifyHostResize();
+    }
+
+    function closeCodexDirectBar() {
+      hideCodexDirectBar();
+    }
+
+    function openCodexPopover(threadId, label, cwd) {
+      openCodexDirectBar(threadId, label, cwd);
+    }
+
+    function closeCodexPopover() {
+      hideCodexDirectBar();
+    }
+
+    async function sendCodexDirectCommand() {
+      const inp = document.getElementById('codex-prompt-input');
+      const btn = document.getElementById('btn-codex-send');
+      const prompt = inp ? inp.value.trim() : '';
+      if (!prompt) {
+        showToast('Codex에 전달할 명령을 입력해 주세요.');
+        if (inp) inp.focus();
+        return;
+      }
+      if (btn) { btn.disabled = true; btn.textContent = '전송중...'; }
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/codex-exec`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            threadId: activeCodexThreadId,
+            prompt: prompt,
+            cwd: activeCodexCwd,
+            effort: 'high',
+            tier: 'priority'
+          })
+        });
+        const j = await r.json();
+        if (j && j.ok) {
+          if (inp) inp.value = '';
+          showToast(`✓ ${j.title || '✦ Codex 6.1-sol Fast'} 실행 시작! (PID ${j.pid})`);
+          setTimeout(() => refreshByScope(), 1800);
+        } else {
+          showToast(`오류: ${(j && j.error) || 'Codex 실행 실패'}`);
+        }
+      } catch (e) {
+        showToast('브리지 서버 연결 실패 (127.0.0.1:18765)');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '실행 ▶'; }
+      }
+    }
+
+    async function openCodexTerminal(cmdTextOverride, cwdOverride) {
+      const cmdText = cmdTextOverride || (activeCodexThreadId ? `codex resume ${activeCodexThreadId}` : 'codex -m gpt-6.1-sol');
+      const cwd = cwdOverride || activeCodexCwd || '/home/u24c9g5090r64/dev';
+      copyText(cmdText);
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/open-terminal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmdText, threadId: activeCodexThreadId, cwd })
+        });
+        const j = await r.json();
+        if (j && j.launched) {
+          showToast(`✓ 데스크탑 터미널에서 '${cmdText}' 실행 창을 열었습니다.`);
+          return;
+        }
+      } catch (_) {}
+      showCmdBox(cmdText, true);
+      showToast('명령어가 복사되었습니다. 터미널에 붙여넣어 실행하세요.');
+    }
+
+    function openCodexTerminalFromBox() {
+      const input = document.getElementById('cmd-box-input');
+      if (input && input.value) openCodexTerminal(input.value);
+    }
+
+    /* Sandbox-safe copy */
+    function copyText(text) {
+      let ok = false;
+      const active = document.activeElement;
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try { ta.setSelectionRange(0, text.length); } catch (_) {}
+      try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+      ta.remove();
+      if (active && active.focus) { try { active.focus({ preventScroll: true }); } catch (_) {} }
+      if (!ok) {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
+        } catch (_) {}
+      }
+      return ok;
+    }
+
+    function showCmdBox(text, copied) {
+      const box = document.getElementById('cmd-box');
+      const input = document.getElementById('cmd-box-input');
+      const label = document.getElementById('cmd-box-label');
+      input.value = text;
+      label.textContent = copied ? '✓ 복사됨' : '선택됨 · Ctrl+C';
+      label.classList.toggle('ok', !!copied);
+      box.classList.remove('hidden');
+      try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); }
+      input.select();
+      try { input.setSelectionRange(0, text.length); } catch (_) {}
+      notifyParentResize();
+    }
+
+    function hideCmdBox() {
+      document.getElementById('cmd-box').classList.add('hidden');
+      notifyParentResize();
+    }
+
+    function copyCmdBox(btn) {
+      const input = document.getElementById('cmd-box-input');
+      input.focus();
+      input.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      if (!ok) ok = copyText(input.value);
+      const label = document.getElementById('cmd-box-label');
+      label.textContent = ok ? '✓ 복사됨' : '선택됨 · Ctrl+C';
+      label.classList.toggle('ok', ok);
+      input.select();
+      if (btn) { btn.textContent = ok ? '✓' : '선택됨'; setTimeout(() => { btn.textContent = '복사'; }, 1200); }
+    }
+
+    function copySessionCmd(nodeId, cmdText, btn) {
+      const ok = copyText(cmdText);
+      showCmdBox(cmdText, ok);
+      if (btn) {
+        const prev = btn.textContent;
+        btn.textContent = ok ? '✓' : '선택됨';
+        setTimeout(() => { btn.textContent = prev; }, 1200);
+      }
+    }
+
+    async function importOrCopySession(nodeId, cmdText, btn) {
+      const ok = copyText(cmdText);
+      const node = document.querySelector(`.tree-node[data-node-id="${CSS.escape(nodeId)}"]`);
+      const nameEl = node ? node.querySelector(':scope > .agent-row .agent-name') : null;
+      const label = nameEl ? nameEl.textContent.trim() : nodeId;
+
+      dismissedSet.delete(nodeId);
+      importedSet.add(nodeId);
+      currentScope = 'current';
+      saveState({ removeDismissed: [nodeId] });
+      showCmdBox(cmdText, ok);
+      showToast(`'${label}' → 왼쪽 사이드바(dev) 및 활성 세션으로 가져오는 중...`);
+
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId, cmdText, label })
+        });
+        const j = await r.json();
+        if (j && j.ok && j.cascadeId) {
+          importedCascades[nodeId] = j.cascadeId;
+          if (node) markImportedButton(node);
+          showToast(`✓ 왼쪽 사이드바(dev)에 '${label}' 생성 완료! [열기 ↗]로 바로 이동 가능`);
+        } else {
+          showToast(`현재 범위 최상단에 고정됨 · 명령어 복사 완료`);
+        }
+      } catch (_) {
+        showToast(ok ? '명령어 복사됨' : '위 입력창에서 Ctrl+C로 복사');
+      }
+      notifyParentResize();
+    }
+
+    function setScope(scope) {
+      currentScope = scope;
+      saveState();
+      applyTreeFilters();
+      showToast(scope === 'current' ? '범위: 현재 워크스페이스 (/dev) 및 가져온 세션' : '범위: 전체 레포지토리 (just-this, keti-synapse 등 포함)');
+      notifyParentResize();
+    }
+
+    async function refreshByScope() {
+      const btn = document.getElementById('btn-refresh-scope');
+      if (btn) btn.classList.add('spinning');
+      const scopeLabel = currentScope === 'current' ? '현재 범위(/dev)' : '전체 레포';
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/refresh?scope=${encodeURIComponent(currentScope)}`);
+        const j = await r.json();
+        if (j && j.ok && Array.isArray(j.accounts)) {
+          ACCOUNTS.splice(0, ACCOUNTS.length, ...j.accounts);
+          if (j.activeTreeHtml) {
+            const va = document.getElementById('view-active');
+            if (va) va.innerHTML = j.activeTreeHtml;
+          }
+          if (j.closedTreeHtml) {
+            const vc = document.getElementById('view-closed');
+            if (vc) vc.innerHTML = j.closedTreeHtml;
+          }
+          renderQuotas();
+          applyDensityState();
+          pinImportedNodes();
+          applyTreeUiState();
+          applyTreeFilters();
+          notifyParentResize();
+          if (btn) btn.classList.remove('spinning');
+          showToast(`✓ 실시간 사용량 + ${scopeLabel} 새로고침 완료 (${j.timestamp_kst || '방금'})`);
+          return;
+        }
+      } catch (_) {}
+      renderQuotas();
+      applyDensityState();
+      applyTreeUiState();
+      applyTreeFilters();
+      notifyParentResize();
+      setTimeout(() => {
+        if (btn) btn.classList.remove('spinning');
+        showToast(`${scopeLabel} 기준으로 새로고침 완료`);
+      }, 300);
+    }
+
+    function normalizeTreeSig(html) {
+      return String(html || '')
+        .replace(/<!--__[A-Z_]+__-->/g, '')
+        .replace(/data-sub-age="\d+"/g, '')
+        .replace(/title="[^"]*후 증발\)"/g, '')
+        .replace(/status-dot age-(?:green|yellow|orange|red)/g, 'status-dot age-any')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function smartPatchTree(container, newHtml) {
+      if (!container || !newHtml) return false;
+      const prevSig = container.dataset.treeSig || normalizeTreeSig(container.innerHTML);
+      const nextSig = normalizeTreeSig(newHtml);
+      if (prevSig === nextSig && container.children.length > 0) {
+        container.dataset.treeSig = nextSig;
+        return false;
+      }
+      const subAges = {};
+      container.querySelectorAll('.tree-node.sub-ripening[data-node-id]').forEach(n => {
+        if (n.dataset.subAge) subAges[n.dataset.nodeId] = n.dataset.subAge;
+      });
+      const daemonStates = {};
+      container.querySelectorAll('[id^="br-"]').forEach(br => {
+        if (br.dataset.daemonsState) daemonStates[br.id] = br.dataset.daemonsState;
+      });
+      container.innerHTML = newHtml;
+      container.dataset.treeSig = nextSig;
+      Object.entries(subAges).forEach(([id, age]) => {
+        const el = container.querySelector(`.tree-node.sub-ripening[data-node-id="${CSS.escape(id)}"]`);
+        if (el && el.dataset.subRunning !== '1') el.dataset.subAge = age;
+      });
+      Object.entries(daemonStates).forEach(([brId, st]) => {
+        const br = container.querySelector(`#${CSS.escape(brId)}`);
+        if (br) br.dataset.daemonsState = st;
+      });
+      return true;
+    }
+
+    async function initLiveBridge() {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 600);
+      try {
+        const r = await fetch(`${BRIDGE_URL}/api/status`, { signal: controller.signal });
+        const j = await r.json();
+        if (j && j.ok) {
+          if (Array.isArray(j.accounts) && j.accounts.length > 0) {
+            ACCOUNTS.splice(0, ACCOUNTS.length, ...j.accounts);
+          }
+          const va = document.getElementById('view-active');
+          const vc = document.getElementById('view-closed');
+          const changedActive = smartPatchTree(va, j.activeTreeHtml);
+          const changedClosed = smartPatchTree(vc, j.closedTreeHtml);
+          // Startup hydration must never overwrite an interaction made while status was in flight.
+          if (j.state && !userTouchedState) {
+            if (Array.isArray(j.state.dismissed)) dismissedSet = new Set([...dismissedSet, ...j.state.dismissed]);
+            if (Array.isArray(j.state.pinned)) pinnedSet = new Set([...pinnedSet, ...j.state.pinned]);
+            if (Array.isArray(j.state.imported)) importedSet = new Set([...importedSet, ...j.state.imported]);
+            if (j.state.importedCascades) importedCascades = j.state.importedCascades;
+            if (j.state.closedDays) closedDays = Number(j.state.closedDays) === 30 ? 30 : 7;
+            if (!userTouchedTab && j.state.tab) {
+              currentTab = j.state.tab === 'closed' ? 'closed' : 'active';
+            }
+            if (safeGet(STORAGE_DENSITY, null) === null && ['compact', 'expanded'].includes(j.state.density)) {
+              currentDensity = j.state.density;
+            }
+            if (safeGet(STORAGE_ALL_COLLAPSED, null) === null && typeof j.state.allCollapsed === 'boolean') {
+              allCollapsed = j.state.allCollapsed;
+            }
+            if (safeGet(STORAGE_SHOW_BG_DAEMONS, null) === null && typeof j.state.showBgDaemons === 'boolean') {
+              showBgDaemons = j.state.showBgDaemons;
+            }
+            if (safeGet(STORAGE_OPEN_DETAILS, null) === null && Array.isArray(j.state.openDetails)) {
+              openDetails.clear();
+              j.state.openDetails.filter(id => typeof id === 'string').forEach(id => openDetails.add(id));
+            }
+          }
+          renderQuotas();
+          if (changedActive || changedClosed || !va.dataset.initialized) {
+            va.dataset.initialized = '1';
+            applyDensityState();
+            pinImportedNodes();
+            applyTreeUiState();
+            switchTab(currentTab, false);
+            notifyParentResize();
+          }
+        }
+      } catch (_) {} finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    let lastSentResizeH = 0;
+    function notifyHostResize() {
+      notifyParentResize(true);
+    }
+
+    function notifyParentResize(force = false) {
+      try {
+        const shell = document.querySelector('.widget-shell');
+        if (!shell) return;
+        updateCodexPopoverSpace();
+        const h = Math.max(360, Math.ceil(shell.getBoundingClientRect().height + 16));
+        if (force !== true && Math.abs(h - lastSentResizeH) < 4) return;
+        lastSentResizeH = h;
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'RESIZE', height: h }, '*');
+        }
+      } catch (_) {}
+    }
+
+    function tickSubRipening() {
+      let changedTree = false;
+      document.querySelectorAll('#view-active .tree-node.sub-ripening').forEach(node => {
+        if (node.classList.contains('hidden') || node.classList.contains('sub-evaporating')) return;
+        if (node.dataset.subRunning === '1') return;
+        const age = Number(node.dataset.subAge || 0) + 1;
+        node.dataset.subAge = String(age);
+        const dot = node.querySelector(':scope > .agent-row .status-dot');
+        if (age >= 240) {
+          node.classList.add('sub-evaporating');
+          setTimeout(() => {
+            if (node.dataset.nodeId) dismissedSet.add(node.dataset.nodeId);
+            node.remove();
+            applyTreeFilters();
+            notifyParentResize();
+          }, 650);
+          changedTree = true;
+          return;
+        }
+        if (!dot) return;
+        const rem = Math.max(1, 240 - age);
+        let cls = 'age-green';
+        let tip = `🟢 SUB 완료 · 초록 단계 (${age}s / 60s · ${rem}s 후 증발)`;
+        if (age >= 180) {
+          cls = 'age-red';
+          tip = `🔴 SUB 소멸 임박 · 빨강 단계 (${age}s / 240s · ${rem}s 후 증발)`;
+        } else if (age >= 120) {
+          cls = 'age-orange';
+          tip = `🟠 SUB 숙성 · 주황 단계 (${age}s / 180s · ${rem}s 후 증발)`;
+        } else if (age >= 60) {
+          cls = 'age-yellow';
+          tip = `🟡 SUB 숙성 · 노랑 단계 (${age}s / 120s · ${rem}s 후 증발)`;
+        }
+        dot.className = `status-dot ${cls}`;
+        dot.title = tip;
+      });
+      if (changedTree) notifyParentResize();
+    }
+
+    renderQuotas();
+    applyDensityState();
+    pinImportedNodes();
+    applyTreeUiState();
+    switchTab(currentTab, false);
+    notifyParentResize();
+    [50, 180, 450].forEach(ms => setTimeout(notifyParentResize, ms));
+    window.addEventListener('load', notifyParentResize);
+    window.addEventListener('resize', notifyParentResize);
+    try {
+      const shellEl = document.querySelector('.widget-shell');
+      if (shellEl && typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => notifyParentResize()).observe(shellEl);
+        const barEl = document.getElementById('codex-direct-bar');
+        if (barEl) new ResizeObserver(() => notifyParentResize()).observe(barEl);
+      }
+    } catch (_) {}
+    initLiveBridge().finally(notifyParentResize);
+    setInterval(tickSubRipening, 1000);
+    if (window.parent === window) {
+      setInterval(initLiveBridge, 4000);
+    }
+  </script>
+</body>
+</html>

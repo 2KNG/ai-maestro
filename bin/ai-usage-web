@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+URL="http://127.0.0.1:18765/"
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$URL" >/dev/null 2>&1 &
+elif command -v open >/dev/null 2>&1; then
+  open "$URL"
+else
+  echo "$URL"
+fi

@@ -1,0 +1,12 @@
+{
+  "name": "codex-claude-bridge",
+  "displayName": "Codex & Claude ProMax Bridge",
+  "description": "로컬 PC에 로그인된 OpenAI Codex ProMax (gpt-6.1-sol · ultra · ultrafast) 및 Claude Code Team (fable / opus-4-6)을 Antigravity 내부에서 슬래시 명령어(/codex, /claude)와 우측 보조 패널 스튜디오로 직접 실행합니다.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "/codex 현재 워크스페이스 변경사항 코드 리뷰 및 버그 점검해줘",
+    "/claude 복잡한 아키텍처 설계 및 멀티파일 리팩토링 진행해줘",
+    "우측 패널에 Codex & Claude Studio 열어서 직접 모델/속도 골라 실행할래"
+  ]
+}
