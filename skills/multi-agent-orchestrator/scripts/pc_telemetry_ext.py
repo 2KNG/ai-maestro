@@ -221,8 +221,64 @@ def _collect_ram() -> dict[str, Any]:
     }
 
 
+_ws_scan_running = False
+
+
+def _bg_scan_workspace(dev_dir: str) -> None:
+    global _cached_workspace_info, _cached_workspace_ts, _ws_scan_running
+    try:
+        proc = subprocess.run(
+            ["du", "-s", "--apparent-size", "-B1", "--max-depth=1", dev_dir],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15.0,
+            text=True,
+        )
+        out = proc.stdout or ""
+        ws_total_bytes = 0
+        items: list[tuple[int, str]] = []
+        for line in out.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2:
+                continue
+            try:
+                sz = int(parts[0])
+            except ValueError:
+                continue
+            p = parts[1].rstrip("/")
+            if os.path.abspath(p) == os.path.abspath(dev_dir):
+                ws_total_bytes = sz
+            else:
+                bname = os.path.basename(p)
+                if not bname.startswith("."):
+                    items.append((sz, bname))
+        items.sort(reverse=True)
+        if ws_total_bytes == 0 and items:
+            ws_total_bytes = sum(sz for sz, _ in items)
+        top_dirs = [
+            {
+                "name": bname,
+                "size_gb": round(sz / (1024 ** 3), 2),
+                "size_label": _fmt_bytes_short(sz),
+            }
+            for sz, bname in items[:4]
+        ]
+        if ws_total_bytes > 0 or top_dirs:
+            _cached_workspace_info = {
+                "workspace_path": "~/dev",
+                "workspace_bytes": ws_total_bytes,
+                "workspace_label": _fmt_bytes_short(ws_total_bytes),
+                "top_projects": top_dirs,
+            }
+            _cached_workspace_ts = time.time()
+    except Exception:
+        pass
+    finally:
+        _ws_scan_running = False
+
+
 def _collect_workspace_storage() -> dict[str, Any]:
-    global _cached_workspace_info, _cached_workspace_ts
+    global _cached_workspace_info, _cached_workspace_ts, _ws_scan_running
     now = time.time()
     dev_dir = os.path.expanduser("~/dev")
     disk = shutil.disk_usage(dev_dir if os.path.isdir(dev_dir) else "/")
@@ -231,56 +287,23 @@ def _collect_workspace_storage() -> dict[str, Any]:
     disk_free_gb = disk.free / (1024 ** 3)
     disk_pct = (disk.used / max(1, disk.total)) * 100.0
 
-    if _cached_workspace_info is not None and (now - _cached_workspace_ts) < WORKSPACE_TTL_SEC:
-        ws = dict(_cached_workspace_info)
-    else:
-        ws_total_bytes = 0
-        top_dirs: list[dict[str, Any]] = []
-        if os.path.isdir(dev_dir):
-            try:
-                proc = subprocess.run(
-                    ["du", "-sb", "--max-depth=1", dev_dir],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=6.0,
-                    text=True,
-                )
-                out = proc.stdout or ""
-                items: list[tuple[int, str]] = []
-                for line in out.splitlines():
-                    parts = line.strip().split(None, 1)
-                    if len(parts) != 2:
-                        continue
-                    try:
-                        sz = int(parts[0])
-                    except ValueError:
-                        continue
-                    p = parts[1].rstrip("/")
-                    if os.path.abspath(p) == os.path.abspath(dev_dir):
-                        ws_total_bytes = sz
-                    else:
-                        bname = os.path.basename(p)
-                        if not bname.startswith("."):
-                            items.append((sz, bname))
-                items.sort(reverse=True)
-                if ws_total_bytes == 0 and items:
-                    ws_total_bytes = sum(sz for sz, _ in items)
-                for sz, bname in items[:4]:
-                    top_dirs.append({
-                        "name": bname,
-                        "size_gb": round(sz / (1024 ** 3), 2),
-                        "size_label": _fmt_bytes_short(sz),
-                    })
-            except Exception:
-                pass
-        ws = {
-            "workspace_path": "~/dev",
-            "workspace_bytes": ws_total_bytes,
-            "workspace_label": _fmt_bytes_short(ws_total_bytes),
-            "top_projects": top_dirs,
-        }
-        _cached_workspace_info = ws
-        _cached_workspace_ts = now
+    if _cached_workspace_info is None:
+        # First call: wait up to 1.2s for background scan so SSR has real numbers if fast, otherwise return immediately
+        if not _ws_scan_running and os.path.isdir(dev_dir):
+            _ws_scan_running = True
+            t = threading.Thread(target=_bg_scan_workspace, args=(dev_dir,), daemon=True)
+            t.start()
+            t.join(timeout=1.2)
+    elif (now - _cached_workspace_ts) >= WORKSPACE_TTL_SEC and not _ws_scan_running and os.path.isdir(dev_dir):
+        _ws_scan_running = True
+        threading.Thread(target=_bg_scan_workspace, args=(dev_dir,), daemon=True).start()
+
+    ws = dict(_cached_workspace_info) if _cached_workspace_info else {
+        "workspace_path": "~/dev",
+        "workspace_bytes": disk.used,
+        "workspace_label": f"{disk_used_gb:.0f}G",
+        "top_projects": [],
+    }
 
     return {
         "disk_used_gb": round(disk_used_gb, 1),
