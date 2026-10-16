@@ -26,7 +26,7 @@ git clone https://github.com/2KNG/ai-maestro.git ~/dev/ai-maestro
 chmod +x ~/dev/ai-maestro/install.sh
 ~/dev/ai-maestro/install.sh
 ```
-> **💡 지속 관리 아키텍처**: `install.sh`는 복사본을 방치하지 않고 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{agy-orca,ai-usage,ai-usage-widget,ai-usage-web}`를 모두 `~/dev/ai-maestro` 레포지토리 내부로 **심볼릭 링크(Symlink)** 연결합니다. 따라서 기능 수정 후 `~/dev/ai-maestro`에서 바로 `git commit && git push`로 지속 관리할 수 있습니다.
+> **💡 지속 관리 아키텍처**: `install.sh`는 복사본을 방치하지 않고 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{maestro,ai-usage,ai-usage-widget,ai-usage-web}`를 모두 `~/dev/ai-maestro` 레포지토리 내부로 **심볼릭 링크(Symlink)** 연결합니다. 따라서 기능 수정 후 `~/dev/ai-maestro`에서 바로 `git commit && git push`로 지속 관리할 수 있습니다.
 
 ---
 
@@ -66,8 +66,8 @@ LLM 토큰을 단 1토큰도 소모하지 않고 로컬 프로세스·SQLite·JS
 ---
 
 ### 4. 🌿 Git Worktree 격리 병렬 실행 & SQLite/FTS5 세션 핸드오버 메모리
-- **Git Worktree 병렬 실행 (`--worktree`)**: 여러 에이전트가 동시에 코딩할 때 파일 충돌이 나지 않도록 `.orca-worktrees/` 아래에 독립 브랜치를 생성해 작업 후 검증·병합합니다.
-- **로컬 핸드오버 메모리 (`orca_memory.py`)**: `~/.gemini/antigravity/orca_memory.sqlite` (FTS5 전문 검색 지원)에 에이전트 간 인계 노트(수정한 파일, 요약, 다음 단계)를 자동 기록하여 `Codex ➔ Claude ➔ Antigravity` 간 무손실 컨텍스트 인계를 보장합니다.
+- **Git Worktree 병렬 실행 (`--worktree`)**: 여러 에이전트가 동시에 코딩할 때 파일 충돌이 나지 않도록 독립 Git Worktree/브랜치를 생성해 작업 후 검증·병합합니다.
+- **로컬 핸드오버 메모리**: SQLite 데이터베이스(FTS5 전문 검색 지원)에 에이전트 간 인계 노트(수정한 파일, 요약, 다음 단계)를 자동 기록하여 `Codex ➔ Claude ➔ Antigravity` 간 무손실 컨텍스트 인계를 보장합니다.
 - **자동 품질 게이트 (`--verify`)**: 워커 종료 직후 `py_compile`, `pytest`, `ruff`, `tsc --noEmit` 등을 자동 실행해 통과 여부를 즉시 검증합니다.
 
 ---
@@ -79,13 +79,13 @@ LLM 토큰을 단 1토큰도 소모하지 않고 로컬 프로세스·SQLite·JS
 ai-usage
 
 # 2. 쿼터 기반 자동 라우팅 워커 실행 (난이도: high | medium | low)
-agy-orca worker-start --pool auto --difficulty high --cwd "$PWD" --wait --spec "요구사항 설명"
+maestro worker-start --pool auto --difficulty high --cwd "$PWD" --wait --spec "요구사항 설명"
 
 # 3. Git Worktree 격리 브랜치에서 안전하게 코딩 워커 실행 + 자동 검증 게이트
-agy-orca worker-start --pool auto --difficulty high --worktree --verify "pytest -q" --cwd "$PWD" --wait --spec "기능 구현"
+maestro worker-start --pool auto --difficulty high --worktree --verify "pytest -q" --cwd "$PWD" --wait --spec "기능 구현"
 
 # 4. 특정 풀 지정 실행 (codex | agy-argon | agy-claude | agy-flash | claude)
-agy-orca worker-start --pool codex --tier priority --cwd "$PWD" --wait --spec "백엔드 로직 리팩토링"
+maestro worker-start --pool codex --tier priority --cwd "$PWD" --wait --spec "백엔드 로직 리팩토링"
 
 # 5. AOH 라이브 위젯 HTML 수동 생성 / 갱신
 ai-usage-widget /tmp/usage_widget.html
@@ -99,12 +99,12 @@ ai-usage-web
 ## 📂 디렉토리 구조 (Repository Layout)
 
 ```text
-agy-orca/
+ai-maestro/
 ├── install.sh                                 # 원클릭 설치 & 심볼릭 링크/systemd 자동 구성 스크립트
 ├── LICENSE                                    # MIT 라이선스 및 서드파티 고지사항
 ├── README.md                                  # 프로젝트 문서
 ├── bin/                                       # ~/.local/bin 심볼릭 링크용 실행 래퍼
-│   ├── agy-orca
+│   ├── maestro                                # 메인 CLI 래퍼
 │   ├── ai-usage
 │   ├── ai-usage-widget
 │   └── ai-usage-web
@@ -118,8 +118,7 @@ agy-orca/
 │       ├── SKILL.md                           # 멀티에이전트 오케스트레이터 스킬 정의서
 │       └── scripts/
 │           ├── check_all_usage.py             # 3대 풀 쿼터·트리·라우팅 수집 엔진
-│           ├── agy_orca.py                        # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
-│           ├── orca_memory.py                 # SQLite + FTS5 크로스 에이전트 핸드오버 메모리
+│           ├── maestro.py                     # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
 │           ├── render_usage_widget.py         # AOH 위젯 SSR 렌더러 & Gzip 컴팩트 패커
 │           ├── usage_widget_template.html     # AOH 듀얼 링 & 숙성 애니메이션 위젯 템플릿
 │           └── widget_bridge_daemon.py        # 18765 포트 실시간 브리지 & 세션 복원 데몬

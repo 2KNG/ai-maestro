@@ -2,7 +2,7 @@
 name: codex
 description: >-
   Run tasks directly on the local OpenAI Codex ProMax CLI (gpt-6.1-sol, ultra/high effort,
-  ultrafast/priority speed tier) via agy-orca or codex exec. Triggered when the user types /codex
+  ultrafast/priority speed tier) via maestro or codex exec. Triggered when the user types /codex
   or asks to run a task directly with local Codex.
 ---
 
@@ -10,9 +10,9 @@ description: >-
 
 When the user invokes `/codex` (or asks to run their prompt directly via local Codex):
 
-1. Execute the user's task directly via `agy-orca` on the `codex` pool (`gpt-6.1-sol`, `ultra` effort, `ultrafast` service tier unless the user specifies `priority` or `high`/`medium` effort):
+1. Execute the user's task directly via `maestro` on the `codex` pool (`gpt-6.1-sol`, `ultra` effort, `ultrafast` service tier unless the user specifies `priority` or `high`/`medium` effort):
    ```bash
-   /home/u24c9g5090r64/.local/bin/agy-orca worker-start --pool codex --effort ultra --tier ultrafast --cwd /home/u24c9g5090r64/dev --wait --spec "<USER_PROMPT>"
+   /home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --effort ultra --tier ultrafast --cwd /home/u24c9g5090r64/dev --wait --spec "<USER_PROMPT>"
    ```
 2. If the user asked for a code review (`/codex review`), run:
    ```bash

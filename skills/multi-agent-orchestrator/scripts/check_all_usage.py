@@ -818,6 +818,79 @@ def get_antigravity_agent_tree() -> list[dict]:
     return tree
 
 
+TURN_TIMING_KEYS = ("turn_start_ts", "turn_end_ts", "turn_duration_sec")
+
+
+def _timing_timestamp(value) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            ts = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    return ts if math.isfinite(ts) and ts > 0 else None
+
+
+def _jsonl_tail(path: str, limit: int = 65536) -> list[str]:
+    """Read bounded bytes; a partial first/last JSON record is ignored by callers."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            return f.read(limit).decode("utf-8", errors="replace").splitlines()
+    except (OSError, TypeError):
+        return []
+
+
+def _extract_turn_timing(lines: list[str], *, antigravity: bool = False,
+                         fallback_start=None, fallback_end=None) -> dict:
+    first_ts = last_ts = last_step_ts = explicit_start = gap_start = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        ts = _timing_timestamp(event.get("created_at" if antigravity else "timestamp"))
+        last_step_ts = ts
+        if ts is None:
+            continue
+        if first_ts is None:
+            first_ts = ts
+        if last_ts is not None and ts - last_ts > 600:
+            gap_start = ts
+        payload = event.get("payload") or {}
+        kind = event.get("type") if antigravity else (
+            payload.get("type") if isinstance(payload, dict) else None)
+        if kind in (("USER_INPUT",) if antigravity else ("user_message", "task_started")):
+            explicit_start = ts
+        last_ts = ts
+    end = (last_step_ts or _timing_timestamp(fallback_end) or last_ts) if antigravity else last_ts
+    if antigravity:
+        start = explicit_start or gap_start or first_ts
+    else:
+        start = max(explicit_start or 0, gap_start or 0) or first_ts
+    if start is None:
+        start = _timing_timestamp(fallback_start)
+        # Room creation is usable only for a short, newly created session.
+        if end is not None and (start is None or end - start > 7200):
+            start = end
+    if end is None:
+        end = start
+    return {"turn_start_ts": start, "turn_end_ts": end,
+            "turn_duration_sec": max(1, int(end - start)) if start is not None and end is not None else None}
+
+
+def _extract_agy_turn_timing(cid, created_time_iso, last_mod_iso) -> dict:
+    path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+    return _extract_turn_timing(_jsonl_tail(path), antigravity=True,
+                                fallback_start=created_time_iso, fallback_end=last_mod_iso)
+
+
 def _fetch_antigravity_agent_tree() -> list[dict]:
     addr, token = discover_ls_credentials()
     if not addr:
@@ -936,6 +1009,7 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "status": status,
             "created_time": created_time,
             "last_modified_time": last_mod,
+            **_extract_agy_turn_timing(cid, created_time, last_mod),
             "workspaces": workspaces,
             "agy_origin": True,
             "nesting_depth": depth,
@@ -994,11 +1068,13 @@ def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback
     turn_context = None
     turn_completed = False
     seen_lifecycle = False
+    timing = dict.fromkeys(TURN_TIMING_KEYS)
     if not path or not os.path.exists(path):
         return {
             "token_count": {"total_tokens": 0, "model_context_window": 475000, "percent": 0.0},
             "turn_context": {"model": fallback_model, "reasoning_effort": fallback_effort, "service_tier": default_tier},
             "turn_completed": False,
+            **dict.fromkeys(TURN_TIMING_KEYS),
         }
     try:
         size = os.path.getsize(path)
@@ -1008,6 +1084,7 @@ def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback
                 f.seek(size - chunk_size)
             chunk = f.read().decode("utf-8", errors="ignore")
         lines = chunk.splitlines()
+        timing = _extract_turn_timing(lines)
         for line in reversed(lines):
             if not seen_lifecycle and '"event_msg"' in line:
                 try:
@@ -1065,7 +1142,8 @@ def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback
         token_count = {"total_tokens": 0, "model_context_window": 475000, "percent": 0.0}
     if not turn_context:
         turn_context = {"model": fallback_model, "reasoning_effort": fallback_effort, "service_tier": default_tier}
-    return {"token_count": token_count, "turn_context": turn_context, "turn_completed": turn_completed}
+    return {"token_count": token_count, "turn_context": turn_context, "turn_completed": turn_completed,
+            **timing}
 
 
 def _clean_codex_label(nick: str | None, role: str | None, agent_path: str | None, title: str | None, first_msg: str | None) -> str:
@@ -1201,6 +1279,8 @@ def get_codex_agent_tree(db_path: str = "~/.codex/state_5.sqlite", max_parents: 
                         "status": sc_status,
                         "created_at": sc_created,
                         "updated_at": sc_updated,
+                        "rollout_path": sc_rollout,
+                        **{key: sc_data.get(key) for key in TURN_TIMING_KEYS},
                         "is_running": (not sc_data.get("turn_completed") and sc_recency <= 60),
                         "token_count": sc_data["token_count"],
                         "turn_context": sc_data["turn_context"],
@@ -1217,6 +1297,8 @@ def get_codex_agent_tree(db_path: str = "~/.codex/state_5.sqlite", max_parents: 
                     "status": c_status,
                     "created_at": c_created,
                     "updated_at": c_updated,
+                    "rollout_path": c_rollout,
+                    **{key: c_data.get(key) for key in TURN_TIMING_KEYS},
                     "is_running": (not c_data.get("turn_completed") and c_recency <= 60),
                     "token_count": c_data["token_count"],
                     "turn_context": c_data["turn_context"],
@@ -1235,6 +1317,7 @@ def get_codex_agent_tree(db_path: str = "~/.codex/state_5.sqlite", max_parents: 
                 "turn_completed": turn_done,
                 "created_at": p_created,
                 "updated_at": p_updated,
+                **{key: p_data.get(key) for key in TURN_TIMING_KEYS},
                 "age_days": age_days,
                 "agy_origin": agy_origin,
                 "role": "Parent Coordinator" if child_cnt > 0 else "Standalone Session",

@@ -136,7 +136,7 @@ def _fetch_verified_leaderboard_Update() -> dict[str, Any]:
         # Check Aider official leaderboard YAML/JSON raw metadata on GitHub (pure static file, 0 tokens)
         req = urllib.request.Request(
             "https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml",
-            headers={"User-Agent": "agy-orca-benchmark-sync/1.0"},
+            headers={"User-Agent": "ai-maestro-benchmark-sync/1.0"},
         )
         with urllib.request.urlopen(req, timeout=2.0) as resp:
             if resp.status == 200:

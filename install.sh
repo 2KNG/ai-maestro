@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# agy-orca — One-Shot Installer & Live Symlink Manager
+# ai-maestro — One-Shot Installer & Live Symlink Manager
 # Repository: https://github.com/2KNG/ai-maestro
 # License: MIT
 #
@@ -13,7 +13,8 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/2KNG/ai-maestro.git"
-DEFAULT_INSTALL_DIR="${AGY_ORCA_DIR:-$HOME/dev/ai-maestro}"
+# Prefer the branded install override; retain the legacy environment fallback.
+DEFAULT_INSTALL_DIR="${MAESTRO_DIR:-${AGY_ORCA_DIR:-$HOME/dev/ai-maestro}}"
 
 # Determine if running from inside a cloned repo or via curl|bash
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
@@ -54,6 +55,7 @@ cat > "$INSTALL_DIR/bin/maestro" <<EOF
 #!/usr/bin/env bash
 exec python3 "$SCRIPTS_DIR/maestro.py" "\$@"
 EOF
+# Silent backward-compatible alias (legacy command name) -> maestro
 cp -a "$INSTALL_DIR/bin/maestro" "$INSTALL_DIR/bin/agy-orca"
 
 cat > "$INSTALL_DIR/bin/ai-usage" <<EOF
@@ -85,7 +87,7 @@ mkdir -p "$HOME/.local/bin"
 for bin_name in maestro agy-orca ai-usage ai-usage-widget ai-usage-web; do
   ln -sfn "$INSTALL_DIR/bin/$bin_name" "$HOME/.local/bin/$bin_name"
 done
-echo "   ✓ Linked CLI commands in ~/.local/bin/{maestro,agy-orca,ai-usage,ai-usage-widget,ai-usage-web}"
+echo "   ✓ Linked CLI commands in ~/.local/bin/{maestro,ai-usage,ai-usage-widget,ai-usage-web}"
 
 # 3. Symlink Antigravity skills & plugins directly to repo for continuous Git management
 mkdir -p "$HOME/.gemini/config/skills" "$HOME/.gemini/config/plugins" "$HOME/.gemini/antigravity/skills"

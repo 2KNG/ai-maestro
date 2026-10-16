@@ -643,7 +643,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     mode = "resume"
                 else:
                     cmd = [
-                        os.path.expanduser("~/.local/bin/agy-orca"),
+                        os.path.expanduser("~/.local/bin/maestro"),
                         "worker-start",
                         "--pool",
                         "codex",

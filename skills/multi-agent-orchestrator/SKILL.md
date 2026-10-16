@@ -40,15 +40,15 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
      - Executes `/home/u24c9g5090r64/.local/bin/claude -p "<prompt>"`
      - Has direct access to `claude.ai` cloud MCPs including **Mobbin** (`https://api.mobbin.com/mcp`), **Context7**, **Mermaid Chart**, **Google Drive**, **Gmail**, and **Google Calendar**.
 
-## 2.5. Orca-Style Multi-Pool Dispatch (`agy-orca`)
+## 2.5. Maestro Multi-Pool Dispatch (`maestro`)
 
 > [!IMPORTANT]
 > `invoke_subagent` only supports **Gemini Pool** models (`inherit` / `pro` / `flash`). **NEVER** call `invoke_subagent(Model='inherit' | 'pro')` when the parent runs on Argon.
 
 | Difficulty | Dispatch command |
 |---|---|
-| High / Medium → Antigravity Claude Pool (`planModel` `MODEL_PLACEHOLDER_M402` Opus 5.5 High / `MODEL_PLACEHOLDER_M405` Sonnet 5.5 High) | `/home/u24c9g5090r64/.local/bin/agy-orca worker-start --pool agy-claude --cwd <dir> --wait --spec "..."` |
-| High / Medium → OpenAI Codex Pool (`gpt-6.1-sol`, `ultrafast` / `priority`) | `/home/u24c9g5090r64/.local/bin/agy-orca worker-start --pool codex --cwd <dir> --spec "..."` |
+| High / Medium → Antigravity Claude Pool (`planModel` `MODEL_PLACEHOLDER_M402` Opus 5.5 High / `MODEL_PLACEHOLDER_M405` Sonnet 5.5 High) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool agy-claude --cwd <dir> --wait --spec "..."` |
+| High / Medium → OpenAI Codex Pool (`gpt-6.1-sol`, `ultrafast` / `priority`) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
 | Low / read-only lookup | `invoke_subagent(Model='flash')` only |
 
 - Run Claude-pool and Codex-pool workers in parallel when useful; balance by `ai-usage` remaining %.

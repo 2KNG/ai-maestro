@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-agy-orca: Orca-style Multi-Pool Orchestrator CLI for Google Antigravity + OpenAI Codex + Claude.
+maestro: Maestro Multi-Pool Orchestrator CLI for Google Antigravity + OpenAI Codex + Claude.
 
 Why this exists:
 - Antigravity's built-in `invoke_subagent` tool only exposes `Model: inherit | pro | flash | flash_lite`,
   which ALL consume the Gemini Pool (Argon / Flash) and CANNOT select the independent
   `Claude & GPT-OSS Pool (Antigravity)` (`Claude Opus 5.5` = MODEL_PLACEHOLDER_M402,
   `Claude Sonnet 5.5` = MODEL_PLACEHOLDER_M405, `GPT-OSS 120B` = MODEL_PLACEHOLDER_M412).
-- `agy-orca` talks directly to Antigravity's local LanguageServer (`StartCascade` + `SendUserCascadeMessage`
+- `maestro` talks directly to Antigravity's local LanguageServer (`StartCascade` + `SendUserCascadeMessage`
   with `cascadeConfig.plannerConfig.planModel = "MODEL_PLACEHOLDER_M402"`) AND to OpenAI Codex CLI
   (`codex exec --full-auto -m gpt-6.1-sol -c service_tier="ultrafast"`), balancing quota across ALL pools
   and keeping every conversation's `usage_widget.html` up to date.
 
 Commands:
-  agy-orca status [--json]
-  agy-orca worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|agy-flash] [--cwd <dir>] [--wait] [--timeout 180] [--json]
-  agy-orca check --id <cascade_id> [--wait] [--timeout 180] [--json]
-  agy-orca sync-widgets [--json]
+  maestro status [--json]
+  maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|agy-flash] [--cwd <dir>] [--wait] [--timeout 180] [--json]
+  maestro check --id <cascade_id> [--wait] [--timeout 180] [--json]
+  maestro sync-widgets [--json]
 """
 import argparse
 import glob
@@ -444,7 +444,7 @@ def sync_all_widgets() -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="agy-orca")
+    parser = argparse.ArgumentParser(prog="maestro")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_status = sub.add_parser("status")

@@ -55,32 +55,9 @@ def fmt_k(tokens: int | float) -> str:
 
 
 def _fmt_duration(node: dict) -> str:
-    """Compute wall-clock duration string (e.g. '⏱ 42s', '⏱ 2m 15s') from node timestamps (0 LLM tokens)."""
-    start_ts = None
-    end_ts = None
-    if node.get("created_at"):
-        try:
-            start_ts = float(node["created_at"])
-            end_ts = float(node.get("updated_at") or datetime.now().timestamp())
-        except Exception:
-            pass
-    elif node.get("created_time"):
-        try:
-            start_ts = datetime.fromisoformat(str(node["created_time"]).replace("Z", "+00:00")).timestamp()
-            lm = node.get("last_modified_time")
-            end_ts = datetime.fromisoformat(str(lm).replace("Z", "+00:00")).timestamp() if lm else datetime.now().timestamp()
-        except Exception:
-            pass
-    if not start_ts or not end_ts or end_ts < start_ts:
-        return ""
-    sec = max(1, int(end_ts - start_ts))
-    if sec < 60:
-        return f" · ⏱ {sec}s"
-    if sec < 3600:
-        return f" · ⏱ {sec // 60}m {sec % 60:02d}s"
-    h = sec // 3600
-    m = (sec % 3600) // 60
-    return f" · ⏱ {h}h {m:02d}m"
+    """Use the same latest-turn duration as the collapsed row."""
+    _, _, duration = _node_turn_timing(node)
+    return f" · ⏱ {_fmt_dur_compact(duration)}" if duration is not None else ""
 
 
 def normalize_agy_model(model_str: str) -> dict:
@@ -1671,59 +1648,83 @@ def _parse_any_ts(val) -> float | None:
     return None
 
 
-_ROW_START_KEYS = ("started_at", "start_time", "created_at", "created_time")
-_ROW_END_KEYS = ("updated_at", "last_modified_time", "completed_at", "end_time")
+_ROW_START_KEYS = ("turn_start_ts", "started_at", "start_time", "created_at", "created_time")
+_ROW_END_KEYS = ("turn_end_ts", "completed_at", "end_time", "updated_at", "last_modified_time")
+
+
+def _fmt_dur_compact(sec) -> str:
+    sec = max(1, int(sec))
+    if sec >= 3600:
+        return f"{sec // 3600}h {(sec % 3600) // 60:02d}m"
+    if sec >= 60:
+        return f"{sec // 60}m {sec % 60:02d}s"
+    return f"{sec}s"
+
+
+def _node_turn_timing(node: dict | None, is_running: bool = False):
+    """Resolve turn metadata, then bounded log tails, then guarded legacy times."""
+    node = node if isinstance(node, dict) else {}
+    now = datetime.now().timestamp()
+    start = next((ts for key in _ROW_START_KEYS
+                  if (ts := _parse_any_ts(node.get(key))) is not None), None)
+    end = next((ts for key in _ROW_END_KEYS
+                if (ts := _parse_any_ts(node.get(key))) is not None), None)
+    value = node.get("turn_duration_sec")
+    try:
+        duration = float(value) if not isinstance(value, bool) else None
+        if duration is not None and (not math.isfinite(duration) or duration < 0):
+            duration = None
+    except (TypeError, ValueError):
+        duration = None
+    verified = duration is not None
+    if verified and _parse_any_ts(node.get("turn_start_ts")) is None and end is not None:
+        start = end - duration
+    if not verified or (is_running and start is not None and now - start > 7200):
+        # Old cached snapshots may lack turn fields. Read the actual logs directly.
+        from check_all_usage import _extract_agy_turn_timing, _extract_turn_timing, _jsonl_tail
+        timing = {}
+        if node.get("rollout_path"):
+            timing = _extract_turn_timing(_jsonl_tail(node["rollout_path"], 250000))
+        elif node.get("conversation_id"):
+            timing = _extract_agy_turn_timing(node["conversation_id"], None, None)
+        if timing.get("turn_duration_sec") is not None:
+            start = timing["turn_start_ts"]
+            end = timing["turn_end_ts"]
+            duration = timing["turn_duration_sec"]
+            verified = True
+    if duration is None and start is not None and end is not None:
+        duration = max(1, int(end - start))
+        if duration > 7200:
+            # No turn evidence: never count multi-day room idle time as work.
+            duration = 7200
+            start = end - duration
+    if is_running:
+        ref = start if start is not None else end if end is not None else now
+        if not verified and now - ref > 7200:
+            ref = max(end or now, now - 7200)
+        duration = max(1, int(now - ref))
+    return start, end, max(1, int(duration)) if duration is not None else None
 
 
 def _fmt_row_work_time(node: dict | None, is_running: bool = False, status_cls: str = "") -> tuple[str, str, str]:
-    """Return (display_label, css_state_class, tooltip_detail) distinguishing running duration vs finished clock time."""
-    now_ts = datetime.now().timestamp()
-    start_ts = None
-    end_ts = None
-    if isinstance(node, dict):
-        for k in _ROW_START_KEYS:
-            start_ts = _parse_any_ts(node.get(k))
-            if start_ts is not None:
-                break
-        for k in _ROW_END_KEYS:
-            end_ts = _parse_any_ts(node.get(k))
-            if end_ts is not None:
-                break
+    """Return latest-turn duration; keep the finished clock time in the tooltip."""
+    _, end, duration = _node_turn_timing(node, is_running)
     if is_running:
-        ref = start_ts or end_ts or now_ts
-        sec = max(1, int(now_ts - ref))
-        if sec >= 3600:
-            h = sec // 3600
-            m = (sec % 3600) // 60
-            lbl = f"⏱ {h}h {m:02d}m"
-        elif sec >= 60:
-            m = sec // 60
-            s = sec % 60
-            lbl = f"⏱ {m}m {s:02d}s"
-        else:
-            lbl = f"⏱ {sec}s"
-        return lbl, status_cls or "busy", f"작업중 경과시간: {lbl.replace('⏱ ', '')}"
-    fin = end_ts if end_ts is not None else start_ts
-    done_cls = status_cls or "done"
-    if fin is None:
-        return "✓ 완료", done_cls, "작업 완료"
-    dt = datetime.fromtimestamp(fin)
-    now_dt = datetime.now()
-    if dt.date() == now_dt.date():
-        lbl = f"✓ {dt.strftime('%H:%M')}"
-        tip = f"오늘 {dt.strftime('%H:%M:%S')} 작업 완료"
-    else:
-        lbl = f"✓ {dt.month}/{dt.day} {dt.strftime('%H:%M')}"
-        tip = f"{dt.strftime('%Y-%m-%d %H:%M:%S')} 작업 완료"
-    if start_ts is not None and end_ts is not None and end_ts >= start_ts:
-        dur = max(1, int(end_ts - start_ts))
-        dur_s = f"{dur // 60}m {dur % 60}s" if dur >= 60 else f"{dur}s"
-        tip += f" (소요 {dur_s})"
-    return lbl, done_cls, tip
+        label = "⏱ " + _fmt_dur_compact(duration or 1)
+        return label, status_cls or "busy", f"작업중 경과시간: {label.removeprefix('⏱ ')}"
+    label = "✓ " + _fmt_dur_compact(duration) if duration is not None else "✓ 완료"
+    tip = "작업 완료"
+    if end is not None:
+        dt = datetime.fromtimestamp(end)
+        day = "오늘" if dt.date() == datetime.now().date() else dt.strftime("%Y-%m-%d")
+        tip = f"{day} {dt.strftime('%H:%M:%S')} 완료"
+    if duration is not None:
+        tip += f" · 소요 {_fmt_dur_compact(duration)}"
+    return label, status_cls or "done", tip
 
 
 def _context_pill_html(used: str, percent: float, color: str, node: dict | None = None, is_running: bool = False, status_cls: str = "") -> str:
-    """Render a vertical context meter (no token numbers) + running duration (⏱) or finished time (✓)."""
+    """Render a vertical context meter (no token numbers) + running (⏱) or completed (✓) turn duration."""
     pct = float(percent or 0.0)
     if pct >= 80.0:
         lvl_cls, lvl_ko = "crit", "높음"
@@ -2024,7 +2025,7 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str]]:
     for line in processes.splitlines():
         try:
             pid, command, elapsed = line.split()
-            if command not in ("codex", "node", "python", "python3", "agy-orca"):
+            if command not in ("codex", "node", "python", "python3", "maestro", "agy-orca"):
                 continue
             with open(f"/proc/{pid}/cmdline", "rb") as f:
                 argv = f.read().decode(errors="replace").strip("\0").split("\0")
@@ -2045,7 +2046,7 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str]]:
                 for arg in args[1:]:
                     if re.fullmatch(r"[0-9a-f-]{36}", arg):
                         codex_ids.add(arg)
-            elif tool == "agy-orca" and args and args[0] == "worker-start":
+            elif tool in ("maestro", "agy-orca") and args and args[0] == "worker-start":
                 pool_idx = args.index("--pool")
                 pool = args[pool_idx + 1]
                 if pool not in ("agy-claude", "agy-sonnet"):
@@ -2254,7 +2255,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         else:
             closed_cdx.append(c)
 
-    # Map agy-orca worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
+    # Map maestro worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
     orca_specs_by_cid: dict[str, str] = {}
     repo_to_parent_cid: dict[str, str] = {}
     for ag_p in sorted(active_ag, key=lambda x: 1 if x.get("conversation_id") == "521b781e-43da-4647-b411-585e65e5f002" else 0):
@@ -2274,7 +2275,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 with open(t_path, encoding="utf-8", errors="ignore") as tf:
                     orca_lines = [
                         ln for ln in tf
-                        if "agy-orca" in ln and "worker-start" in ln and "python3 -c" not in ln
+                        if any(cmd in ln for cmd in ("maestro", "agy-orca")) and "worker-start" in ln and "python3 -c" not in ln
                     ]
                 if orca_lines:
                     orca_specs_by_cid[p_cid] = "\n".join(orca_lines)
@@ -2299,7 +2300,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         if target_p:
             attached_ag_workers_by_parent.setdefault(target_p, []).append({
                 **w_ag,
-                "role": w_raw or "agy-orca worker",
+                "role": w_raw or "maestro worker",
             })
 
     attached_cdx_workers_by_parent: dict[str, list[dict]] = {}
