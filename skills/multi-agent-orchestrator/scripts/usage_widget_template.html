@@ -767,18 +767,38 @@
     }
 
     .agent-detail {
-      display: none;
-      margin: 1px 0 3px 20px;
-      padding: 5px 7px;
+      display: block;
+      max-height: 0;
+      opacity: 0;
+      transform: translateY(-4px) scale(0.99);
+      margin: 0 0 0 20px;
+      padding: 0 7px;
+      border: 1px solid transparent;
       border-radius: 5px;
       background: rgba(15, 23, 42, 0.45);
-      border: 1px solid var(--bdr);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9.5px;
       color: var(--muted);
       line-height: 1.45;
+      overflow: hidden;
+      pointer-events: none;
+      transition: max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+                  opacity 0.24s ease,
+                  transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+                  margin 0.24s ease,
+                  padding 0.24s ease,
+                  border-color 0.24s ease;
     }
-    .agent-detail.open { display: block; }
+    .agent-detail.open {
+      max-height: 480px;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      margin: 1px 0 3px 20px;
+      padding: 5px 7px;
+      border-color: var(--bdr);
+      pointer-events: auto;
+      overflow-y: auto;
+    }
     .agent-detail-row {
       display: flex;
       flex-wrap: wrap;
@@ -1186,9 +1206,12 @@
       color: #b45309;
     }
     html.light .agent-detail {
-      background: #f1f5f9;
-      border-color: #cbd5e1;
+      background: #f8fafc;
+      border-color: transparent;
       color: #334155;
+    }
+    html.light .agent-detail.open {
+      border-color: #cbd5e1;
     }
     html.light .cmd-box-input {
       background: #ffffff;
@@ -1403,13 +1426,12 @@
     html.light .icon-act-btn.open { color: #1d4ed8; }
 
     /* Fixed execution columns follow all density, theme and viewport rules. */
-    .agent-row .status-dot { width: 8px; height: 8px; flex: none; }
     .agent-row .repo-tag {
-      width: 84px; flex: 0 0 84px; box-sizing: border-box;
+      width: 85px; flex: 0 0 85px; box-sizing: border-box;
       display: block; line-height: 16px; text-align: center;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    /* Subagent rows replace [status-dot(8px) + gap(5px) + repo-tag(84px) = 97px] with an indented tree branch (├─ / └─) + dot + SUB tag (0px shift!) */
+    /* Subagent rows replace the 85px repo-tag column with an indented tree branch (├─ / └─) + SUB tag (0px shift!) */
     .agent-row.child {
       background: rgba(99, 102, 241, 0.035);
       border-left: 0 !important;
@@ -1419,7 +1441,7 @@
       border-left: 0 !important;
     }
     .agent-row .sub-prefix {
-      width: 97px; flex: 0 0 97px; box-sizing: border-box;
+      width: 85px; min-width: 85px; flex: 0 0 85px; box-sizing: border-box;
       display: inline-flex; align-items: center; gap: 4.5px;
       padding-left: 4px; overflow: hidden; white-space: nowrap;
     }
@@ -1429,7 +1451,6 @@
       width: 14px; text-align: center; line-height: 1; flex: none;
     }
     html.light .agent-row .sub-prefix .tree-elbow { color: #4f46e5; }
-    .agent-row .sub-prefix .status-dot { width: 7.5px; height: 7.5px; flex: none; }
     .agent-row .sub-prefix .sub-tag {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
@@ -1492,11 +1513,49 @@
     }
     .model-pill.is-long .mp-full { display: none; }
     .model-pill.is-long .mp-short { display: inline-flex; }
+    @keyframes nodeEnter {
+      0% {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+        max-height: 0;
+        margin-top: 0;
+        margin-bottom: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+      }
+      60% {
+        opacity: 0.85;
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        max-height: 800px;
+        overflow: visible;
+      }
+    }
+    .tree-node {
+      max-height: 800px;
+    }
+    .tree-node.node-enter {
+      animation: nodeEnter 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+    .tree-node.node-exit,
     .tree-node.sub-evaporating {
-      opacity: 0;
-      transform: translateX(8px);
-      transition: opacity 0.65s ease, transform 0.65s ease;
-      pointer-events: none;
+      opacity: 0 !important;
+      transform: translateY(-4px) scale(0.98) !important;
+      max-height: 0 !important;
+      margin-top: 0 !important;
+      margin-bottom: 0 !important;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+      transition: opacity 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  transform 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  max-height 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  margin 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  padding 0.32s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
     .eff-gauge {
       width: 13px; height: 13px; flex-shrink: 0; display: inline-block;
@@ -1795,6 +1854,16 @@
       transition: transform 0.15s ease;
     }
     .pc-telemetry-ext[open] .pc-hud-caret { transform: rotate(180deg); }
+    @keyframes drawerEnter {
+      0% {
+        opacity: 0;
+        transform: translateY(-6px);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
     .pc-bento-drawer {
       margin-top: 7px;
       padding-top: 7px;
@@ -1802,6 +1871,7 @@
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
       gap: 6px;
+      animation: drawerEnter 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
     .pc-bento-card {
       background: rgba(2, 6, 23, 0.45);
@@ -1886,10 +1956,18 @@
       color: #4338ca;
     }
   
-    .ctx-pill .ctx-ico { flex: none; }
-    .ctx-pill .ctx-ico.ok { color: #54c9a0; }
-    .ctx-pill .ctx-ico.warn { color: #e9b45b; }
-    .ctx-pill .ctx-ico.crit { color: #ef7a85; }
+    .ctx-vbar {
+      width: 4px; height: 12px; border-radius: 2px;
+      background: rgba(148, 163, 184, 0.22);
+      display: inline-flex; align-items: flex-end; overflow: hidden; flex: none;
+    }
+    .ctx-vbar .ctx-vbar-fill { width: 100%; border-radius: 2px; }
+    .ctx-vbar .ctx-vbar-fill.ok { background: #54c9a0; }
+    .ctx-vbar .ctx-vbar-fill.warn { background: #e9b45b; }
+    .ctx-vbar .ctx-vbar-fill.crit { background: #ef7a85; }
+    .agent-row .ctx-pill {
+      background: transparent !important; border: none !important; padding: 0 2px !important;
+    }
     .ctx-pill.running {
       border-color: rgba(84, 201, 160, 0.32);
       background: rgba(84, 201, 160, 0.08);
@@ -1904,6 +1982,17 @@
       color: #047857;
     }
     html.light .ctx-pill.done { color: #64748b; }
+    /* Row state colors now live on the ctx-pill text (status dots were removed from tree rows). */
+    .ctx-pill.busy .ctx-time-txt, .ctx-pill.running .ctx-time-txt, .ctx-pill.st-busy .ctx-time-txt { color: #60a5fa; font-weight: 700; }
+    .ctx-pill.idle-fresh .ctx-time-txt, .ctx-pill.age-green .ctx-time-txt { color: #54c9a0; font-weight: 600; }
+    .ctx-pill.age-yellow .ctx-time-txt { color: #e9b45b; font-weight: 600; }
+    .ctx-pill.age-orange .ctx-time-txt { color: #f59e0b; font-weight: 600; }
+    .ctx-pill.age-red .ctx-time-txt, .ctx-pill.done .ctx-time-txt { color: #94a3b8; font-weight: 500; }
+    html.light .ctx-pill.busy .ctx-time-txt, html.light .ctx-pill.running .ctx-time-txt { color: #2563eb; }
+    html.light .ctx-pill.idle-fresh .ctx-time-txt, html.light .ctx-pill.age-green .ctx-time-txt { color: #059669; }
+    html.light .ctx-pill.age-yellow .ctx-time-txt { color: #d97706; }
+    html.light .ctx-pill.age-orange .ctx-time-txt { color: #ea580c; }
+    html.light .ctx-pill.age-red .ctx-time-txt, html.light .ctx-pill.done .ctx-time-txt { color: #64748b; }
     .ctx-time-txt {
       overflow: hidden;
       text-overflow: ellipsis;
@@ -2956,7 +3045,7 @@
           pinnedKept++;
           return;
         }
-        const isRunning = node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.busy, :scope > .agent-row .status-dot.idle-fresh, :scope > .agent-row .status-dot.running'));
+        const isRunning = node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.idle-fresh, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
         if (isRunning && node.parentElement && node.parentElement.id === 'view-active') {
           return;
         }
@@ -2970,9 +3059,18 @@
       lastDismissedBatch = batch;
       lastDismissedId = batch[0];
       saveState({ addDismissed: batch });
-      applyTreeFilters();
+      batch.forEach(id => {
+        const el = document.querySelector(`.tree-node[data-node-id="${CSS.escape(id)}"]`);
+        if (el && !el.classList.contains('hidden') && el.dataset.exiting !== '1') {
+          el.dataset.exiting = '1';
+          el.classList.add('node-exit', 'sub-evaporating');
+        }
+      });
+      setTimeout(() => {
+        applyTreeFilters();
+        notifyParentResize();
+      }, 320);
       showToast(`🧹 완료된 세션 ${batch.length}개 정리됨 (📌 핀 고정 ${pinnedKept}개 · 🟢 작업중 유지)`, true);
-      notifyParentResize();
     }
 
     async function importRunningSessions() {
@@ -2995,7 +3093,7 @@
 
       let importedCount = 0;
       const runningNodes = [...document.querySelectorAll('#view-active > .tree-node')].filter(node => {
-        return node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.running'));
+        return node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
       });
       for (const node of runningNodes) {
         const id = node.dataset.nodeId;
@@ -3042,9 +3140,19 @@
       lastDismissedId = nodeId;
       lastDismissedBatch = [nodeId];
       saveState({ addDismissed: [nodeId] });
-      applyTreeFilters();
+      const targetEl = document.querySelector(`.tree-node[data-node-id="${CSS.escape(nodeId)}"]`);
+      if (targetEl && !targetEl.classList.contains('hidden') && targetEl.dataset.exiting !== '1') {
+        targetEl.dataset.exiting = '1';
+        targetEl.classList.add('node-exit', 'sub-evaporating');
+        setTimeout(() => {
+          applyTreeFilters();
+          notifyParentResize();
+        }, 320);
+      } else {
+        applyTreeFilters();
+        notifyParentResize();
+      }
       showToast(`'${label}' 목록에서 숨김 처리됨`, true);
-      notifyParentResize();
     }
 
     function restoreClosedSession(nodeId, label) {
@@ -3316,11 +3424,11 @@
           ACCOUNTS.splice(0, ACCOUNTS.length, ...j.accounts);
           if (j.activeTreeHtml) {
             const va = document.getElementById('view-active');
-            if (va) va.innerHTML = j.activeTreeHtml;
+            if (va) smartPatchTree(va, j.activeTreeHtml);
           }
           if (j.closedTreeHtml) {
             const vc = document.getElementById('view-closed');
-            if (vc) vc.innerHTML = j.closedTreeHtml;
+            if (vc) smartPatchTree(vc, j.closedTreeHtml);
           }
           renderQuotas();
           applyDensityState();
@@ -3349,7 +3457,7 @@
         .replace(/<!--__[A-Z_]+__-->/g, '')
         .replace(/data-sub-age="\d+"/g, '')
         .replace(/title="[^"]*후 증발\)"/g, '')
-        .replace(/status-dot age-(?:green|yellow|orange|red)/g, 'status-dot age-any')
+        .replace(/ctx-pill age-(?:green|yellow|orange|red)/g, 'ctx-pill age-any')
         .replace(/\s+/g, ' ')
         .trim();
     }
@@ -3370,7 +3478,80 @@
       container.querySelectorAll('[id^="br-"]').forEach(br => {
         if (br.dataset.daemonsState) daemonStates[br.id] = br.dataset.daemonsState;
       });
-      container.innerHTML = newHtml;
+
+      const temp = document.createElement('div');
+      temp.innerHTML = newHtml;
+
+      if (container.children.length === 0) {
+        temp.querySelectorAll(':scope > .tree-node').forEach(node => {
+          node.classList.add('node-enter');
+        });
+        container.innerHTML = temp.innerHTML;
+        container.dataset.treeSig = nextSig;
+        return true;
+      }
+
+      const existingMap = new Map();
+      container.querySelectorAll(':scope > .tree-node').forEach(node => {
+        const id = node.dataset.nodeId;
+        if (id) existingMap.set(id, node);
+      });
+      const nextNodes = Array.from(temp.querySelectorAll(':scope > .tree-node'));
+      const nextMap = new Map();
+      nextNodes.forEach(node => {
+        const id = node.dataset.nodeId;
+        if (id) nextMap.set(id, node);
+      });
+
+      // 1. Vanished nodes: exit animation + data-exiting
+      existingMap.forEach((oldNode, id) => {
+        if (!nextMap.has(id)) {
+          if (oldNode.dataset.exiting !== '1') {
+            oldNode.dataset.exiting = '1';
+            oldNode.classList.add('node-exit', 'sub-evaporating');
+            setTimeout(() => {
+              oldNode.remove();
+              applyTreeFilters();
+              notifyParentResize();
+            }, 320);
+          }
+        }
+      });
+
+      // 2. Insert new nodes or reconcile existing nodes
+      nextNodes.forEach(newNode => {
+        const id = newNode.dataset.nodeId;
+        const existingNode = id ? existingMap.get(id) : null;
+        if (!existingNode) {
+          newNode.classList.add('node-enter');
+          container.appendChild(newNode);
+        } else {
+          if (existingNode.dataset.exiting === '1') {
+            delete existingNode.dataset.exiting;
+            existingNode.classList.remove('node-exit', 'sub-evaporating');
+          }
+          const oldBr = existingNode.querySelector(':scope > .tree-children[id^="br-"]');
+          const newBr = newNode.querySelector(':scope > .tree-children[id^="br-"]');
+          if (oldBr && newBr) {
+            reconcileBranchChildren(oldBr, newBr);
+          }
+          const oldRow = existingNode.querySelector(':scope > .agent-row');
+          const newRow = newNode.querySelector(':scope > .agent-row');
+          if (oldRow && newRow && oldRow.innerHTML !== newRow.innerHTML) {
+            oldRow.innerHTML = newRow.innerHTML;
+          }
+          const oldDet = existingNode.querySelector(':scope > .agent-detail');
+          const newDet = newNode.querySelector(':scope > .agent-detail');
+          if (oldDet && newDet && oldDet.innerHTML !== newDet.innerHTML) {
+            oldDet.innerHTML = newDet.innerHTML;
+          }
+          if (newNode.dataset.subAge !== undefined) existingNode.dataset.subAge = newNode.dataset.subAge;
+          if (newNode.dataset.subRunning !== undefined) existingNode.dataset.subRunning = newNode.dataset.subRunning;
+          if (newNode.dataset.running !== undefined) existingNode.dataset.running = newNode.dataset.running;
+          if (newNode.dataset.scope !== undefined) existingNode.dataset.scope = newNode.dataset.scope;
+        }
+      });
+
       container.dataset.treeSig = nextSig;
       Object.entries(subAges).forEach(([id, age]) => {
         const el = container.querySelector(`.tree-node.sub-ripening[data-node-id="${CSS.escape(id)}"]`);
@@ -3381,6 +3562,79 @@
         if (br) br.dataset.daemonsState = st;
       });
       return true;
+    }
+
+    function reconcileBranchChildren(oldBr, newBr) {
+      const oldChildren = new Map();
+      oldBr.querySelectorAll(':scope > .tree-node').forEach(n => {
+        if (n.dataset.nodeId) oldChildren.set(n.dataset.nodeId, n);
+      });
+      const newChildren = Array.from(newBr.querySelectorAll(':scope > .tree-node'));
+      const newMap = new Map();
+      newChildren.forEach(n => {
+        if (n.dataset.nodeId) newMap.set(n.dataset.nodeId, n);
+      });
+
+      oldChildren.forEach((child, id) => {
+        if (!newMap.has(id)) {
+          if (child.dataset.exiting !== '1') {
+            child.dataset.exiting = '1';
+            child.classList.add('node-exit', 'sub-evaporating');
+            setTimeout(() => {
+              child.remove();
+              applyTreeFilters();
+              notifyParentResize();
+            }, 320);
+          }
+        }
+      });
+
+      newChildren.forEach(newChild => {
+        const id = newChild.dataset.nodeId;
+        const oldChild = id ? oldChildren.get(id) : null;
+        if (!oldChild) {
+          newChild.classList.add('node-enter');
+          oldBr.appendChild(newChild);
+        } else {
+          if (oldChild.dataset.exiting === '1') {
+            delete oldChild.dataset.exiting;
+            oldChild.classList.remove('node-exit', 'sub-evaporating');
+          }
+          const oRow = oldChild.querySelector(':scope > .agent-row');
+          const nRow = newChild.querySelector(':scope > .agent-row');
+          if (oRow && nRow && oRow.innerHTML !== nRow.innerHTML) {
+            oRow.innerHTML = nRow.innerHTML;
+          }
+          if (newChild.dataset.subAge !== undefined) oldChild.dataset.subAge = newChild.dataset.subAge;
+          if (newChild.dataset.subRunning !== undefined) oldChild.dataset.subRunning = newChild.dataset.subRunning;
+        }
+      });
+    }
+
+    function hookDetailsSmoothToggle(det) {
+      if (!det || det.dataset.smoothHooked === '1') return;
+      det.dataset.smoothHooked = '1';
+      const summary = det.querySelector(':scope > summary');
+      if (!summary) return;
+      summary.addEventListener('click', (e) => {
+        const drawer = det.querySelector('.pc-bento-drawer');
+        if (!det.open) {
+          return;
+        }
+        if (drawer) {
+          e.preventDefault();
+          drawer.style.transition = 'opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)';
+          drawer.style.opacity = '0';
+          drawer.style.transform = 'translateY(-6px)';
+          setTimeout(() => {
+            det.open = false;
+            drawer.style.transition = '';
+            drawer.style.opacity = '';
+            drawer.style.transform = '';
+            if (typeof onPcTelemetryToggle === 'function') onPcTelemetryToggle(false);
+          }, 220);
+        }
+      });
     }
 
     const STORAGE_PC_MON_OPEN = 'agy_widget_pc_mon_open_v1';
@@ -3400,8 +3654,11 @@
 
     function applyPcTelemetryOpenState() {
       const det = document.getElementById('pc-telemetry-ext');
-      if (det && det.open !== pcMonOpen) {
-        det.open = pcMonOpen;
+      if (det) {
+        if (det.open !== pcMonOpen) {
+          det.open = pcMonOpen;
+        }
+        hookDetailsSmoothToggle(det);
       }
     }
 
@@ -3518,23 +3775,24 @@
     function tickSubRipening() {
       let changedTree = false;
       document.querySelectorAll('#view-active .tree-node.sub-ripening').forEach(node => {
-        if (node.classList.contains('hidden') || node.classList.contains('sub-evaporating')) return;
+        if (node.classList.contains('hidden') || node.classList.contains('sub-evaporating') || node.dataset.exiting === '1') return;
         if (node.dataset.subRunning === '1') return;
         const age = Number(node.dataset.subAge || 0) + 1;
         node.dataset.subAge = String(age);
-        const dot = node.querySelector(':scope > .agent-row .status-dot');
+        const pill = node.querySelector(':scope > .agent-row .ctx-pill:not(.bg-time)');
         if (age >= 60) {
-          node.classList.add('sub-evaporating');
+          node.dataset.exiting = '1';
+          node.classList.add('sub-evaporating', 'node-exit');
           setTimeout(() => {
             if (node.dataset.nodeId) dismissedSet.add(node.dataset.nodeId);
             node.remove();
             applyTreeFilters();
             notifyParentResize();
-          }, 650);
+          }, 320);
           changedTree = true;
           return;
         }
-        if (!dot) return;
+        if (!pill) return;
         const rem = Math.max(1, 60 - age);
         let cls = 'age-green';
         let tip = `🟢 SUB 완료 · 초록 단계 (${age}s / 15s · ${rem}s 후 증발)`;
@@ -3548,8 +3806,10 @@
           cls = 'age-yellow';
           tip = `🟡 SUB 숙성 · 노랑 단계 (${age}s / 30s · ${rem}s 후 증발)`;
         }
-        dot.className = `status-dot ${cls}`;
-        dot.title = tip;
+        pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
+        pill.classList.add(cls);
+        if (pill.dataset.baseTitle === undefined) pill.dataset.baseTitle = pill.title || '';
+        pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;
       });
       if (changedTree) notifyParentResize();
     }

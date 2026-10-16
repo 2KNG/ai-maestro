@@ -782,18 +782,38 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .open-btn.codex:hover { background: rgba(16, 185, 129, 0.26); }
 
     .agent-detail {
-      display: none;
-      margin: 1px 0 3px 18px;
-      padding: 4.5px 7px;
+      display: block;
+      max-height: 0;
+      opacity: 0;
+      transform: translateY(-4px) scale(0.99);
+      margin: 0 0 0 18px;
+      padding: 0 7px;
+      border: 1px solid transparent;
       border-radius: 5px;
       background: rgba(15, 23, 42, 0.5);
-      border: 1px solid var(--border);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9px;
       color: var(--muted);
       line-height: 1.45;
+      overflow: hidden;
+      pointer-events: none;
+      transition: max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+                  opacity 0.24s ease,
+                  transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+                  margin 0.24s ease,
+                  padding 0.24s ease,
+                  border-color 0.24s ease;
     }
-    .agent-detail.open { display: block; }
+    .agent-detail.open {
+      max-height: 480px;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      margin: 1px 0 3px 18px;
+      padding: 4.5px 7px;
+      border-color: var(--border);
+      pointer-events: auto;
+      overflow-y: auto;
+    }
     .agent-detail-row {
       display: flex;
       flex-wrap: wrap;
@@ -902,10 +922,32 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       flex: none;
     }
     .agy-arch-mark svg { display: block; }
-    .agent-row .status-dot { width: 8px; height: 8px; flex: none; }
     .agent-row .repo-tag {
-      width: 84px; flex: 0 0 84px; text-align: center; overflow: hidden;
+      width: 85px; flex: 0 0 85px; text-align: center; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box;
+    }
+    .agent-row .sub-prefix {
+      width: 85px; min-width: 85px; flex: 0 0 85px; box-sizing: border-box;
+      display: inline-flex; align-items: center; gap: 4.5px;
+      padding-left: 4px; overflow: hidden; white-space: nowrap;
+    }
+    .agent-row .sub-prefix .tree-elbow {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px; font-weight: 700; color: #818cf8;
+      width: 14px; text-align: center; line-height: 1; flex: none;
+    }
+    .agent-row .sub-prefix .sub-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+      flex: 1 1 auto; min-width: 0; height: 18px; line-height: 16px;
+      padding: 0 5px; border-radius: 4px; box-sizing: border-box;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: rgba(99, 102, 241, 0.13); color: #a5b4fc;
+      border: 1px solid rgba(129, 140, 248, 0.28);
+    }
+    .agent-row .sub-prefix .sub-tag.bg-tag {
+      background: rgba(129, 140, 248, 0.045); color: rgba(165, 180, 252, 0.72);
+      border-color: rgba(129, 140, 248, 0.16); font-weight: 600;
     }
     .agent-row .agent-name { flex: 1 1 0%; min-width: 0; }
     .agent-row .model-pill {
@@ -920,6 +962,67 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     }
     .agent-row .ctx-bar { display: inline-block; }
     .agent-row .ctx-bar-fill { display: block; }
+    .ctx-vbar {
+      width: 4px; height: 12px; border-radius: 2px;
+      background: rgba(148, 163, 184, 0.22);
+      display: inline-flex; align-items: flex-end; overflow: hidden; flex: none;
+    }
+    .ctx-vbar .ctx-vbar-fill { width: 100%; border-radius: 2px; }
+    .ctx-vbar .ctx-vbar-fill.ok { background: #54c9a0; }
+    .ctx-vbar .ctx-vbar-fill.warn { background: #e9b45b; }
+    .ctx-vbar .ctx-vbar-fill.crit { background: #ef7a85; }
+    .agent-row .ctx-pill {
+      background: transparent !important; border: none !important; padding: 0 2px !important;
+    }
+    .ctx-pill.busy .ctx-time-txt, .ctx-pill.running .ctx-time-txt, .ctx-pill.st-busy .ctx-time-txt { color: #60a5fa; font-weight: 700; }
+    .ctx-pill.idle-fresh .ctx-time-txt, .ctx-pill.age-green .ctx-time-txt { color: #54c9a0; font-weight: 600; }
+    .ctx-pill.age-yellow .ctx-time-txt { color: #e9b45b; font-weight: 600; }
+    .ctx-pill.age-orange .ctx-time-txt { color: #f59e0b; font-weight: 600; }
+    .ctx-pill.age-red .ctx-time-txt, .ctx-pill.done .ctx-time-txt { color: #94a3b8; font-weight: 500; }
+    @keyframes nodeEnter {
+      0% {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+        max-height: 0;
+        margin-top: 0;
+        margin-bottom: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+      }
+      60% {
+        opacity: 0.85;
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        max-height: 800px;
+        overflow: visible;
+      }
+    }
+    .tree-node {
+      max-height: 800px;
+    }
+    .tree-node.node-enter {
+      animation: nodeEnter 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+    .tree-node.node-exit,
+    .tree-node.sub-evaporating {
+      opacity: 0 !important;
+      transform: translateY(-4px) scale(0.98) !important;
+      max-height: 0 !important;
+      margin-top: 0 !important;
+      margin-bottom: 0 !important;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+      transition: opacity 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  transform 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  max-height 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  margin 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                  padding 0.32s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    }
     .row-actions {
       width: 68px; flex: 0 0 68px; display: inline-flex;
       align-items: center; justify-content: flex-end; gap: 4px;
@@ -1144,7 +1247,6 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
 
       row.innerHTML = `
         <div class="agent-left">
-          <span class="status-dot ${node.status}" title="${node.status.toUpperCase()}"></span>
           <span class="repo-tag">${(node.repo || 'dev').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]))}</span>
           ${providerIconSvg(node.provider)}
           <span class="agent-name" title="${(node.name || '').replace(/"/g, '&quot;')}">${node.name}</span>
@@ -1532,26 +1634,61 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
     )
 
 
-def _fmt_row_work_time(node: dict | None, is_running: bool = False) -> tuple[str, str, str]:
+def _parse_any_ts(val) -> float | None:
+    """Parse a finite numeric epoch (seconds, or milliseconds if absurdly large) or an ISO8601 string (incl. trailing 'Z') into epoch seconds."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        if not math.isfinite(f) or f <= 0:
+            return None
+        return f / 1000.0 if f > 1e11 else f
+    if not isinstance(val, str):
+        return None
+    txt = val.strip()
+    if not txt:
+        return None
+    try:
+        f = float(txt)
+    except ValueError:
+        f = None
+    if f is not None:
+        if not math.isfinite(f) or f <= 0:
+            return None
+        return f / 1000.0 if f > 1e11 else f
+    iso = txt[:-1] + "+00:00" if txt[-1] in "zZ" else txt
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        pass
+    # Normalise odd fractional-second widths (e.g. 7-9 digits) that fromisoformat may reject.
+    m = re.match(r"^(.*?[T ]\d{2}:\d{2}:\d{2})\.(\d+)(.*)$", iso)
+    if m:
+        try:
+            return datetime.fromisoformat(f"{m.group(1)}.{m.group(2)[:6].ljust(6, '0')}{m.group(3)}").timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+_ROW_START_KEYS = ("started_at", "start_time", "created_at", "created_time")
+_ROW_END_KEYS = ("updated_at", "last_modified_time", "completed_at", "end_time")
+
+
+def _fmt_row_work_time(node: dict | None, is_running: bool = False, status_cls: str = "") -> tuple[str, str, str]:
     """Return (display_label, css_state_class, tooltip_detail) distinguishing running duration vs finished clock time."""
     now_ts = datetime.now().timestamp()
     start_ts = None
     end_ts = None
     if isinstance(node, dict):
-        for k in ("created_at", "start_time", "started_at"):
-            if node.get(k):
-                try:
-                    start_ts = float(node[k])
-                    break
-                except Exception:
-                    pass
-        for k in ("updated_at", "end_time", "completed_at"):
-            if node.get(k):
-                try:
-                    end_ts = float(node[k])
-                    break
-                except Exception:
-                    pass
+        for k in _ROW_START_KEYS:
+            start_ts = _parse_any_ts(node.get(k))
+            if start_ts is not None:
+                break
+        for k in _ROW_END_KEYS:
+            end_ts = _parse_any_ts(node.get(k))
+            if end_ts is not None:
+                break
     if is_running:
         ref = start_ts or end_ts or now_ts
         sec = max(1, int(now_ts - ref))
@@ -1565,28 +1702,28 @@ def _fmt_row_work_time(node: dict | None, is_running: bool = False) -> tuple[str
             lbl = f"⏱ {m}m {s:02d}s"
         else:
             lbl = f"⏱ {sec}s"
-        return lbl, "running", f"작업중 경과시간: {lbl.replace('⏱ ', '')}"
+        return lbl, status_cls or "busy", f"작업중 경과시간: {lbl.replace('⏱ ', '')}"
+    fin = end_ts if end_ts is not None else start_ts
+    done_cls = status_cls or "done"
+    if fin is None:
+        return "✓ 완료", done_cls, "작업 완료"
+    dt = datetime.fromtimestamp(fin)
+    now_dt = datetime.now()
+    if dt.date() == now_dt.date():
+        lbl = f"✓ {dt.strftime('%H:%M')}"
+        tip = f"오늘 {dt.strftime('%H:%M:%S')} 작업 완료"
     else:
-        fin = end_ts or start_ts
-        if not fin:
-            return "✓ 완료", "done", "작업 완료"
-        dt = datetime.fromtimestamp(fin)
-        now_dt = datetime.now()
-        if dt.date() == now_dt.date():
-            lbl = f"✓ {dt.strftime('%H:%M')}"
-            tip = f"오늘 {dt.strftime('%H:%M:%S')} 작업 완료"
-        else:
-            lbl = f"✓ {dt.month}/{dt.day} {dt.strftime('%H:%M')}"
-            tip = f"{dt.strftime('%Y-%m-%d %H:%M:%S')} 작업 완료"
-        if start_ts and end_ts and end_ts >= start_ts:
-            dur = max(1, int(end_ts - start_ts))
-            dur_s = f"{dur // 60}m {dur % 60}s" if dur >= 60 else f"{dur}s"
-            tip += f" (소요 {dur_s})"
-        return lbl, "done", tip
+        lbl = f"✓ {dt.month}/{dt.day} {dt.strftime('%H:%M')}"
+        tip = f"{dt.strftime('%Y-%m-%d %H:%M:%S')} 작업 완료"
+    if start_ts is not None and end_ts is not None and end_ts >= start_ts:
+        dur = max(1, int(end_ts - start_ts))
+        dur_s = f"{dur // 60}m {dur % 60}s" if dur >= 60 else f"{dur}s"
+        tip += f" (소요 {dur_s})"
+    return lbl, done_cls, tip
 
 
-def _context_pill_html(used: str, percent: float, color: str, node: dict | None = None, is_running: bool = False) -> str:
-    """Render a minimal color-coded context icon (no token numbers) + running duration (⏱) or finished time (✓)."""
+def _context_pill_html(used: str, percent: float, color: str, node: dict | None = None, is_running: bool = False, status_cls: str = "") -> str:
+    """Render a vertical context meter (no token numbers) + running duration (⏱) or finished time (✓)."""
     pct = float(percent or 0.0)
     if pct >= 80.0:
         lvl_cls, lvl_ko = "crit", "높음"
@@ -1594,17 +1731,17 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
         lvl_cls, lvl_ko = "warn", "보통"
     else:
         lvl_cls, lvl_ko = "ok", "여유"
-    t_lbl, t_cls, t_tip = _fmt_row_work_time(node, is_running)
+    t_lbl, t_cls, t_tip = _fmt_row_work_time(node, is_running, status_cls)
     full_tip = f"{t_tip} · 컨텍스트 {lvl_ko}: {_html_esc(used)} ({pct:.1f}%)"
-    ctx_svg = (
-        f'<svg class="ctx-ico {lvl_cls}" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">'
-        f'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="2.2"/>'
-        f'<circle cx="8" cy="8" r="3.4" fill="currentColor"/>'
-        f'</svg>'
+    fill_h = max(18, min(100, int(round(pct))))
+    ctx_meter = (
+        f'<span class="ctx-vbar" aria-hidden="true">'
+        f'<span class="ctx-vbar-fill {lvl_cls}" style="height:{fill_h}%"></span>'
+        f'</span>'
     )
     return (
         f'<span class="ctx-pill {t_cls}" title="{_html_esc(full_tip)}">'
-        f'{ctx_svg}'
+        f'{ctx_meter}'
         f'<span class="ctx-time-txt">{_html_esc(t_lbl)}</span>'
         f'</span>'
     )
@@ -1646,14 +1783,13 @@ def _sub_status_dot_from_age(is_busy: bool, age_sec: float, slot_idx: int = 0) -
 
 
 def _sub_prefix_html(dot_cls: str, tag_lbl: str = "SUB", dot_tip: str = "") -> str:
-    """Render an indented tree branch (├─ / └─) + status dot + SUB/DMN/JOB/CRON/WAIT badge matching the exact 97px width of parent status-dot + repo-tag."""
+    """Render an indented tree branch (├─ / └─) + SUB/DMN/JOB/CRON/WAIT badge matching the exact 85px width of the parent repo-tag (no status dot)."""
     is_bg = tag_lbl != "SUB"
     tip = dot_tip or ("하위 백그라운드 태스크 (클릭 시 상세·시작 시각 표시)" if is_bg else "하위 서브에이전트 워커 (완료 후 1분 간격 초록→노랑→주황→빨강 숙성 뒤 자동 증발)")
     t_cls = "sub-tag bg-tag" if is_bg else "sub-tag"
     return (
         f'<span class="sub-prefix" title="{_html_esc(tip)}">'
         f'<span class="tree-elbow">├─</span>'
-        f'<span class="status-dot {dot_cls}" title="{_html_esc(tip)}"></span>'
         f'<span class="{t_cls}">{_html_esc(tag_lbl)}</span>'
         f'</span>'
     )
@@ -2272,7 +2408,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(c_disp)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
-                f'{c_pill}{_context_pill_html(c_used, c_pct, "green")}'
+                f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
                 f'<span class="row-actions">'
                 f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
                 f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_disp[:24])}\')">✕</button>'
@@ -2324,7 +2460,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'</div>'
                 f'<div class="agent-right">'
                 f'{c_pill}'
-                f'{_context_pill_html(c_used, c_pct, "blue", ch, c_running)}'
+                f'{_context_pill_html(c_used, c_pct, "blue", ch, c_running, c_dot)}'
                 f'<span class="row-actions">'
                 f'<a class="icon-act-btn open" href="conversation://{ccid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
                 f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_role[:24])}\')">✕</button>'
@@ -2395,7 +2531,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'{det_id}\')">'
             f'<div class="agent-left">'
-            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
             f'<span class="repo-tag">{_html_esc(repo)}</span>'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp_title)}</span>'
@@ -2403,7 +2538,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'</div>'
             f'<div class="agent-right">'
             f'{model_pill}'
-            f'{_context_pill_html(used_k, pct, "blue", ag, is_busy_ag)}'
+            f'{_context_pill_html(used_k, pct, "blue", ag, is_busy_ag, root_dot)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp_title, is_pinned)}'
             f'<a class="icon-act-btn open" href="conversation://{cid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
@@ -2502,7 +2637,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     f'<div class="agent-left">{_sub_prefix_html("busy")}'
                     f'{child_icon}'
                     f'<span class="agent-name">{_html_esc(child_disp)}</span></div>'
-                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, True)}'
+                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, True, "busy")}'
                     f'<span class="row-actions">'
                     f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{child_tid}\', \'{_html_esc(child_disp[:28])}\', \'{_html_esc(child_cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
                     f'</span>'
@@ -2524,14 +2659,13 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'det-cdx-{tid8}\')">'
             f'<div class="agent-left">'
-            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
             f'<span class="repo-tag">{_html_esc(repo)}</span>'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp)}</span>'
             f'</div>'
             f'<div class="agent-right">'
             f'{model_pill}'
-            f'{_context_pill_html(used_k, pct, "green", cdx, is_live_running)}'
+            f'{_context_pill_html(used_k, pct, "green", cdx, is_live_running, root_dot)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp, is_pinned)}'
             f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{tid}\', \'{_html_esc(disp[:28])}\', \'{_html_esc(cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
@@ -2624,14 +2758,13 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}" data-age-days="{age_d}"{pin_attr}>'
                 f'<div class="agent-row" onclick="toggleDetail(\'det-cls-agy-{cid8}\')">'
                 f'<div class="agent-left">'
-                f'<span class="status-dot {cls_dot}" title="{_html_esc(cls_tip)}"></span>'
                 f'<span class="repo-tag">{_html_esc(repo)}</span>'
                 f'{icon_svg}'
                 f'<span class="agent-name">{_html_esc(raw_title)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
                 f'{model_pill}'
-                f'{_context_pill_html(used_k, pct, "blue", item, False)}'
+                f'{_context_pill_html(used_k, pct, "blue", item, False, cls_dot)}'
                 f'<span class="row-actions">'
                 f'{_pin_btn_html(node_id, raw_title, is_pinned)}'
                 f'<a class="icon-act-btn open" href="conversation://{cid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
@@ -2677,14 +2810,13 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}" data-age-days="{age_d}"{pin_attr}>'
                 f'<div class="agent-row" onclick="toggleDetail(\'det-cls-cdx-{tid8}\')">'
                 f'<div class="agent-left">'
-                f'<span class="status-dot {cls_dot}" title="{_html_esc(cls_tip)}"></span>'
                 f'<span class="repo-tag">{_html_esc(repo)}</span>'
                 f'{icon_svg}'
                 f'<span class="agent-name">{_html_esc(disp)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
                 f'{model_pill}'
-                f'{_context_pill_html(used_k, pct, "green")}'
+                f'{_context_pill_html(used_k, pct, "green", item, False, cls_dot)}'
                 f'<span class="row-actions">'
                 f'{_pin_btn_html(node_id, disp, is_pinned)}'
                 f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{tid}\', \'{_html_esc(disp[:24])}\', \'{_html_esc(cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
@@ -2947,14 +3079,20 @@ def pick_template(target: str, script_dir: str) -> tuple[str | None, str]:
     return None, "legacy WIDGET_TEMPLATE"
 
 
-def main():
+def main(argv: list[str] | None = None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate the AOH usage & multi-agent tree widget HTML.")
+    parser.add_argument("target", nargs="?", default=None, help="output HTML path (positional, legacy)")
+    parser.add_argument("-o", "--output", dest="output", default=None, help="output HTML path (overrides positional target)")
+    args = parser.parse_args(argv)
     script_dir = os.path.dirname(os.path.realpath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
     import check_all_usage as cau
 
     data = cau.collect_usage(include_agent_trees=True)
-    target = sys.argv[1] if len(sys.argv) > 1 else "/tmp/usage_widget.html"
+    target = args.output or args.target or "/tmp/usage_widget.html"
 
     template, source = pick_template(target, script_dir)
     html_str = compact_widget_html(inject_live_data(template, data) if template else build_widget_html(data))
