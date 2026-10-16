@@ -3357,6 +3357,28 @@
       return true;
     }
 
+    const STORAGE_PC_MON_OPEN = 'agy_widget_pc_mon_open_v1';
+    let pcMonOpen = (() => {
+      const saved = safeGet(STORAGE_PC_MON_OPEN, null);
+      if (saved === '1' || saved === '0') return saved === '1';
+      return !!(SERVER_STATE && SERVER_STATE.pcMonOpen);
+    })();
+
+    function onPcTelemetryToggle(isOpen) {
+      pcMonOpen = !!isOpen;
+      userTouchedState = true;
+      safeSet(STORAGE_PC_MON_OPEN, pcMonOpen ? '1' : '0');
+      syncStateToBridge({ pcMonOpen });
+      notifyParentResize(true);
+    }
+
+    function applyPcTelemetryOpenState() {
+      const det = document.getElementById('pc-telemetry-ext');
+      if (det && det.open !== pcMonOpen) {
+        det.open = pcMonOpen;
+      }
+    }
+
     function smartPatchPcTelemetry(newHtml) {
       const slot = document.getElementById('pc-telemetry-slot');
       if (!slot || typeof newHtml !== 'string') return;
@@ -3366,14 +3388,29 @@
         return;
       }
       if (slot.dataset.pcSig === clean) return;
-      const oldDetails = slot.querySelector('#pc-telemetry-ext');
-      const wasOpen = oldDetails ? oldDetails.open : false;
-      slot.innerHTML = newHtml;
       slot.dataset.pcSig = clean;
-      const newDetails = slot.querySelector('#pc-telemetry-ext');
-      if (newDetails) {
-        newDetails.open = wasOpen;
-        newDetails.addEventListener('toggle', () => notifyParentResize(true));
+      const existingDetails = slot.querySelector('#pc-telemetry-ext');
+      if (!existingDetails) {
+        slot.innerHTML = newHtml;
+        applyPcTelemetryOpenState();
+        return;
+      }
+      // Parse incoming HTML off-screen and patch <summary> and .pc-bento-drawer in-place so <details> never closes!
+      const tmp = document.createElement('div');
+      tmp.innerHTML = clean;
+      const nextSum = tmp.querySelector('.pc-hud-strip');
+      const nextDrawer = tmp.querySelector('.pc-bento-drawer');
+      const curSum = existingDetails.querySelector('.pc-hud-strip');
+      const curDrawer = existingDetails.querySelector('.pc-bento-drawer');
+      if (nextSum && curSum && curSum.innerHTML !== nextSum.innerHTML) {
+        curSum.innerHTML = nextSum.innerHTML;
+        curSum.title = nextSum.title || curSum.title;
+      }
+      if (nextDrawer && curDrawer && curDrawer.innerHTML !== nextDrawer.innerHTML) {
+        curDrawer.innerHTML = nextDrawer.innerHTML;
+      }
+      if (existingDetails.open !== pcMonOpen) {
+        existingDetails.open = pcMonOpen;
       }
     }
 
@@ -3493,6 +3530,7 @@
 
     renderQuotas();
     applyDensityState();
+    applyPcTelemetryOpenState();
     pinImportedNodes();
     applyTreeUiState();
     switchTab(currentTab, false);

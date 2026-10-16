@@ -2765,12 +2765,12 @@ PC_TELEMETRY_BLOCK_RE = re.compile(
 )
 
 
-def build_optional_pc_telemetry_html() -> str:
+def build_optional_pc_telemetry_html(open_drawer: bool = False) -> str:
     """Return rendered PC telemetry HTML if pc_telemetry_ext.py is installed and enabled; otherwise empty markers."""
     try:
         import pc_telemetry_ext as pc_ext
         if pc_ext.is_enabled():
-            return pc_ext.render_pc_telemetry_html()
+            return pc_ext.render_pc_telemetry_html(open_drawer=open_drawer)
     except Exception:
         pass
     return "<!--__PC_TELEMETRY_HTML_START__--><!--__PC_TELEMETRY_HTML_END__-->"
@@ -2803,7 +2803,7 @@ def inject_live_data(template: str, data: dict) -> str:
         html = QUOTA_GRID_BLOCK_RE.sub(lambda _m: static_grid, html, count=1)
 
     if PC_TELEMETRY_BLOCK_RE.search(html):
-        pc_html = build_optional_pc_telemetry_html()
+        pc_html = build_optional_pc_telemetry_html(open_drawer=bool(state.get('pcMonOpen', False)))
         html = PC_TELEMETRY_BLOCK_RE.sub(lambda _m: pc_html, html, count=1)
 
     active_html, closed_html, act_cnt, cls_cnt = build_active_and_closed_trees_html(data, state)

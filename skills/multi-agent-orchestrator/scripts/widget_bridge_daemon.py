@@ -197,6 +197,7 @@ def _normalize_state(st) -> dict:
     st["density"] = st.get("density") if st.get("density") in ("compact", "expanded") else "compact"
     st["allCollapsed"] = bool(st.get("allCollapsed", False))
     st["showBgDaemons"] = bool(st.get("showBgDaemons", True))
+    st["pcMonOpen"] = bool(st.get("pcMonOpen", False))
     st["collapsedBranches"] = _unique_str_list(st.get("collapsedBranches"))
     st["openDetails"] = _unique_str_list(st.get("openDetails"))
     return st
@@ -403,7 +404,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 accounts = ruw.build_accounts(data)
                 st = load_state()
                 active_html, closed_html, act_cnt, cls_cnt = ruw.build_active_and_closed_trees_html(data, st)
-                pc_html = ruw.build_optional_pc_telemetry_html() if hasattr(ruw, "build_optional_pc_telemetry_html") else ""
+                pc_html = ruw.build_optional_pc_telemetry_html(open_drawer=bool(st.get("pcMonOpen", False))) if hasattr(ruw, "build_optional_pc_telemetry_html") else ""
                 # Only write missing directories on /api/refresh unless write_disk=1 is explicitly requested,
                 # so open artifact iframes are updated in-place via JSON without triggering IDE file-watcher reloads.
                 if is_refresh:
@@ -536,6 +537,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     st["allCollapsed"] = bool(body["allCollapsed"])
                 if "showBgDaemons" in body:
                     st["showBgDaemons"] = bool(body["showBgDaemons"])
+                if "pcMonOpen" in body:
+                    st["pcMonOpen"] = bool(body["pcMonOpen"])
                 if "collapsedBranches" in body:
                     st["collapsedBranches"] = _unique_str_list(body["collapsedBranches"])
                 if "openDetails" in body:
