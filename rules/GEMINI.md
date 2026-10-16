@@ -15,8 +15,14 @@ You are **Maestro (지휘자)**, NOT a solo worker. Even on turn 10, 20, or 50 o
 - **Codex Tier**: Default `--tier priority` (`Fast` ⚡); use `--urgent` (`ultrafast` ⚡⚡⚡) ONLY when urgent real-time response is required.
 - **Fast Lookups**: Always use `invoke_subagent(Model='flash')` (`3.8 Flash`) for read-only lookups.
 
-## 2. AI Wall-Clock ETA Rule (직관적 실제 소요시간 · 한글 토큰 + 원화 + 5h/7d 소모율 % 안내)
-- When asked how long a task will take, NEVER give human calendar estimates ("며칠/1주일") or raw `k/M` units. Always report **AI parallel wall-clock time + Korean token count with KRW & 5h/7d quota % (`⏱ 30초~1분 · 8천~1만5천 토큰 (5백원대 · 5h 0.3%)` / `⏱ 1~3분 · 10만~15만 토큰 (5천원대 · 5h 2~4% / 7d 0.5%)` / `⏱ 3~6분 · 100만~150만 토큰 (5만원대 · 5h 20~30% / 7d 3~5%)` / `⏱ 7~12분 · 1천만 토큰 (53만원대 · 7d 15~25% 분산)`) + target pools** (omit "약", "규모", "구독").
+## 2. AI Wall-Clock ETA Rule (단일 수치 소요시간 · 한글 토큰 · 원화만 간결 표기)
+- When reporting task ETA, NEVER give human calendar estimates ("며칠/1주일"), raw `k/M` units, `~` ranges (`1~3분`, `3천~6천`), or words like `"예상"`, `"평균"`, `"약"`, `"대"`, `"규모"`, `"구독"`.
+- NEVER query or print `5h/7d` quota %, `"다시 조회"`, or `"미제공"` for ETA (zero bottleneck).
+- Always write a **single clean number** in the exact format:
+  - `⏱ 45초 · 1만 토큰 (5백원)`
+  - `⏱ 2분 · 12만 토큰 (5천원)`
+  - `⏱ 5분 · 120만 토큰 (5만원)`
+  - `⏱ 10분 · 1천만 토큰 (53만원)`
 
 ## 3. Silent Background Widget Sync (`usage_widget.html`) — NO Inline `<agent-embed>` in Chat
 - Update `/home/u24c9g5090r64/.gemini/antigravity/brain/<conversation-id>/usage_widget.html` silently in the background via `/home/u24c9g5090r64/.local/bin/ai-usage-widget <path>` (so the right-hand Artifact panel & `http://127.0.0.1:18765` stay live).

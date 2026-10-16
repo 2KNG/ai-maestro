@@ -584,7 +584,8 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
-      padding: 4px 5px;
+      min-height: 22px;
+      padding: 2px 5px;
       border-radius: 5px;
       cursor: pointer;
       min-width: 0;
@@ -767,19 +768,21 @@
     }
 
     .agent-detail {
+      --border: var(--bdr);
       display: block;
       max-height: 0;
       opacity: 0;
       transform: translateY(-4px) scale(0.99);
       margin: 0 0 0 20px;
       padding: 0 7px;
-      border: 1px solid transparent;
+      border: 0 solid transparent;
+      border-width: 0;
       border-radius: 5px;
       background: rgba(15, 23, 42, 0.45);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9.5px;
       color: var(--muted);
-      line-height: 1.45;
+      line-height: 0;
       overflow: hidden;
       pointer-events: none;
       transition: max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
@@ -787,15 +790,17 @@
                   transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
                   margin 0.24s ease,
                   padding 0.24s ease,
+                  line-height 0.24s ease,
                   border-color 0.24s ease;
     }
     .agent-detail.open {
-      max-height: 480px;
+      max-height: 260px;
       opacity: 1;
       transform: translateY(0) scale(1);
-      margin: 1px 0 3px 20px;
+      line-height: 1.4;
+      margin: 3px 0 3px 20px;
       padding: 5px 7px;
-      border-color: var(--bdr);
+      border: 1px solid var(--border);
       pointer-events: auto;
       overflow-y: auto;
     }
@@ -1237,14 +1242,14 @@
       .usage-donut-center > small { font-size: 8.5px; }
       .usage-window-title { font-size: 11px; margin-top: 2px; }
       .usage-quota-state, .usage-reset { font-size: 9.5px; }
-      .tree-section { padding: 10px 12px; gap: 7px; border-radius: 10px; }
+      .tree-section { padding: 10px 12px; gap: 3px; border-radius: 10px; }
       .tree-header { font-size: 12.5px; padding-bottom: 6px; }
-      .agent-row { padding: 6px 8px; border-radius: 6px; }
+      .agent-row { border-radius: 6px; }
       .agent-name { font-size: 12px; }
       .sub-badge { font-size: 9.5px; padding: 1px 6px; }
       .model-pill, .ctx-pill { font-size: 10.5px; }
       .open-btn, .import-btn { height: 22px; padding: 0 8px; font-size: 10.5px; }
-      .agent-detail { font-size: 10.5px; padding: 7px 10px; }
+      .agent-detail { font-size: 10.5px; }
       #view-archive { max-height: 440px; }
       .mcp-chip { font-size: 11px; padding: 3px 8px; }
     }
@@ -1372,7 +1377,11 @@
       flex: 1;
       width: 100%;
     }
-    .agent-row { min-height: 28px; flex-wrap: nowrap; padding: 4px 5px; }
+    .agent-row { min-height: 22px; flex-wrap: nowrap; padding: 2px 5px; }
+    @media (min-width: 640px) {
+      .agent-row { padding: 2.5px 6px; }
+      .tree-section { gap: 3px; }
+    }
     .agent-row .agent-left, .agent-row .agent-right { flex-wrap: nowrap; }
     .agent-row .sub-badge, .agent-row .model-pill, .agent-row .ctx-pill,
     .agent-row .state-pill, .agent-row .repo-tag, .agent-row .fast-badge,

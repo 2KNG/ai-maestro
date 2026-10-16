@@ -618,14 +618,15 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       align-items: center;
       justify-content: space-between;
       gap: 6px;
-      padding: 3.5px 5px;
+      min-height: 22px;
+      padding: 2px 5px;
       border-radius: 5px;
       cursor: pointer;
       min-width: 0;
       transition: background 0.12s;
     }
     .agent-row:hover { background: var(--surface-2); }
-    .agent-row.depth-0 { background: rgba(128, 145, 175, 0.08); margin-top: 2px; }
+    .agent-row.depth-0 { background: rgba(128, 145, 175, 0.08); margin-top: 0; }
     .agent-row.depth-0:hover { background: var(--surface-2); }
 
     .agent-left {
@@ -759,19 +760,21 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .open-btn.codex:hover { background: rgba(16, 185, 129, 0.26); }
 
     .agent-detail {
+      --border: rgba(148, 163, 184, 0.22);
       display: block;
       max-height: 0;
       opacity: 0;
       transform: translateY(-4px) scale(0.99);
-      margin: 0 0 0 18px;
+      margin: 0 0 0 20px;
       padding: 0 7px;
-      border: 1px solid transparent;
+      border: 0 solid transparent;
+      border-width: 0;
       border-radius: 5px;
       background: rgba(15, 23, 42, 0.5);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9px;
       color: var(--muted);
-      line-height: 1.45;
+      line-height: 0;
       overflow: hidden;
       pointer-events: none;
       transition: max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
@@ -779,15 +782,17 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
                   transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
                   margin 0.24s ease,
                   padding 0.24s ease,
+                  line-height 0.24s ease,
                   border-color 0.24s ease;
     }
     .agent-detail.open {
-      max-height: 480px;
+      max-height: 260px;
       opacity: 1;
       transform: translateY(0) scale(1);
-      margin: 1px 0 3px 18px;
-      padding: 4.5px 7px;
-      border-color: var(--border);
+      line-height: 1.4;
+      margin: 3px 0 3px 20px;
+      padding: 5px 7px;
+      border: 1px solid var(--border);
       pointer-events: auto;
       overflow-y: auto;
     }
@@ -881,7 +886,11 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       flex: 1;
       width: 100%;
     }
-    .agent-row { min-height: 28px; flex-wrap: nowrap; padding: 4px 5px; }
+    .agent-row { min-height: 22px; flex-wrap: nowrap; padding: 2px 5px; }
+    @media (min-width: 640px) {
+      .agent-row { padding: 2.5px 6px; }
+      .tree-section { gap: 3px; }
+    }
     .agent-row .agent-left, .agent-row .agent-right { flex-wrap: nowrap; }
     .agent-row .sub-badge, .agent-row .model-pill, .agent-row .ctx-pill,
     .agent-row .state-pill, .agent-row .repo-tag, .agent-row .fast-badge,

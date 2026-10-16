@@ -17,6 +17,7 @@ Designed as a drop-in optional module ("있어도 되고 없어도 되는 확장
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import os
 import re
@@ -364,6 +365,163 @@ def _probe_dns_ms() -> float | None:
         return None
 
 
+# Severity thresholds. Cumulative boot-time rx_dropped is NEVER a trigger on its own.
+NET_LIVE_DROP_WARN_PER_SEC = 2.0
+NET_GATEWAY_WARN_MS = 80.0
+
+# Active IPv4 conflict source: bounded journalctl window (kernel + NetworkManager only).
+NET_CONFLICT_WINDOW_SEC = 300.0
+NET_CONFLICT_JOURNAL_TIMEOUT_SEC = 1.0
+_IPV4_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
+_CONFLICT_MSG_RE = re.compile(r"duplicate address|address conflict", re.I)
+
+
+def _collect_recent_ipv4_conflicts(local_ips: set[str]) -> list[str]:
+    """Return local IPv4s with an explicit duplicate-address/address-conflict journal event in the last 5 min.
+
+    Only kernel and NetworkManager records count. Stale (>300s) or future timestamps, IPv6 DAD,
+    generic words and IPs not currently assigned locally are ignored. Any failure => no conflict.
+    """
+    if not local_ips:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl", "-o", "json", "--no-pager", "-q",
+                "--since", "5 minutes ago", "-n", "500",
+                "_TRANSPORT=kernel", "+", "_SYSTEMD_UNIT=NetworkManager.service",
+                "+", "SYSLOG_IDENTIFIER=NetworkManager",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=NET_CONFLICT_JOURNAL_TIMEOUT_SEC,
+            text=True,
+        )
+        if proc.returncode != 0:
+            return []
+        out = proc.stdout or ""
+    except Exception:
+        return []
+
+    now = time.time()
+    found: list[str] = []
+    for line in out.splitlines():
+        try:
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                continue
+            age = now - int(rec["__REALTIME_TIMESTAMP"]) / 1_000_000.0
+            if not (0.0 <= age <= NET_CONFLICT_WINDOW_SEC):
+                continue
+            is_kernel = rec.get("_TRANSPORT") == "kernel"
+            is_nm = (
+                rec.get("_SYSTEMD_UNIT") == "NetworkManager.service"
+                or rec.get("SYSLOG_IDENTIFIER") == "NetworkManager"
+            )
+            if not (is_kernel or is_nm):
+                continue
+            msg = rec.get("MESSAGE")
+            if isinstance(msg, list):
+                msg = bytes(int(b) & 0xFF for b in msg).decode("utf-8", errors="ignore")
+            if not isinstance(msg, str) or not _CONFLICT_MSG_RE.search(msg):
+                continue
+            if "ipv6" in msg.lower():
+                continue
+            for cand in _IPV4_RE.findall(msg):
+                try:
+                    ip = str(ipaddress.IPv4Address(cand))
+                except ValueError:
+                    continue
+                if ip in local_ips and ip not in found:
+                    found.append(ip)
+        except Exception:
+            continue
+    return found
+
+
+def _synthesize_network_verdict(
+    interfaces: list[dict[str, Any]],
+    gateway_ip: str,
+    gw_ms: float | None,
+    ext_ms: float | None,
+    dns_ms: float | None,
+    rx_drop_rate: float,
+    ip_conflicts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Pure severity decision. `reasons` hold only warn/crit causes; `notes` are informational.
+
+    warn: live rx drop >= 2.0/s, gateway ping failed (external reachable) or > 80ms,
+          confirmed IPv4 conflict (kernel/NetworkManager journal, last 5 min, local IP) in `ip_conflicts`.
+    crit: gateway+external unreachable, or external unreachable while gateway answers.
+    Informational only: cumulative drops, subnet overlap, 2.4GHz Wi-Fi, DNS/external latency.
+    Active IP conflicts are never inferred from subnet overlap; only confirmed journal events count.
+    """
+    reasons: list[str] = []
+    notes: list[str] = []
+    status = "ok"
+    causes: set[str] = set()
+
+    active_with_ip = [i for i in interfaces if i.get("ip")]
+    eth_subnets = {i["subnet"] for i in active_with_ip if i["kind"] == "ethernet" and i["subnet"]}
+    wifi_subnets = {i["subnet"] for i in active_with_ip if i["kind"] == "wifi" and i["subnet"]}
+    if eth_subnets & wifi_subnets:
+        notes.append("유선(이더넷)+무선(Wi-Fi) 동일 대역 이중 연결 (정보: 실제 IP 충돌 아님)")
+
+    for i in active_with_ip:
+        if i["kind"] == "wifi" and "2.4GHz" in i.get("speed_label", ""):
+            notes.append(f"무선({i['iface']})이 2.4GHz 대역에 연결됨 ({i['speed_label']})")
+        if i.get("rx_drop", 0) > 500:
+            notes.append(f"{i['iface']} 부팅 이후 누적 수신 드랍 {i['rx_drop']:,}건 (과거 누적, 정보)")
+
+    if rx_drop_rate >= NET_LIVE_DROP_WARN_PER_SEC:
+        status = "warn"
+        causes.add("drop")
+        reasons.append(f"실시간 수신 패킷 드랍 {rx_drop_rate:.1f}건/초")
+
+    if ip_conflicts:
+        status = "warn" if status == "ok" else status
+        causes.add("conflict")
+        reasons.append(f"최근 5분 내 IPv4 주소 충돌 감지 ({', '.join(ip_conflicts)})")
+
+    if ext_ms is None and gw_ms is None and gateway_ip:
+        status = "crit"
+        causes.add("outage")
+        reasons.insert(0, f"공유기({gateway_ip}) 및 외부 인터넷 응답 없음 (랜선/와이파이 단절)")
+    elif ext_ms is None and gw_ms is not None:
+        status = "crit"
+        causes.add("outage")
+        reasons.insert(0, f"공유기({gw_ms:.0f}ms)는 정상이나 외부 인터넷(ISP/WAN) 단절됨")
+    else:
+        if gw_ms is None and gateway_ip:
+            status = "warn" if status == "ok" else status
+            causes.add("gateway")
+            reasons.insert(0, f"공유기({gateway_ip}) 핑 응답 실패 (외부 인터넷은 응답)")
+        elif gw_ms is not None and gw_ms > NET_GATEWAY_WARN_MS:
+            status = "warn" if status == "ok" else status
+            causes.add("gateway")
+            reasons.insert(0, f"공유기 내부망 지연 감지 (게이트웨이 핑 {gw_ms:.0f}ms)")
+        if ext_ms is not None and ext_ms > 90.0:
+            notes.append(f"외부 인터넷 지연 (1.1.1.1 핑 {ext_ms:.0f}ms, 정보)")
+        if dns_ms is not None and dns_ms > 120.0:
+            notes.append(f"DNS 도메인 질의 지연 ({dns_ms:.0f}ms, 정보)")
+
+    if status == "ok":
+        prim = next((i for i in interfaces if i["is_primary"]), interfaces[0] if interfaces else None)
+        p_desc = f"{prim['kind_label']} {prim['speed_label']}" if prim else "연결됨"
+        ping_str = f" · 핑 {ext_ms:.0f}ms" if ext_ms is not None else ""
+        summary = f"정상 ({p_desc}{ping_str})"
+    elif status == "crit":
+        summary = "오류: 인터넷 응답 지연/단절"
+    elif "conflict" in causes and not (causes & {"gateway", "drop"}):
+        summary = "주의: IPv4 주소 충돌 감지"
+    elif "gateway" in causes and "drop" not in causes:
+        summary = "주의: 공유기 응답 지연/실패"
+    else:
+        summary = "주의: 네트워크 병목 감지"
+
+    return {"status": status, "summary": summary, "reasons": reasons, "notes": notes}
+
+
 def _collect_interfaces_and_diagnosis(rx_drop_rate: float) -> dict[str, Any]:
     # 1. Read /proc/net/dev per-interface counters
     dev_stats: dict[str, dict[str, int]] = {}
@@ -391,6 +549,7 @@ def _collect_interfaces_and_diagnosis(rx_drop_rate: float) -> dict[str, Any]:
 
     # 2. IPv4 addresses & subnets
     ip_map: dict[str, tuple[str, str]] = {}
+    local_ips: set[str] = set()
     try:
         out = subprocess.check_output(["ip", "-o", "-4", "addr", "show"], timeout=1.0, text=True)
         for line in out.splitlines():
@@ -401,6 +560,8 @@ def _collect_interfaces_and_diagnosis(rx_drop_rate: float) -> dict[str, Any]:
                 ip = cidr.split("/")[0]
                 subnet = ".".join(ip.split(".")[:3]) if "." in ip else cidr
                 ip_map[iface] = (ip, subnet)
+                if "." in ip:
+                    local_ips.add(ip)
     except Exception:
         pass
 
@@ -500,55 +661,12 @@ def _collect_interfaces_and_diagnosis(rx_drop_rate: float) -> dict[str, Any]:
     dns_ms = _probe_dns_ms()
 
     # 6. Root-cause diagnosis synthesizer
-    reasons: list[str] = []
-    status = "ok"
-
-    active_with_ip = [i for i in interfaces if i.get("ip")]
-    eth_subnets = {i["subnet"] for i in active_with_ip if i["kind"] == "ethernet" and i["subnet"]}
-    wifi_subnets = {i["subnet"] for i in active_with_ip if i["kind"] == "wifi" and i["subnet"]}
-    if eth_subnets & wifi_subnets:
-        status = "warn"
-        reasons.append("유선(이더넷)+무선(Wi-Fi) 동일 대역 이중 연결됨 → ARP 간섭/경로 흔들림 위험 (Wi-Fi 끄기 권장)")
-
-    for i in active_with_ip:
-        if i["kind"] == "wifi" and "2.4GHz" in i.get("speed_label", ""):
-            if i["is_primary"]:
-                status = "warn"
-            reasons.append(f"무선({i['iface']})이 느린 2.4GHz 대역에 연결됨 ({i['speed_label']})")
-        if i["rx_drop"] > 500 or rx_drop_rate > 1.0:
-            if rx_drop_rate > 5.0:
-                status = "warn"
-            reasons.append(f"{i['iface']} 수신 패킷 드랍 누적 {i['rx_drop']:,}건 (브로드캐스트/버퍼 드랍)")
-
-    if ext_ms is None and gw_ms is None and gateway_ip:
-        status = "crit"
-        reasons.insert(0, f"공유기({gateway_ip}) 및 외부 인터넷 응답 없음 (랜선/와이파이 단절)")
-    elif ext_ms is None and gw_ms is not None:
-        status = "crit"
-        reasons.insert(0, f"공유기({gw_ms:.0f}ms)는 정상이나 외부 인터넷(ISP/WAN) 단절됨")
-    else:
-        if gw_ms is not None and gw_ms > 25.0:
-            status = "warn" if status == "ok" else status
-            reasons.insert(0, f"공유기 내부망 지연 감지 (게이트웨이 핑 {gw_ms:.0f}ms)")
-        if ext_ms is not None and ext_ms > 90.0:
-            status = "warn" if status == "ok" else status
-            reasons.insert(0, f"외부 인터넷 지연 감지 (1.1.1.1 핑 {ext_ms:.0f}ms)")
-        if dns_ms is not None and dns_ms > 120.0:
-            status = "warn" if status == "ok" else status
-            reasons.append(f"DNS 도메인 질의 지연 ({dns_ms:.0f}ms)")
-
-    if not reasons:
-        prim = next((i for i in interfaces if i["is_primary"]), interfaces[0] if interfaces else None)
-        p_desc = f"{prim['kind_label']} {prim['speed_label']}" if prim else "연결됨"
-        ping_str = f" · 핑 {ext_ms:.0f}ms" if ext_ms is not None else ""
-        summary = f"정상 ({p_desc}{ping_str})"
-    else:
-        if eth_subnets & wifi_subnets:
-            summary = "주의: 유선+Wi-Fi 이중연결"
-        elif ext_ms is None:
-            summary = "오류: 인터넷 응답 지연/단절"
-        else:
-            summary = "주의: 네트워크 병목 감지"
+    ip_conflicts = _collect_recent_ipv4_conflicts(local_ips)
+    verdict = _synthesize_network_verdict(interfaces, gateway_ip, gw_ms, ext_ms, dns_ms, rx_drop_rate, ip_conflicts)
+    status = verdict["status"]
+    summary = verdict["summary"]
+    reasons = verdict["reasons"]
+    notes = verdict["notes"]
 
     return {
         "interfaces": interfaces,
@@ -560,6 +678,7 @@ def _collect_interfaces_and_diagnosis(rx_drop_rate: float) -> dict[str, Any]:
         "status": status,
         "summary": summary,
         "reasons": reasons,
+        "notes": notes,
     }
 
 

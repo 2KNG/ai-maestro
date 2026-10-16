@@ -1,4 +1,6 @@
-# Multi-Pool Orchestration & Quota Rules (Codex / Antigravity / Claude)
-- Use `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` for cross-pool subagents (auto-steers away from `0%` pools; `7d<=10%` conserve, `7d<=2%` reserve).
-- Default Codex speed tier to `priority` (`Fast` ⚡); use `--urgent` (`ultrafast` ⚡⚡⚡) only when urgent.
-- Always state task ETAs in **AI parallel wall-clock time (`⏱ 30초~1분` / `⏱ 1~3분` / `⏱ 3~6분` / `⏱ 7~12분`) + Korean token count with KRW & 5h/7d quota % (`8천~1만5천 토큰 (5백원대 · 5h 0.3%)` / `10만~15만 토큰 (5천원대 · 5h 2~4% / 7d 0.5%)` / `100만~150만 토큰 (5만원대 · 5h 20~30% / 7d 3~5%)` / `1천만 토큰 (53만원대 · 7d 15~25% 분산)`)**, never human days/weeks or "약".
+# 🎼 Codex Orchestration Rules (`ai-maestro`)
+- Default tier: `service_tier = "priority"` (`Fast` ⚡). Use `"ultrafast"` (`⚡⚡⚡`) only when urgent real-time turnaround is explicitly requested.
+- For parallel sub-tasks, spawn child workers or use `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"`.
+- **ETA Format (단일 값 · `~` 범위 및 금지어 절대 금지 · 쿼터 조회 생략)**:
+  - Report task ETAs as a single clean value: `⏱ 45초 · 1만 토큰 (5백원)` / `⏱ 2분 · 12만 토큰 (5천원)` / `⏱ 5분 · 120만 토큰 (5만원)` / `⏱ 10분 · 1천만 토큰 (53만원)`.
+  - NEVER write `~` ranges (`1~3분`, `3천~6천`), `"예상"`, `"평균"`, `"약"`, `"대"`, `"규모"`, `"구독"`, or `5h/7d` quota notices (`"다시 조회"`, `"미제공"`). Do NOT run quota commands just to print an ETA.
