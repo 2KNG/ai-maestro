@@ -118,7 +118,7 @@ agy-orca/
 │       ├── SKILL.md                           # 멀티에이전트 오케스트레이터 스킬 정의서
 │       └── scripts/
 │           ├── check_all_usage.py             # 3대 풀 쿼터·트리·라우팅 수집 엔진
-│           ├── orca.py                        # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
+│           ├── agy_orca.py                        # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
 │           ├── orca_memory.py                 # SQLite + FTS5 크로스 에이전트 핸드오버 메모리
 │           ├── render_usage_widget.py         # AOH 위젯 SSR 렌더러 & Gzip 컴팩트 패커
 │           ├── usage_widget_template.html     # AOH 듀얼 링 & 숙성 애니메이션 위젯 템플릿

@@ -52,7 +52,7 @@ mkdir -p "$INSTALL_DIR/bin"
 
 cat > "$INSTALL_DIR/bin/agy-orca" <<EOF
 #!/usr/bin/env bash
-exec python3 "$SCRIPTS_DIR/orca.py" "\$@"
+exec python3 "$SCRIPTS_DIR/agy_orca.py" "\$@"
 EOF
 
 cat > "$INSTALL_DIR/bin/ai-usage" <<EOF
