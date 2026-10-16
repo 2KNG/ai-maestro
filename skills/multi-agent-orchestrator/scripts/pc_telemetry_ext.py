@@ -238,17 +238,23 @@ def _collect_workspace_storage() -> dict[str, Any]:
         top_dirs: list[dict[str, Any]] = []
         if os.path.isdir(dev_dir):
             try:
-                out = subprocess.check_output(
+                proc = subprocess.run(
                     ["du", "-sb", "--max-depth=1", dev_dir],
-                    timeout=2.0,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
-                ).decode("utf-8", errors="ignore")
+                    timeout=6.0,
+                    text=True,
+                )
+                out = proc.stdout or ""
                 items: list[tuple[int, str]] = []
                 for line in out.splitlines():
                     parts = line.strip().split(None, 1)
                     if len(parts) != 2:
                         continue
-                    sz = int(parts[0])
+                    try:
+                        sz = int(parts[0])
+                    except ValueError:
+                        continue
                     p = parts[1].rstrip("/")
                     if os.path.abspath(p) == os.path.abspath(dev_dir):
                         ws_total_bytes = sz
@@ -257,6 +263,8 @@ def _collect_workspace_storage() -> dict[str, Any]:
                         if not bname.startswith("."):
                             items.append((sz, bname))
                 items.sort(reverse=True)
+                if ws_total_bytes == 0 and items:
+                    ws_total_bytes = sum(sz for sz, _ in items)
                 for sz, bname in items[:4]:
                     top_dirs.append({
                         "name": bname,
