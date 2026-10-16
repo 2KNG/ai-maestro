@@ -1532,12 +1532,81 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
     )
 
 
-def _context_pill_html(used: str, percent: float, color: str) -> str:
-    """Keep the context column identical for every provider and row type."""
+def _fmt_row_work_time(node: dict | None, is_running: bool = False) -> tuple[str, str, str]:
+    """Return (display_label, css_state_class, tooltip_detail) distinguishing running duration vs finished clock time."""
+    now_ts = datetime.now().timestamp()
+    start_ts = None
+    end_ts = None
+    if isinstance(node, dict):
+        for k in ("created_at", "start_time", "started_at"):
+            if node.get(k):
+                try:
+                    start_ts = float(node[k])
+                    break
+                except Exception:
+                    pass
+        for k in ("updated_at", "end_time", "completed_at"):
+            if node.get(k):
+                try:
+                    end_ts = float(node[k])
+                    break
+                except Exception:
+                    pass
+    if is_running:
+        ref = start_ts or end_ts or now_ts
+        sec = max(1, int(now_ts - ref))
+        if sec >= 3600:
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            lbl = f"⏱ {h}h {m:02d}m"
+        elif sec >= 60:
+            m = sec // 60
+            s = sec % 60
+            lbl = f"⏱ {m}m {s:02d}s"
+        else:
+            lbl = f"⏱ {sec}s"
+        return lbl, "running", f"작업중 경과시간: {lbl.replace('⏱ ', '')}"
+    else:
+        fin = end_ts or start_ts
+        if not fin:
+            return "✓ 완료", "done", "작업 완료"
+        dt = datetime.fromtimestamp(fin)
+        now_dt = datetime.now()
+        if dt.date() == now_dt.date():
+            lbl = f"✓ {dt.strftime('%H:%M')}"
+            tip = f"오늘 {dt.strftime('%H:%M:%S')} 작업 완료"
+        else:
+            lbl = f"✓ {dt.month}/{dt.day} {dt.strftime('%H:%M')}"
+            tip = f"{dt.strftime('%Y-%m-%d %H:%M:%S')} 작업 완료"
+        if start_ts and end_ts and end_ts >= start_ts:
+            dur = max(1, int(end_ts - start_ts))
+            dur_s = f"{dur // 60}m {dur % 60}s" if dur >= 60 else f"{dur}s"
+            tip += f" (소요 {dur_s})"
+        return lbl, "done", tip
+
+
+def _context_pill_html(used: str, percent: float, color: str, node: dict | None = None, is_running: bool = False) -> str:
+    """Render a minimal color-coded context icon (no token numbers) + running duration (⏱) or finished time (✓)."""
+    pct = float(percent or 0.0)
+    if pct >= 80.0:
+        lvl_cls, lvl_ko = "crit", "높음"
+    elif pct >= 45.0:
+        lvl_cls, lvl_ko = "warn", "보통"
+    else:
+        lvl_cls, lvl_ko = "ok", "여유"
+    t_lbl, t_cls, t_tip = _fmt_row_work_time(node, is_running)
+    full_tip = f"{t_tip} · 컨텍스트 {lvl_ko}: {_html_esc(used)} ({pct:.1f}%)"
+    ctx_svg = (
+        f'<svg class="ctx-ico {lvl_cls}" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">'
+        f'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="2.2"/>'
+        f'<circle cx="8" cy="8" r="3.4" fill="currentColor"/>'
+        f'</svg>'
+    )
     return (
-        f'<span class="ctx-pill" title="컨텍스트: {_html_esc(used)} ({percent:.1f}%)">'
-        f'<span class="ctx-bar"><span class="ctx-bar-fill" style="width:{min(100,max(3,int(percent)))}%;background:var(--{color})"></span></span>'
-        f'{_html_esc(used)}</span>'
+        f'<span class="ctx-pill {t_cls}" title="{_html_esc(full_tip)}">'
+        f'{ctx_svg}'
+        f'<span class="ctx-time-txt">{_html_esc(t_lbl)}</span>'
+        f'</span>'
     )
 
 
@@ -2255,7 +2324,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'</div>'
                 f'<div class="agent-right">'
                 f'{c_pill}'
-                f'{_context_pill_html(c_used, c_pct, "blue")}'
+                f'{_context_pill_html(c_used, c_pct, "blue", ch, is_sub_running)}'
                 f'<span class="row-actions">'
                 f'<a class="icon-act-btn open" href="conversation://{ccid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
                 f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_role[:24])}\')">✕</button>'
@@ -2334,7 +2403,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'</div>'
             f'<div class="agent-right">'
             f'{model_pill}'
-            f'{_context_pill_html(used_k, pct, "blue")}'
+            f'{_context_pill_html(used_k, pct, "blue", item, False)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp_title, is_pinned)}'
             f'<a class="icon-act-btn open" href="conversation://{cid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
@@ -2433,7 +2502,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     f'<div class="agent-left">{_sub_prefix_html("busy")}'
                     f'{child_icon}'
                     f'<span class="agent-name">{_html_esc(child_disp)}</span></div>'
-                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green")}'
+                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, True)}'
                     f'<span class="row-actions">'
                     f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{child_tid}\', \'{_html_esc(child_disp[:28])}\', \'{_html_esc(child_cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
                     f'</span>'
@@ -2462,7 +2531,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'</div>'
             f'<div class="agent-right">'
             f'{model_pill}'
-            f'{_context_pill_html(used_k, pct, "green")}'
+            f'{_context_pill_html(used_k, pct, "green", item, False)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp, is_pinned)}'
             f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{tid}\', \'{_html_esc(disp[:28])}\', \'{_html_esc(cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'

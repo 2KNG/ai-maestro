@@ -1664,8 +1664,8 @@
       box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
     }
     .agent-row .ctx-pill {
-      width: 78px; min-width: 78px; flex: 0 0 78px; display: inline-flex;
-      align-items: center; justify-content: flex-end; gap: 4px;
+      width: 86px; min-width: 86px; flex: 0 0 86px; display: inline-flex;
+      align-items: center; justify-content: flex-start; gap: 4.5px; padding: 1.5px 5px;
       font-variant-numeric: tabular-nums; box-sizing: border-box;
     }
     .agent-row .ctx-bar { display: inline-block; }
@@ -1884,6 +1884,32 @@
       background: rgba(79, 70, 229, 0.08);
       border-color: rgba(79, 70, 229, 0.24);
       color: #4338ca;
+    }
+  
+    .ctx-pill .ctx-ico { flex: none; }
+    .ctx-pill .ctx-ico.ok { color: #54c9a0; }
+    .ctx-pill .ctx-ico.warn { color: #e9b45b; }
+    .ctx-pill .ctx-ico.crit { color: #ef7a85; }
+    .ctx-pill.running {
+      border-color: rgba(84, 201, 160, 0.32);
+      background: rgba(84, 201, 160, 0.08);
+      color: #6ee7b7;
+    }
+    .ctx-pill.done {
+      color: #94a3b8;
+    }
+    html.light .ctx-pill.running {
+      border-color: rgba(5, 150, 105, 0.35);
+      background: rgba(5, 150, 105, 0.08);
+      color: #047857;
+    }
+    html.light .ctx-pill.done { color: #64748b; }
+    .ctx-time-txt {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 9px;
+      letter-spacing: -0.02em;
     }
   </style>
 </head>
