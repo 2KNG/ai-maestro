@@ -1995,11 +1995,11 @@ def _detail_extras_html(provider: str, session_id: str, repo: str = "", is_paren
             script_dir = os.path.dirname(os.path.realpath(__file__))
             if script_dir not in sys.path:
                 sys.path.insert(0, script_dir)
-            import orca_memory
-            notes = orca_memory.get_recent_handover_notes(repo=repo, max_age_seconds=21600, limit=1)
+            import maestro_memory
+            notes = maestro_memory.get_recent_handover_notes(repo=repo, max_age_seconds=21600, limit=1)
             if notes:
                 n = notes[0]
-                one_line = (n.get("summary") or "").splitlines()[0][:110]
+                one_line = ((n.get("summary") or "").splitlines() or [""])[0][:110]
                 mem_html = (
                     f'<div class="handover-note-row">'
                     f'<span class="handover-badge">🧠 인계 메모리 ({_html_esc(n.get("time_kst",""))} · {_html_esc(n.get("pool",""))})</span>'
@@ -2265,7 +2265,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             closed_cdx.append(c)
 
     # Map maestro worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
-    orca_specs_by_cid: dict[str, str] = {}
+    maestro_specs_by_cid: dict[str, str] = {}
     repo_to_parent_cid: dict[str, str] = {}
     for ag_p in sorted(active_ag, key=lambda x: 1 if x.get("conversation_id") == "521b781e-43da-4647-b411-585e65e5f002" else 0):
         p_cid = ag_p.get("conversation_id", "")
@@ -2282,23 +2282,23 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         if os.path.exists(t_path):
             try:
                 with open(t_path, encoding="utf-8", errors="ignore") as tf:
-                    orca_lines = [
+                    maestro_lines = [
                         ln for ln in tf
                         if any(cmd in ln for cmd in ("maestro", "agy-orca")) and "worker-start" in ln and "python3 -c" not in ln
                     ]
-                if orca_lines:
-                    orca_specs_by_cid[p_cid] = "\n".join(orca_lines)
+                if maestro_lines:
+                    maestro_specs_by_cid[p_cid] = "\n".join(maestro_lines)
             except OSError:
                 pass
 
     attached_ag_workers_by_parent: dict[str, list[dict]] = {}
     for w_ag in internal_ag_workers:
-        w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", (w_ag.get("title") or "").splitlines()[0]).strip()
+        w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", ((w_ag.get("title") or "").splitlines() or [""])[0]).strip()
         w_key = w_raw[:24].strip()
         w_repo, _ = _repo_from_uris_or_cwd(w_ag.get("workspaces"))
         target_p = None
         if len(w_key) >= 8:
-            for p_cid, specs_txt in orca_specs_by_cid.items():
+            for p_cid, specs_txt in maestro_specs_by_cid.items():
                 if w_key in specs_txt:
                     target_p = p_cid
                     break
@@ -2314,12 +2314,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
     attached_cdx_workers_by_parent: dict[str, list[dict]] = {}
     for w_cdx in internal_cdx_workers:
-        w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", (w_cdx.get("title") or "").splitlines()[0]).strip()
+        w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", ((w_cdx.get("title") or "").splitlines() or [""])[0]).strip()
         w_key = w_raw[:24].strip()
         w_repo, _ = _repo_from_uris_or_cwd(None, w_cdx.get("cwd") or "")
         target_p = None
         if len(w_key) >= 8:
-            for p_cid, specs_txt in orca_specs_by_cid.items():
+            for p_cid, specs_txt in maestro_specs_by_cid.items():
                 if w_key in specs_txt:
                     target_p = p_cid
                     break
@@ -2397,7 +2397,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_disp = re.sub(
                 r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?",
                 "",
-                (repo_codex.get("display_name") or (repo_codex.get("title") or "").splitlines()[0] or "codex-worker"),
+                (repo_codex.get("display_name") or ((repo_codex.get("title") or "").splitlines() or [""])[0] or "codex-worker"),
             ).strip()
             c_repo, _ = _repo_from_uris_or_cwd(None, ccwd)
             c_tctx = repo_codex.get("turn_context") or {}

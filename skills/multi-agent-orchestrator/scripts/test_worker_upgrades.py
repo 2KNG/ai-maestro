@@ -11,8 +11,8 @@ import unittest
 from unittest import mock
 
 import check_all_usage as usage
-import agy_orca as workers
-import orca_memory
+import maestro as workers
+import maestro_memory
 import benchmark_sync
 
 
@@ -101,7 +101,7 @@ class WorkerDispatchTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         for name, value in (("format_handover_context_for_prompt", ""),
                             ("save_handover_note", None), ("notify_long_task_completion", None)):
-            self.stack.enter_context(mock.patch.object(orca_memory, name, return_value=value))
+            self.stack.enter_context(mock.patch.object(maestro_memory, name, return_value=value))
         self.stack.enter_context(mock.patch.object(workers, "record_spawned_session"))
         self.stack.enter_context(mock.patch.object(workers, "stamp_codex_db_titles", return_value=[]))
         self.stack.enter_context(mock.patch("threading.Timer"))
@@ -117,7 +117,7 @@ class WorkerDispatchTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--model") + 1], expected)
                 self.assertIn("--dangerously-skip-permissions", command)
                 self.assertEqual(self.run.call_args.kwargs["cwd"], "/tmp")
-                self.assertEqual(result["effort"], "high")
+                self.assertEqual(result["effort"], "ultra" if pool in workers.CLAUDE_ULTRA_POOLS else "high")
                 self.assertEqual(workers._canonical_pool_key(pool), "claude")
 
     def test_fast_fallback_only_for_model_errors(self):

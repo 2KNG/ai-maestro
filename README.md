@@ -62,6 +62,7 @@ LLM 토큰을 단 1토큰도 소모하지 않고 로컬 프로세스·SQLite·JS
 | Gemini 3.8 Flash (low · fast) / Sonnet 5.5 (high) | `⏱ 40초 · 5만 토큰 (1천원)` |
 | Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
 | Opus 5.5 (high/xhigh) / Gemini 4 Argon (high) | `⏱ 2분 · 22만 토큰 (6천원)` |
+| Opus 5.5 Ultra (ultra · `--effort max` + `ultrathink` · standard · 3x quota) | `⏱ 3분 · 120만 토큰 (1만5천원)` |
 | gpt-6-astra (medium · default) / gpt-6.1-sol (low) | `⏱ 1분 · 35만 토큰 (3천원)` |
 | gpt-6.1-sol (medium · priority · interactive/urgent) | `⏱ 1분 20초 · 80만 토큰 (7천원)` |
 | gpt-6.1-sol (high · priority · interactive/urgent) | `⏱ 2분 · 120만 토큰 (1만2천원)` |
@@ -86,13 +87,17 @@ LLM 토큰을 단 1토큰도 소모하지 않고 로컬 프로세스·SQLite·JS
   - `--tier default|standard|priority|ultrafast` is supported: `priority` requires `--interactive` / `--urgent`; `ultrafast` requires `--urgent`.
   - Astra (`gpt-6-astra`) is ALWAYS default tier, with a `medium` effort cap unless `--max-capability` unlocks `high` / `ultra`.
   - `--max-capability` + `--domain coding|reasoning|frontend_ui|speed` uses the `benchmark_sync` recommendation and retains quota-exhaustion steering; an explicit `--pool` constrains the recommendation.
-  - The benchmark matrix has 11 profiles; JSON/YAML coding scores update only on a matching model + effort.
+  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`) runs standard `claude-opus-5-5` with `--effort max` and prepends `ultrathink` to the prompt; it consumes **3x quota** vs. standard `claude-opus-5-5`, never uses the Fast tier, and is therefore allowed in background runs; clean ETA: `⏱ 3분 · 120만 토큰 (1만5천원)`.
+  - Explicit `--effort ultra` / `--effort max` (or an ultra alias pool) is allowed WITHOUT `--max-capability`; only implicit escalation is gated — with no `--effort`, Claude runs `high`, or `xhigh` under `--max-capability`.
+  - **Max-Capability Policy**: `--max-capability` also excludes the Fast profile unless `--pool claude-fast` is explicit, disables auto-Fast under `--interactive` / `--urgent`, and unlocks Astra `high` / `ultra`; reserve Opus 5.5 Ultra (3x quota) for the hardest reasoning / architecture subtasks.
+  - The `benchmark_sync` matrix has **12 profiles** scored across **4 domains** (`coding`, `reasoning`, `frontend_ui`, `speed`), each with a quota multiplier (Opus 5.5 Ultra 3x, Opus 5.5 Fast 2x); JSON/YAML coding scores update only on a matching model + effort.
 
 | Concrete subtask | Model · Effort · Speed tier |
 |---|---|
 | Responsive UI / quick patch (live interactive only) | Opus 5.5 Fast (`claude-fast`, 2x quota) |
 | Cron / watchdog / long autonomous / remote background | Opus 5.5 (`claude-opus-5-5`, standard) |
-| Core architecture reasoning | Opus 5.5 (`high`; `xhigh`/`ultra` via `--max-capability`, standard) |
+| Core architecture reasoning | Opus 5.5 (`high`; `xhigh` via `--max-capability`, standard) |
+| Hardest reasoning / architecture (explicit opt-in) | Opus 5.5 Ultra (`claude-ultra` or `--effort ultra` → `--effort max` + `ultrathink`, standard, 3x quota) |
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | Parallel submodule implementation | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
@@ -119,14 +124,16 @@ maestro worker-start --pool auto --difficulty high --cwd "$PWD" --wait --spec "�
 # 3. Git Worktree 격리 브랜치에서 안전하게 코딩 워커 실행 + 자동 검증 게이트
 maestro worker-start --pool auto --difficulty high --worktree --verify "pytest -q" --cwd "$PWD" --wait --spec "기능 구현"
 
-# 4. 특정 풀 지정 실행 (codex | codex-astra | claude | claude-fast | agy-argon | agy-claude | agy-flash)
+# 4. 특정 풀 지정 실행 (codex | codex-astra | claude | claude-ultra | claude-fast | agy-argon | agy-claude | agy-flash)
 maestro worker-start --pool codex --tier standard --cwd "$PWD" --wait --spec "백엔드 로직 리팩토링"
 maestro worker-start --pool codex --interactive --tier priority --cwd "$PWD" --wait --spec "실시간 인터랙티브 수정"
 maestro worker-start --pool codex-astra --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
 maestro worker-start --pool codex --model gpt-6-astra --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
 maestro worker-start --pool claude-fast --interactive --cwd "$PWD" --wait --spec "반응형 UI 빠른 패치"   # 인터랙티브 전용 · 2x 쿼터
 maestro worker-start --pool claude --cwd "$PWD" --wait --spec "코어 아키텍처 설계"
-maestro worker-start --pool auto --max-capability --domain coding --cwd "$PWD" --wait --spec "고난도 코딩"   # benchmark_sync 추천
+maestro worker-start --pool claude-ultra --cwd "$PWD" --wait --spec "최고난도 추론"   # = opus-ultra / opus-5.5-ultra · --effort max + ultrathink · 3x 쿼터
+maestro worker-start --pool claude --effort ultra --cwd "$PWD" --wait --spec "최고난도 추론"   # 명시적 ultra/max는 --max-capability 불필요
+maestro worker-start --pool auto --max-capability --domain coding --cwd "$PWD" --wait --spec "고난도 코딩"   # benchmark_sync 12 profiles × 4 domains 추천
 
 # 5. AOH 라이브 위젯 HTML 수동 생성 / 갱신
 ai-usage-widget /tmp/usage_widget.html
@@ -146,23 +153,35 @@ ai-maestro/
 ├── README.md                                  # 프로젝트 문서
 ├── bin/                                       # ~/.local/bin 심볼릭 링크용 실행 래퍼
 │   ├── maestro                                # 메인 CLI 래퍼
+│   ├── agy-orca                               # 구버전 CLI 이름 호환 래퍼
 │   ├── ai-usage
 │   ├── ai-usage-widget
 │   └── ai-usage-web
-├── rules/                                     # 전 에이전트 공통 글로벌 룰 템플릿
+├── rules/                                     # 전 에이전트 공통 글로벌 룰 원본 (install 시 글로벌 경로로 복사)
 │   ├── GEMINI.md                              # Antigravity 글로벌 룰 (~/.gemini/GEMINI.md)
 │   ├── AGENTS.workspace.md                    # 워크스페이스 룰 (~/dev/AGENTS.md)
 │   ├── AGENTS.codex.md                        # Codex 글로벌 룰 (~/.codex/AGENTS.md)
-│   └── CLAUDE.md                              # Claude Code 글로벌 룰 (~/.claude/CLAUDE.md)
+│   ├── CLAUDE.md                              # Claude Code 글로벌 룰 (~/.claude/CLAUDE.md)
+│   └── hooks.agy.json                         # Antigravity 하네스 훅 설정
+├── templates -> rules                         # 하위 호환 심볼릭 링크 (구버전 templates/ 경로 참조용)
 ├── skills/
 │   └── multi-agent-orchestrator/
 │       ├── SKILL.md                           # 멀티에이전트 오케스트레이터 스킬 정의서
 │       └── scripts/
+│           ├── maestro.py                     # (실파일) 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
+│           ├── maestro_memory.py              # (실파일) SQLite/FTS5 세션 핸드오버 메모리
+│           ├── benchmark_sync.py              # 12 profiles × 4 domains 벤치마크 매트릭스 & --max-capability 추천
 │           ├── check_all_usage.py             # 3대 풀 쿼터·트리·라우팅 수집 엔진
-│           ├── maestro.py                     # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
+│           ├── maestro_harness_hook.py        # 하네스 훅 엔트리포인트
+│           ├── pc_telemetry_ext.py            # 로컬 PC 텔레메트리 확장
 │           ├── render_usage_widget.py         # AOH 위젯 SSR 렌더러 & Gzip 컴팩트 패커
+│           ├── render_remote_widget.py        # 원격 대시보드용 위젯 렌더러
 │           ├── usage_widget_template.html     # AOH 듀얼 링 & 숙성 애니메이션 위젯 템플릿
-│           └── widget_bridge_daemon.py        # 18765 포트 실시간 브리지 & 세션 복원 데몬
+│           ├── widget_bridge_daemon.py        # 18765 포트 실시간 브리지 & 세션 복원 데몬
+│           ├── test_*.py                      # pytest 회귀 테스트
+│           ├── agy_orca.py -> maestro.py      # 하위 호환 상대 심볼릭 링크
+│           ├── orca.py -> maestro.py          # 하위 호환 상대 심볼릭 링크
+│           └── orca_memory.py -> maestro_memory.py   # 하위 호환 상대 심볼릭 링크
 ├── plugins/
 │   └── codex-claude-bridge/                   # /codex, /claude 슬래시 스킬 브리지 플러그인
 └── systemd/

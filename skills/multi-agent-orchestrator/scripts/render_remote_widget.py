@@ -9,11 +9,12 @@ Generates:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 import check_all_usage as cau
@@ -53,16 +54,30 @@ def build_remote_html(data: dict, lan_ip: str, target_path: str) -> str:
     finally:
         ruw._load_persisted_widget_state = orig_load_state
 
-    old_bridge = "const BRIDGE_URL = (location.protocol.startsWith('http') && location.host)\n      ? location.origin : 'http://127.0.0.1:18765';"
+    # HTTP origins (incl. localhost/127.0.0.1 served by the bridge) talk to their own origin;
+    # file:// / vscode-webview fall back to the LAN bridge (fetch failures are swallowed silently).
+    bridge_re = re.compile(r"const BRIDGE_URL = \(location\.protocol\.startsWith\('http'\) && location\.host\)\s*\? location\.origin : '[^']*';")
     new_bridge = (
-        f"const BRIDGE_URL = (location.protocol.startsWith('http') && location.host && !location.host.includes('localhost')) "
-        f"? location.origin : 'http://{lan_ip}:18765';"
+        "const BRIDGE_URL = (location.protocol.startsWith('http') && location.host)\n"
+        f"      ? location.origin : 'http://{lan_ip}:18765';"
     )
-    if old_bridge in raw_html:
-        raw_html = raw_html.replace(old_bridge, new_bridge, 1)
+    raw_html = bridge_re.sub(lambda _m: new_bridge, raw_html, count=1)
 
-    raw_html = raw_html.replace('<div class="pc-drawer" id="pc-drawer">', '<div class="pc-drawer open" id="pc-drawer">', 1)
-    raw_html = raw_html.replace('id="pc-mon-toggle-btn" class="hdr-btn pc-mon-btn"', 'id="pc-mon-toggle-btn" class="hdr-btn pc-mon-btn active"', 1)
+    # Mark the bridge live only after a successful /api/status response.
+    raw_html = raw_html.replace(
+        "        if (j && j.ok) {\n",
+        "        if (j && j.ok) {\n          window.__BRIDGE_LIVE_OK = true;\n",
+        1,
+    )
+
+    # Offline/static viewers keep completed subagent nodes instead of evaporating them.
+    start = raw_html.find("function tickSubRipening()")
+    if start != -1:
+        end = raw_html.find("\n    }\n", start)
+        end = len(raw_html) if end == -1 else end
+        body = raw_html[start:end].replace("node.remove();", "if (window.__BRIDGE_LIVE_OK) node.remove();", 1)
+        body = body.replace("if (age >= 60) {", "if (age >= 60 && window.__BRIDGE_LIVE_OK) {", 1)
+        raw_html = raw_html[:start] + body + raw_html[end:]
     return raw_html
 
 
@@ -77,9 +92,9 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
         wins = acc.get("windows") or []
         w_parts = []
         for w in wins:
-            lbl = w.get("period") or w.get("label") or ""
+            lbl = (w.get("period") or w.get("label") or "").replace("|", "·")
             rem = w.get("remaining")
-            rst = w.get("reset") or "-"
+            rst = w.get("resetText") or w.get("reset") or "-"
             w_parts.append(f"**{lbl}: {rem}%** ({rst})")
         q_rows.append(f"| **{name}** | {' · '.join(w_parts) if w_parts else '-'} |")
 
@@ -88,12 +103,18 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
     ram = pc.get("ram") or {}
     disk = pc.get("storage") or {}
     net = pc.get("network") or {}
-    nd = pc.get("network_diagnostics") or {}
+    nd = (pc.get("network") or {}).get("diagnosis") or pc.get("network_diagnostics") or {}
 
     cpu_s = f"**{cpu.get('percent', 0):.0f}%** ({cpu.get('temp_c', 0):.0f}°C)"
-    gpu_s = f"**{gpu.get('util_pct', gpu.get('percent', 0)):.0f}%** · VRAM `{gpu.get('mem_used_gb', 0):.1f}/{gpu.get('mem_total_gb', 32):.0f} GB` ({gpu.get('temp_c', 0):.0f}°C · {gpu.get('power_w', 0):.0f}W)"
+    vram_used = gpu.get("vram_used_gb", gpu.get("mem_used_gb", 0)) or 0
+    vram_total = gpu.get("vram_total_gb", gpu.get("mem_total_gb", 32)) or 0
+    free_gb = disk.get("disk_free_gb", disk.get("free_gb", 0)) or 0
+    total_gb = disk.get("disk_total_gb", disk.get("total_gb", 0)) or 0
+    ws_lbl = disk.get("workspace_label") or f"{disk.get('dev_used_gb', 0):.1f} GB"
+
+    gpu_s = f"**{gpu.get('util_pct', gpu.get('percent', 0)):.0f}%** · VRAM `{vram_used:.1f}/{vram_total:.0f} GB` ({gpu.get('temp_c', 0):.0f}°C · {gpu.get('power_w', 0):.0f}W)"
     ram_s = f"**{ram.get('used_gb', 0):.1f} / {ram.get('total_gb', 0):.1f} GB** ({ram.get('percent', 0):.0f}%)"
-    disk_s = f"여유 **{disk.get('free_gb', 0):.0f} GB** / {disk.get('total_gb', 0):.0f} GB (`~/dev` {disk.get('dev_used_gb', 0):.1f} GB)"
+    disk_s = f"여유 **{free_gb:.0f} GB** / {total_gb:.0f} GB (`~/dev` {ws_lbl})"
     rx_kb = float(net.get("rx_bytes_per_sec", 0) or 0) / 1024.0
     tx_kb = float(net.get("tx_bytes_per_sec", 0) or 0) / 1024.0
     net_s = f"`{net.get('iface', 'wlp134s0f0')}` (`{lan_ip}`) · ↓ `{rx_kb:.1f} KB/s` · ↑ `{tx_kb:.1f} KB/s` · 상태: **{nd.get('summary', '정상')}**"
@@ -117,17 +138,21 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
     ag_sessions = ((data.get("agent_trees") or {}).get("antigravity") or [])
     cdx_sessions = ((data.get("agent_trees") or {}).get("codex") or [])
 
-    sess_rows = []
+    claude_sessions = ((data.get("claude_local") or {}).get("sessions") or [])
+
+    # (is_running, row) tuples so RUNNING sessions sort first across all pools.
+    sess_items = []
     for ag in ag_sessions[:12]:
         cid = (ag.get("conversation_id") or "")[:8]
         title = (ag.get("title") or "Session").replace("|", "·")[:42]
         model = ag.get("model") or "-"
-        st = "🟢 RUNNING" if "RUNNING" in (ag.get("status") or "") else "⚪ IDLE"
+        is_run = "RUNNING" in (ag.get("status") or "")
+        st = "🟢 RUNNING" if is_run else "⚪ IDLE"
         if cid == "4500bbbc":
             title = f"🤖 **[3D/로봇]** {title}"
-        dur_lbl, _, _ = ruw._fmt_row_work_time(ag, "RUNNING" in (ag.get("status") or ""))
+        dur_lbl, _, _ = ruw._fmt_row_work_time(ag, is_run)
         ctx_pct = ((ag.get("context_usage") or {}).get("percent") or 0.0)
-        sess_rows.append(f"| `{cid}` | {title} | {model} | {st} | `{dur_lbl}` | {ctx_pct:.1f}% |")
+        sess_items.append((is_run, f"| `{cid}` | {title} | {model} | {st} | `{dur_lbl}` | {ctx_pct:.1f}% |"))
 
     for cdx in cdx_sessions[:8]:
         tid = (cdx.get("thread_id") or "")[:8]
@@ -138,7 +163,20 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
         st = "🟢 RUNNING" if is_run else "⚪ IDLE"
         dur_lbl, _, _ = ruw._fmt_row_work_time(cdx, is_run)
         ctx_pct = ((cdx.get("token_count") or {}).get("percent") or 0.0)
-        sess_rows.append(f"| `{tid}` | {title} | {model} | {st} | `{dur_lbl}` | {ctx_pct:.1f}% |")
+        sess_items.append((is_run, f"| `{tid}` | {title} | {model} | {st} | `{dur_lbl}` | {ctx_pct:.1f}% |"))
+
+    for cl in claude_sessions[:8]:
+        sid = (cl.get("session_id") or cl.get("id") or "")[:8]
+        title = (cl.get("title") or cl.get("summary") or cl.get("display_name") or "Claude Code").replace("|", "·")[:42]
+        model = cl.get("model") or "Claude Code"
+        is_run = bool(cl.get("is_running")) or "RUNNING" in str(cl.get("status") or "").upper()
+        st = "🟢 RUNNING" if is_run else "⚪ IDLE"
+        dur_lbl, _, _ = ruw._fmt_row_work_time(cl, is_run)
+        ctx_pct = ((cl.get("context_usage") or cl.get("token_count") or {}).get("percent") or 0.0)
+        sess_items.append((is_run, f"| `{sid}` | {title} | {model} | {st} | `{dur_lbl}` | {ctx_pct:.1f}% |"))
+
+    sess_items.sort(key=lambda it: not it[0])
+    sess_rows = [row for _, row in sess_items]
 
     md = [
         "# 🌐 AI Maestro 원격 실시간 대시보드 (Remote Status Artifact)",

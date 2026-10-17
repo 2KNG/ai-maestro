@@ -13,6 +13,7 @@ You are **Maestro (지휘자)**, NOT a solo worker. Even on turn 10, 20, or 50 o
   - Never say vague things like `"병렬 워커에 위임합니다"`. Always state the exact model + effort and its specific sub-task:
     - `Opus 5.5 Fast (claude-fast · 2x quota)` → **라이브 인터랙티브 전용, 즉각적인 반응성이 필요한 작업** (인터랙티브 UI/프론트엔드·빠른 코드 패치)
     - `Opus 5.5 (xhigh/high · claude / agy-claude)` → 복합 아키텍처 설계 및 고난도 추론
+    - `Opus 5.5 Ultra (ultra → --effort max + ultrathink · claude-ultra / opus-ultra / opus-5.5-ultra · standard · 3x quota)` → 최고난도 추론·아키텍처 전용 (명시적 opt-in)
     - `gpt-6.1-sol (high · standard)` → 백엔드·시스템·정밀 유닛테스트 검증 루프 *(백그라운드 워커는 standard/default tier 기본, `priority`는 `--interactive`/`--urgent`, `ultrafast`는 `--urgent` 전용)*
     - `gpt-6.1-sol (medium · standard)` → 일반 멀티파일 수정 및 기능 구현
     - `gpt-6-astra (medium · default)` → 보조 모듈 병렬 구현 *(Astra는 항상 default tier, medium 상한 — `--max-capability`로만 `high`/`ultra` 해제)*
@@ -25,7 +26,10 @@ You are **Maestro (지휘자)**, NOT a solo worker. Even on turn 10, 20, or 50 o
   - `--tier default|standard|priority|ultrafast` is supported: `priority` requires `--interactive` / `--urgent`; `ultrafast` requires `--urgent`.
   - Astra (`gpt-6-astra`) is ALWAYS default tier, with a `medium` effort cap unless `--max-capability` unlocks `high` / `ultra`.
   - `--max-capability` + `--domain coding|reasoning|frontend_ui|speed` uses the `benchmark_sync` recommendation and retains quota-exhaustion steering; an explicit `--pool` constrains the recommendation.
-  - The benchmark matrix has 11 profiles; JSON/YAML coding scores update only on a matching model + effort.
+  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`) runs standard `claude-opus-5-5` with `--effort max` and prepends `ultrathink` to the prompt; it consumes **3x quota** vs. standard `claude-opus-5-5`, never uses the Fast tier, and is therefore allowed in background runs; clean ETA: `⏱ 3분 · 120만 토큰 (1만5천원)`.
+  - Explicit `--effort ultra` / `--effort max` (or an ultra alias pool) is allowed WITHOUT `--max-capability`; only implicit escalation is gated — with no `--effort`, Claude runs `high`, or `xhigh` under `--max-capability`.
+  - **Max-Capability Policy**: `--max-capability` also excludes the Fast profile unless `--pool claude-fast` is explicit, disables auto-Fast under `--interactive` / `--urgent`, and unlocks Astra `high` / `ultra`; reserve Opus 5.5 Ultra (3x quota) for the hardest reasoning / architecture subtasks.
+  - The `benchmark_sync` matrix has **12 profiles** scored across **4 domains** (`coding`, `reasoning`, `frontend_ui`, `speed`), each with a quota multiplier (Opus 5.5 Ultra 3x, Opus 5.5 Fast 2x); JSON/YAML coding scores update only on a matching model + effort.
 
 ## 2. Subscription 5h / 7d Total Token Capacities & Single-Value ETA Rule
 - **4대 구독 풀 5h / 7d 100% 총 토큰 한도 (실측 로그 역산 기준 — 순수 과금 실효 토큰 / 캐시 포함 총 처리 토큰)**:
@@ -46,6 +50,7 @@ You are **Maestro (지휘자)**, NOT a solo worker. Even on turn 10, 20, or 50 o
   - `Sonnet 5.5 (high)`: **`⏱ 1분 · 4만 토큰 (1천원)`**
   - `Opus 5.5 Fast (claude-fast · interactive only · 2x quota)`: **`⏱ 45초 · 16만 토큰 (4천원)`**
   - `Opus 5.5 (high/xhigh)` / `Gemini 4 Argon (high)`: **`⏱ 2분 · 15만 토큰 (5천원)`**
+  - `Opus 5.5 Ultra (ultra · --effort max + ultrathink · 3x quota)`: **`⏱ 3분 · 120만 토큰 (1만5천원)`**
   - `gpt-6-astra (medium · default)`: **`⏱ 1분 · 10만 토큰 (1천5백원)`**
   - `gpt-6.1-sol (medium · priority · interactive/urgent)`: **`⏱ 1분 20초 · 15만 토큰 (2천원)`**
   - `gpt-6.1-sol (high · priority · interactive/urgent)`: **`⏱ 2분 · 35만 토큰 (5천원)`**

@@ -10,8 +10,8 @@ import unittest
 from unittest import mock
 
 import benchmark_sync as bench
-import agy_orca as workers
-import orca_memory
+import maestro as workers
+import maestro_memory
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -21,6 +21,8 @@ class BenchmarkTests(unittest.TestCase):
         root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.cache = root / 'benchmark.json'
         self.stack.enter_context(mock.patch.object(bench, 'CACHE_PATH', str(self.cache)))
+        self.legacy_cache = root / 'legacy.json'
+        self.stack.enter_context(mock.patch.object(bench, 'LEGACY_CACHE_PATH', str(self.legacy_cache)))
         self.stack.enter_context(mock.patch.object(bench, '_detect_local_subscription_models', return_value={
             'new_models_detected': [], 'antigravity_models': [], 'codex_models': []}))
         self.http = self.stack.enter_context(mock.patch.object(bench.urllib.request, 'urlopen'))
@@ -36,17 +38,18 @@ class BenchmarkTests(unittest.TestCase):
         result = bench.get_daily_benchmark_and_models()
         self.assertFalse(result['online_verified'])
         matrix = result['benchmark_matrix']
-        self.assertEqual(len(matrix), 11)
+        self.assertEqual(len(matrix), 12)
         expected = [
             (83.8,94.2,87.5,62,3.5), (80.2,89,85,74,1), (82.4,92.5,86.5,68,4),
-            (79.4,88.5,85,78,1), (76.8,84,82.5,84,.5), (81.2,91.5,92,72,1.2),
+            (79.4,88.5,85,78,1), (76.8,84,82.5,84,.5), (83.2,93.8,93.2,65,3),
+            (81.2,91.5,92,72,1.2),
             (79.5,89.5,91.5,76,1), (77.5,86,90.5,96,2), (78,85,89.5,88, .6),
             (77.2,88,88.5,82,1), (73.5,79,83,98.5,.1)]
         for profile, values in zip(matrix.values(), expected):
             self.assertEqual(tuple(profile[k] for k in (*bench.DOMAINS,'quota_multiplier')), values)
         self.assertEqual(bench.get_max_capability_recommendation()['model'], 'gpt-6-astra')
         self.assertEqual(bench.get_max_capability_recommendation('reasoning')['effort'], 'ultra')
-        self.assertEqual(bench.get_max_capability_recommendation('frontend_ui')['effort'], 'xhigh')
+        self.assertEqual(bench.get_max_capability_recommendation('frontend_ui')['effort'], 'ultra')
         self.assertEqual(bench.get_max_capability_recommendation('speed')['pool'], 'agy-flash')
         self.assertEqual(bench.get_max_capability_recommendation(pools={'codex'})['model'], 'gpt-6.1-sol')
         with self.assertRaises(ValueError):
@@ -111,8 +114,29 @@ class BenchmarkTests(unittest.TestCase):
             with self.subTest(data=data):
                 self.http.reset_mock()
                 self.cache.write_text(json.dumps(data))
-                self.assertEqual(len(bench.get_daily_benchmark_and_models()['benchmark_matrix']),11)
+                self.assertEqual(len(bench.get_daily_benchmark_and_models()['benchmark_matrix']),12)
                 self.http.assert_called_once()
+
+    def test_legacy_cache_fallback_and_new_cache_precedence(self):
+        cached = bench.get_daily_benchmark_and_models()
+        self.cache.rename(self.legacy_cache)
+        self.http.reset_mock()
+        self.assertEqual(bench.get_daily_benchmark_and_models(), cached)
+        self.http.assert_not_called()
+        newer = {**cached, 'last_sync_kst': 'new cache wins'}
+        self.cache.write_text(json.dumps(newer))
+        self.assertEqual(bench.get_daily_benchmark_and_models(), newer)
+        self.http.assert_not_called()
+
+    def test_ultra_and_max_scores_update_only_the_claude_ultra_profile(self):
+        for effort in ('ultra', 'max'):
+            with self.subTest(effort=effort):
+                self.serve(json.dumps([{'model': 'claude-opus-5-5', 'effort': effort, 'coding': 97}]))
+                matrix = bench.get_daily_benchmark_and_models(force_refresh=True)['benchmark_matrix']
+                self.assertEqual(matrix['claude-opus-5-5 (ultra)']['coding'], 97)
+                self.assertEqual(matrix['claude-opus-5-5 (ultra)']['quota_multiplier'], 3)
+                self.assertEqual(matrix['claude-opus-5-5 (xhigh)']['coding'], 81.2)
+                self.assertEqual(matrix['claude-opus-5-5 (high)']['coding'], 79.5)
 
 
 class SpeedAndDispatchTests(unittest.TestCase):
@@ -121,7 +145,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         for name, value in [('format_handover_context_for_prompt',''),('save_handover_note',None),
                             ('notify_long_task_completion',None)]:
-            self.stack.enter_context(mock.patch.object(orca_memory,name,return_value=value))
+            self.stack.enter_context(mock.patch.object(maestro_memory,name,return_value=value))
         self.stack.enter_context(mock.patch.object(workers,'record_spawned_session'))
         self.stack.enter_context(mock.patch.object(workers,'stamp_codex_db_titles',return_value=[]))
         self.stack.enter_context(mock.patch('threading.Timer'))
@@ -164,13 +188,38 @@ class SpeedAndDispatchTests(unittest.TestCase):
                 self.assertEqual(self.cli('--pool','claude',*flags)['model'],model)
         self.assertEqual(self.cli('--pool','claude-fast','--background')['model'],'claude-opus-5-fast')
 
+    def test_claude_ultra_aliases_and_explicit_efforts(self):
+        for pool in workers.CLAUDE_ULTRA_POOLS:
+            with self.subTest(pool=pool):
+                result = self.cli('--pool', pool)
+                command = self.run.call_args.args[0]
+                self.assertEqual((result['pool'], result['effort']), ('claude', 'ultra'))
+                self.assertEqual(command[command.index('--effort') + 1], 'max')
+                self.assertTrue(command[-1].startswith('ultrathink\n\n'))
+        for effort in ('ultra', 'max', 'xhigh', 'high'):
+            with self.subTest(effort=effort):
+                result = self.cli('--pool', 'claude', '--effort', effort)
+                command = self.run.call_args.args[0]
+                self.assertEqual(result['effort'], effort)
+                self.assertEqual(command[command.index('--effort') + 1],
+                                 'max' if effort in ('ultra', 'max') else effort)
+                self.assertEqual(command[-1].startswith('ultrathink\n\n'), effort == 'ultra')
+
+    def test_ultrathink_is_not_duplicated_and_explicit_effort_overrides_alias(self):
+        workers.start_claude_worker('claude-ultra', '✦ Use ULTRATHINK please', '/tmp', None, True, 30)
+        self.assertEqual(self.run.call_args.args[0][-1].lower().count('ultrathink'), 1)
+        self.assertFalse(self.run.call_args.args[0][-1].startswith('ultrathink\n\n'))
+        result = self.cli('--pool', 'claude-ultra', '--effort', 'high')
+        self.assertEqual(result['effort'], 'high')
+        self.assertEqual(self.run.call_args.args[0][-1].lower().count('ultrathink'), 0)
+
     def test_max_capability_domain_and_model_override(self):
         result = self.cli('--max-capability','--urgent')
         self.assertEqual(result['model'],'gpt-6-astra (ultra, default)')
         result = self.cli('--max-capability','--model','gpt-6.1-sol')
         self.assertEqual(result['model'],'gpt-6.1-sol (ultra, default)')
         result = self.cli('--max-capability','--domain','frontend_ui','--interactive')
-        self.assertEqual((result['model'],result['effort']),('claude-opus-5-5','xhigh'))
+        self.assertEqual((result['model'],result['effort']),('claude-opus-5-5','ultra'))
         with mock.patch.object(workers,'start_agy_worker',return_value={'ok':True}) as agy:
             self.cli('--max-capability','--domain','speed')
             self.assertEqual(agy.call_args.args[0],'agy-flash')
@@ -180,7 +229,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
         with mock.patch.object(workers,'choose_auto_pool',return_value=('claude',{})):
             result = self.cli('--max-capability')
         self.assertEqual(result['steered_from'],'codex-astra')
-        self.assertEqual((result['model'],result['effort']),('claude-opus-5-5','xhigh'))
+        self.assertEqual((result['model'],result['effort']),('claude-opus-5-5','ultra'))
 
     def test_max_capability_midflight_quota_failover(self):
         self.run.side_effect = [subprocess.CompletedProcess([],1,'','429 quota'), subprocess.CompletedProcess([],0,'done','')]

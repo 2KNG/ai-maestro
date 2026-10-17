@@ -19,7 +19,8 @@ import time
 import urllib.request
 from typing import Any
 
-CACHE_PATH = os.path.expanduser("~/.gemini/antigravity/orca_benchmark_cache.json")
+CACHE_PATH = os.path.expanduser("~/.gemini/antigravity/maestro_benchmark_cache.json")
+LEGACY_CACHE_PATH = os.path.expanduser("~/.gemini/antigravity/orca_benchmark_cache.json")
 CACHE_TTL_SEC = 86400  # 24 hours (하루 1회 자동 갱신, 평상시 0ms 로컬 캐시 읽기)
 
 # Known baseline models currently configured in our orchestrator
@@ -47,7 +48,7 @@ BASELINE_MODELS = {
 # User-supplied planning baselines, not claims of published leaderboard results.
 # Aider can update coding only; reasoning/UI/speed and quota estimates stay intact.
 DOMAINS = ("coding", "reasoning", "frontend_ui", "speed")
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 LEADERBOARD_URL = "https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml"
 
 
@@ -63,6 +64,7 @@ DEFAULT_BENCHMARK_MATRIX = {
     "gpt-6.1-sol (ultra)": _profile("gpt-6.1-sol", "codex", "ultra", 82.4, 92.5, 86.5, 68.0, 4.0),
     "gpt-6.1-sol (high)": _profile("gpt-6.1-sol", "codex", "high", 79.4, 88.5, 85.0, 78.0, 1.0),
     "gpt-6.1-sol (medium)": _profile("gpt-6.1-sol", "codex", "medium", 76.8, 84.0, 82.5, 84.0, 0.5),
+    "claude-opus-5-5 (ultra)": _profile("claude-opus-5-5", "claude", "ultra", 83.2, 93.8, 93.2, 65.0, 3.0),
     "claude-opus-5-5 (xhigh)": _profile("claude-opus-5-5", "claude", "xhigh", 81.2, 91.5, 92.0, 72.0, 1.2),
     "claude-opus-5-5 (high)": _profile("claude-opus-5-5", "claude", "high", 79.5, 89.5, 91.5, 76.0, 1.0),
     "claude-opus-5-fast": _profile("claude-opus-5-fast", "claude-fast", "high", 77.5, 86.0, 90.5, 96.0, 2.0),
@@ -188,6 +190,7 @@ def _matching_profiles(entry, matrix):
     if effort:
         effort = str(effort).lower()
         return [key for key in candidates if effort == matrix[key]["effort"]
+                or (key == "claude-opus-5-5 (ultra)" and effort in ("ultra", "max"))
                 or (key == "gpt-6-astra (ultra/high)" and effort in ("high", "ultra", "ultra/high"))
                 or (matrix[key]["pool"] == "agy-flash" and effort == "fast")]
     # Do not assign an unspecified effort's score to several different profiles.
@@ -256,9 +259,10 @@ def get_daily_benchmark_and_models(agy_usage: dict | None = None, force_refresh:
     """Return cached daily benchmark rankings + live subscription new-model detection (0 LLM tokens)."""
     now = int(time.time())
     cached: dict[str, Any] = {}
-    if not force_refresh and os.path.exists(CACHE_PATH):
+    read_path = CACHE_PATH if os.path.exists(CACHE_PATH) else LEGACY_CACHE_PATH
+    if not force_refresh and os.path.exists(read_path):
         try:
-            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+            with open(read_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
         except Exception:
             cached = {}

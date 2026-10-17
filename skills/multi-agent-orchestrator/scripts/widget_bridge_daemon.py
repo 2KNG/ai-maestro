@@ -454,23 +454,23 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/logs/tail":
-            import orca_memory
+            import maestro_memory
             qs = urllib.parse.parse_qs(parsed.query)
             provider = (qs.get("provider", ["codex"])[0] or "codex").strip()
             sid = (qs.get("id", [""])[0] or "").strip()
             max_lines = min(60, max(5, int((qs.get("lines", ["20"])[0] or "20"))))
-            res = orca_memory.extract_session_log_tail(provider, sid, max_lines=max_lines)
+            res = maestro_memory.extract_session_log_tail(provider, sid, max_lines=max_lines)
             self._set_cors(200)
             self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
             return
 
         if parsed.path == "/api/memory":
-            import orca_memory
+            import maestro_memory
             qs = urllib.parse.parse_qs(parsed.query)
             repo = (qs.get("repo", [""])[0] or "").strip() or None
             branch = (qs.get("branch", [""])[0] or "").strip() or None
             limit = min(20, max(1, int((qs.get("limit", ["5"])[0] or "5"))))
-            notes = orca_memory.get_recent_handover_notes(repo=repo, branch=branch, max_age_seconds=21600, limit=limit)
+            notes = maestro_memory.get_recent_handover_notes(repo=repo, branch=branch, max_age_seconds=21600, limit=limit)
             self._set_cors(200)
             self.wfile.write(json.dumps({"ok": True, "notes": notes}, ensure_ascii=False).encode("utf-8"))
             return
@@ -488,8 +488,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             body = {}
 
         if parsed.path == "/api/memory":
-            import orca_memory
-            res = orca_memory.save_handover_note(
+            import maestro_memory
+            res = maestro_memory.save_handover_note(
                 cwd=body.get("cwd") or os.path.expanduser("~/dev"),
                 pool=body.get("pool") or "orchestrator",
                 model=body.get("model") or "gemini-4-argon",

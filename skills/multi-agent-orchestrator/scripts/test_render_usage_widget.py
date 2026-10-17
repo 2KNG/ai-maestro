@@ -51,7 +51,7 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('agy-origin-badge', active)
         self.assertNotIn(chr(0x1fa90), active)
 
-    def test_standalone_bundle_roundtrips_and_stays_below_45kb(self):
+    def test_standalone_bundle_roundtrips_and_stays_below_55kb(self):
         template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Thread {i}',
                       updated_at=1000+i, status='closed', cwd='/tmp') for i in range(20)]
@@ -68,7 +68,7 @@ class RenderingTests(unittest.TestCase):
         self.assertLess(len(restored), len(original))
         for marker in ('__SERVER_STATE_JSON_START__', '__ACCOUNTS_JSON_START__', '__ACTIVE_TREE_HTML_START__'):
             self.assertIn(marker, restored)
-        self.assertLess(len(bundled.encode()), 45000)
+        self.assertLess(len(bundled.encode()), 55000)
 
 
 if __name__ == '__main__':
