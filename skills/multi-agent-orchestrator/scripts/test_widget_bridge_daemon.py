@@ -2,6 +2,7 @@
 import contextlib
 import http.server
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -111,18 +112,30 @@ class RouteTests(unittest.TestCase):
 
     def test_refresh_and_status_include_collected_routing(self):
         data = {"timestamp_kst": "now", "recommended_routing": {"primary": "test-pool"}}
-        with mock.patch.object(bridge, "fetch_usage_data", return_value=data), mock.patch.object(
-            bridge, "write_widget_to_all_conversations"
-        ) as write_widgets, mock.patch.object(
-            bridge.ruw, "build_accounts", return_value=[]
-        ), mock.patch.object(bridge.ruw, "codex_archive_counts", return_value={}), mock.patch.object(
-            bridge, "load_state", return_value={}
-        ), running_bridge() as base:
-            for path in ("/api/status", "/api/refresh"):
-                status, body = get_json(base, path)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            has_widget, missing_widget = (os.path.join(temp_dir, name) for name in ("has", "missing"))
+            for directory in (has_widget, missing_widget):
+                os.makedirs(directory)
+            Path(has_widget, bridge.WIDGET_FILENAME).write_text("existing")
+            with mock.patch.object(bridge, "fetch_usage_data", return_value=data), mock.patch.object(
+                bridge, "write_widget_to_all_conversations"
+            ) as write_widgets, mock.patch.object(
+                bridge, "list_conversation_dirs", return_value=[has_widget, missing_widget]
+            ), mock.patch.object(
+                bridge.ruw, "build_accounts", return_value=[]
+            ), mock.patch.object(bridge.ruw, "codex_archive_counts", return_value={}), mock.patch.object(
+                bridge, "load_state", return_value={}
+            ), running_bridge() as base:
+                for path in ("/api/status", "/api/refresh"):
+                    status, body = get_json(base, path)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body["recommended_routing"], data["recommended_routing"])
+                # Status never writes; refresh only fills conversation dirs that lack the widget file.
+                write_widgets.assert_called_once_with(data, target_dirs=[missing_widget])
+                write_widgets.reset_mock()
+                status, _ = get_json(base, "/api/refresh?write_disk=1")
                 self.assertEqual(status, 200)
-                self.assertEqual(body["recommended_routing"], data["recommended_routing"])
-            write_widgets.assert_called_once_with(data)
+                write_widgets.assert_called_once_with(data, target_dirs=[has_widget, missing_widget])
 
 
 if __name__ == "__main__":

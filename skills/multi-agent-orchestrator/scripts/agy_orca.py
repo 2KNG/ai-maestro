@@ -9,7 +9,7 @@ Why this exists:
   `Claude Sonnet 5.5` = MODEL_PLACEHOLDER_M405, `GPT-OSS 120B` = MODEL_PLACEHOLDER_M412).
 - `maestro` talks directly to Antigravity's local LanguageServer (`StartCascade` + `SendUserCascadeMessage`
   with `cascadeConfig.plannerConfig.planModel = "MODEL_PLACEHOLDER_M402"`) AND to OpenAI Codex CLI
-  (`codex exec --full-auto -m gpt-6.1-sol -c service_tier="priority"`), balancing quota across ALL pools
+  (`codex exec --full-auto -m gpt-6.1-sol -c service_tier="default"`), balancing quota across ALL pools
   and keeping every conversation's `usage_widget.html` up to date.
 
 Commands:
@@ -27,8 +27,9 @@ import sys
 import time
 import urllib.request
 
-SKILL_SCRIPTS_DIR = "/home/u24c9g5090r64/.gemini/config/skills/multi-agent-orchestrator/scripts"
+SKILL_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SKILL_SCRIPTS_DIR)
+import benchmark_sync
 import check_all_usage as cau
 import render_usage_widget as ruw
 
@@ -132,8 +133,8 @@ def choose_auto_pool(difficulty: str = "high", exclude_canonical: set[str] | Non
             and float(c.get("remaining_percent") or 0.0) > 0.0
         ]
         candidates.sort(key=lambda x: x[1], reverse=True)
-        winner = candidates[0][0] if candidates else winner
-    return _map_canonical_to_cli_pool(winner, difficulty), data
+        winner = candidates[0][0] if candidates else None
+    return (_map_canonical_to_cli_pool(winner, difficulty) if winner else None), data
 
 
 def extract_cascade_summary(traj_resp: dict) -> dict:
@@ -334,7 +335,9 @@ def start_agy_worker(pool: str, spec: str, cwd: str, wait: bool, timeout: int) -
 
 
 def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
-                        wait: bool, timeout: int) -> dict:
+                        wait: bool, timeout: int, *, max_capability: bool = False,
+                        interactive: bool = False, urgent: bool = False,
+                        background: bool = False) -> dict:
     """Run local Claude; retry only Fast model/effort availability failures."""
     import tempfile
     import uuid
@@ -347,9 +350,12 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     prompt = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{title}\n\n{spec}"
     if handover:
         prompt += f"\n\n{handover}"
-    fast = pool in CLAUDE_FAST_POOLS
+    # An explicit Fast pool remains an opt-in, including background invocations.
+    fast = pool in CLAUDE_FAST_POOLS or ((interactive or urgent) and not background and not max_capability)
     model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
-    selected_effort = effort or ("ultra" if pool == "opus-5.5-ultra" else "xhigh")
+    selected_effort = effort or (("ultra" if pool == "opus-5.5-ultra" else "xhigh") if max_capability else "high")
+    if selected_effort in ("ultra", "xhigh") and not max_capability:
+        selected_effort = "high"
     started = time.monotonic()
 
     def command():
@@ -358,7 +364,8 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
                 "--effort", selected_effort, "--session-id", session_id, prompt]
 
     result = {"pool": pool, "title": title, "cwd": abs_cwd,
-              "session_id": session_id, "handover_injected": bool(handover)}
+              "session_id": session_id, "handover_injected": bool(handover),
+              "tier": "fast" if fast else "default"}
     try:
         if not wait:
             with tempfile.NamedTemporaryFile(prefix="maestro-claude-", suffix=".log", delete=False) as log:
@@ -380,6 +387,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         if fast and proc.returncode != 0 and unsupported:
             result["fallback_from"] = model
             model, selected_effort = "claude-opus-5-5", "medium"
+            result["tier"] = "default"
             session_id = str(uuid.uuid4())
             result["session_id"] = session_id
             remaining = timeout - (time.monotonic() - started)
@@ -402,13 +410,63 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         return {**result, "ok": False, "model": model, "effort": selected_effort, "error": str(exc)}
 
 
+def resolve_codex_settings(pool, model=None, effort=None, tier=None, *,
+                           max_capability=False, interactive=False, urgent=False,
+                           background=False):
+    """Apply spend guards even when a caller bypasses the argument parser."""
+    model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
+    astra = model == "gpt-6-astra"
+    effort = effort or ("medium" if astra else "high")
+    if astra and effort == "xhigh":
+        effort = "high"
+    if not max_capability:
+        if astra and effort in ("high", "xhigh", "ultra"):
+            effort = "medium"
+        elif effort == "ultra":
+            effort = "high"
+    live = (interactive or urgent) and not background
+    if astra or not live:
+        tier = "default"
+    elif tier in ("default", "standard"):
+        tier = "default"
+    elif urgent:
+        tier = "ultrafast"
+    else:
+        tier = "priority"
+    return model, effort, tier
+
+
+def _benchmark_pools(pool):
+    if pool == "auto":
+        return None
+    if pool in CODEX_ASTRA_POOLS:
+        return {"codex-astra"}
+    if pool in CODEX_POOLS:
+        return {"codex", "codex-astra"}
+    if pool in CLAUDE_FAST_POOLS:
+        return {"claude-fast"}
+    if pool in CLAUDE_POOLS:
+        return {"claude"}
+    canonical = _canonical_pool_key(pool)
+    if canonical == "antigravity_claude":
+        return {"agy-sonnet"} if pool in ("agy-sonnet", "sonnet-5.5") else {"claude"}
+    if canonical == "antigravity_gemini":
+        return {"agy-flash"} if pool in ("agy-flash", "flash") else {"agy-argon"}
+    return set()
+
+
 def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int,
-                       pool: str = "codex", model: str | None = None) -> dict:
+                       pool: str = "codex", model: str | None = None, *,
+                       max_capability: bool = False, interactive: bool = False,
+                       urgent: bool = False, background: bool = False) -> dict:
     import shutil
     import threading
     import orca_memory
     abs_cwd = os.path.abspath(cwd)
     model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
+    model, effort, tier = resolve_codex_settings(
+        pool, model, effort, tier, max_capability=max_capability,
+        interactive=interactive, urgent=urgent, background=background)
     agy_title = make_agy_title(spec, abs_cwd)
     handover_ctx = orca_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
     tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
@@ -464,6 +522,8 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             "ok": proc.returncode == 0,
             "pool": pool,
             "model": f"{model} ({effort}, {tier})",
+            "effort": effort,
+            "tier": tier,
             "title": agy_title,
             "thread_ids": stamped,
             "cwd": abs_cwd,
@@ -540,9 +600,15 @@ def main():
     p_start.add_argument("--difficulty", default="high", choices=["high", "medium", "low"])
     p_start.add_argument("--cwd", default=os.getcwd())
     p_start.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "ultra"],
-                         help="Default: Codex high, Astra medium, Claude xhigh (ultra alias: ultra)")
+                         help="Default: Codex/Claude high, Astra medium; max-capability unlocks top efforts")
     p_start.add_argument("--model", help="Codex model override (e.g. gpt-6-astra); auto selects the Codex pool")
-    p_start.add_argument("--tier", default="priority", choices=["priority", "ultrafast"])
+    p_start.add_argument("--tier", choices=["default", "standard", "priority", "ultrafast"],
+                         help="Default/standard for background; priority for interactive; ultrafast requires urgent")
+    p_start.add_argument("--interactive", action="store_true", help="Live user ping-pong: priority or Claude Fast")
+    p_start.add_argument("--background", action="store_true", help="Scheduled/remote/autonomous work: standard speed (overrides interactive/urgent)")
+    p_start.add_argument("--max-capability", action="store_true", help="Choose the highest benchmark capability; unlock top reasoning efforts")
+    p_start.add_argument("--domain", default="coding", choices=benchmark_sync.DOMAINS,
+                         help="Benchmark domain for --max-capability")
     p_start.add_argument("--urgent", action="store_true", help="Use ultrafast tier only when urgent immediate response is required")
     p_start.add_argument("--wait", action="store_true")
     p_start.add_argument("--timeout", type=int, default=180)
@@ -595,6 +661,16 @@ def main():
                 parser.error("--model is supported only with auto or a Codex pool")
             if requested_pool == "auto":
                 requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
+        recommendation = None
+        if args.max_capability:
+            try:
+                recommendation = benchmark_sync.get_max_capability_recommendation(
+                    args.domain, pools=_benchmark_pools(requested_pool), model=args.model,
+                    allow_fast=requested_pool in CLAUDE_FAST_POOLS)
+            except ValueError as exc:
+                parser.error(str(exc))
+            if requested_pool == "auto":
+                requested_pool = recommendation["pool"]
         steered_from = None
         steer_reason = None
         if requested_pool == "auto":
@@ -613,15 +689,31 @@ def main():
                 pool = requested_pool
 
         def _dispatch(target_pool: str) -> dict:
+            if not target_pool:
+                return {"ok": False, "error": "No available quota pool"}
+            selected = None
+            model = args.model if _canonical_pool_key(requested_pool) == _canonical_pool_key(target_pool) == "codex" else None
+            if args.max_capability:
+                selected = benchmark_sync.get_max_capability_recommendation(
+                    args.domain, pools=_benchmark_pools(target_pool), model=model,
+                    allow_fast=target_pool in CLAUDE_FAST_POOLS)
+                model = selected["model"]
+            effort = args.effort or (selected["effort"] if selected else None)
+            speed_flags = dict(max_capability=args.max_capability, interactive=args.interactive,
+                               urgent=args.urgent, background=args.background)
             if target_pool in CODEX_POOLS:
-                eff_tier = "ultrafast" if args.urgent else args.tier
-                model = args.model if _canonical_pool_key(requested_pool) == "codex" else None
-                effort = args.effort or ("medium" if target_pool in CODEX_ASTRA_POOLS or model == "gpt-6-astra" else "high")
-                return start_codex_worker(args.spec, args.cwd, effort, eff_tier, args.timeout,
-                                          pool=target_pool, model=model)
-            if target_pool in CLAUDE_POOLS:
-                return start_claude_worker(target_pool, args.spec, args.cwd, args.effort, args.wait, args.timeout)
-            return start_agy_worker(target_pool, args.spec, args.cwd, args.wait, args.timeout)
+                effort = effort or ("medium" if target_pool in CODEX_ASTRA_POOLS or model == "gpt-6-astra" else "high")
+                model, effort, tier = resolve_codex_settings(target_pool, model, effort, args.tier, **speed_flags)
+                result = start_codex_worker(args.spec, args.cwd, effort, tier, args.timeout,
+                                           pool=target_pool, model=model, **speed_flags)
+            elif target_pool in CLAUDE_POOLS:
+                result = start_claude_worker(target_pool, args.spec, args.cwd, effort, args.wait,
+                                            args.timeout, **speed_flags)
+            else:
+                result = start_agy_worker(target_pool, args.spec, args.cwd, args.wait, args.timeout)
+            if selected:
+                result["benchmark_recommendation"] = selected
+            return result
 
         res = _dispatch(pool)
 
@@ -631,7 +723,7 @@ def main():
         midflight_exhausted = (not res.get("ok") or "CASCADE_RUN_STATUS_ERROR" in str(res.get("status", ""))) and any(
             sig in combined_err for sig in quota_hit_signals
         )
-        if not midflight_exhausted and (not res.get("ok") or "CASCADE_RUN_STATUS_ERROR" in str(res.get("status", ""))):
+        if pool and not midflight_exhausted and (not res.get("ok") or "CASCADE_RUN_STATUS_ERROR" in str(res.get("status", ""))):
             post_data = cau.collect_usage(include_agent_trees=False)
             midflight_exhausted, _ = is_pool_exhausted(pool, post_data)
 

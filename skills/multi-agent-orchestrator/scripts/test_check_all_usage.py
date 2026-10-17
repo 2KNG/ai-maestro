@@ -5,6 +5,7 @@ import datetime
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -41,6 +42,14 @@ def candidates(result):
 
 
 class RoutingTests(unittest.TestCase):
+    def setUp(self):
+        # Keep tie-breaking independent of live/cached benchmark data: pin the router's
+        # default pool preference (codex > antigravity_claude > antigravity_gemini > claude).
+        patcher = mock.patch.dict(sys.modules, {"benchmark_sync": mock.Mock(
+            get_daily_benchmark_and_models=mock.Mock(return_value={}))})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_each_pool_can_win_when_it_has_the_most_capacity(self):
         for index, pool in enumerate(("antigravity_claude", "antigravity_gemini", "codex", "claude")):
             with self.subTest(pool=pool):
@@ -55,14 +64,24 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(usage.select_best_pool(snapshot(60, 50, 85, 0))["pool"], "codex")
         self.assertEqual(usage.select_best_pool(snapshot(60, 40, 60, 0))["pool"], "codex")
 
-    def test_tightest_window_limits_codex_and_claude(self):
+    def test_weekly_guardrail_limits_codex_and_claude_only_near_exhaustion(self):
+        # Normal zone (7d > 10%): the 5h window routes, so a low 7d value alone does not throttle.
         data = snapshot(60, 40, 20, 15)
         data["codex_local"]["five_hour"] = window(95)
         data["claude_local"]["five_hour"] = window(99)
         result = usage.select_best_pool(data)
+        self.assertEqual(result["pool"], "claude")
+        self.assertEqual(candidates(result)["codex"]["remaining_percent"], 95)
+        self.assertEqual(candidates(result)["claude"]["remaining_percent"], 99)
+        # Weekly Conserve zone (2% < 7d <= 10%): score is min(5h, 7d * 3.5), so antigravity wins.
+        data = snapshot(60, 40, 8, 5)
+        data["codex_local"]["five_hour"] = window(95)
+        data["claude_local"]["five_hour"] = window(99)
+        result = usage.select_best_pool(data)
         self.assertEqual(result["pool"], "antigravity_claude")
-        self.assertEqual(candidates(result)["codex"]["remaining_percent"], 20)
-        self.assertEqual(candidates(result)["claude"]["remaining_percent"], 15)
+        self.assertEqual(candidates(result)["codex"]["remaining_percent"], 28)
+        self.assertEqual(candidates(result)["claude"]["remaining_percent"], 17.5)
+        self.assertEqual(candidates(result)["codex"]["routing_mode"], "weekly_conserve")
         data["codex_local"]["five_hour"] = window(0)
         self.assertEqual(candidates(usage.select_best_pool(data))["codex"]["status"], "exhausted")
 
@@ -120,17 +139,18 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("Sonnet", candidates(low)["antigravity_claude"]["model"])
 
     def test_codex_tiers_share_one_candidate_and_follow_threshold(self):
-        for difficulty, capacity, tiers, expected in (
-            ("high", 50, ["priority", "ultrafast"], "ultrafast"),
-            ("high", 49.99, ["priority", "ultrafast"], "priority"),
-            ("medium", 90, ["priority", "ultrafast"], "priority"),
-            ("low", 90, ["priority", "ultrafast"], "priority"),
-            ("high", 90, ["priority"], "priority"),
+        for difficulty, capacity, tiers, urgent, expected in (
+            ("high", 50, ["priority", "ultrafast"], True, "ultrafast"),
+            ("high", 50, ["priority", "ultrafast"], False, "priority"),
+            ("high", 49.99, ["priority", "ultrafast"], True, "priority"),
+            ("medium", 90, ["priority", "ultrafast"], True, "priority"),
+            ("low", 90, ["priority", "ultrafast"], True, "priority"),
+            ("high", 90, ["priority"], True, "priority"),
         ):
-            with self.subTest(difficulty=difficulty, capacity=capacity, tiers=tiers):
+            with self.subTest(difficulty=difficulty, capacity=capacity, tiers=tiers, urgent=urgent):
                 data = snapshot(0, 0, capacity, 0)
                 data["codex_local"]["service_tiers"] = tiers
-                result = usage.select_best_pool(data, difficulty)
+                result = usage.select_best_pool(data, difficulty, urgent=urgent)
                 self.assertEqual(result["service_tier"], expected)
                 codex_entries = [entry for entry in result["candidates"] if entry["pool"] == "codex"]
                 self.assertEqual(len(codex_entries), 1)
@@ -251,7 +271,8 @@ class CollectorTests(unittest.TestCase):
                 cache.touch()
                 fresh = usage.get_claude_status()
                 self.assertFalse(fresh["stale"])
-                self.assertEqual(usage._routing_remaining(fresh), 80)
+                # Weekly headroom (80%) is above the 10% guardrail, so routing follows the 5h window (90%).
+                self.assertEqual(usage._routing_remaining(fresh), 90)
 
 
 class AntigravityCacheTests(unittest.TestCase):
@@ -393,7 +414,7 @@ class AntigravityOriginTests(unittest.TestCase):
         connection = mock.MagicMock()
         cursor = connection.cursor.return_value
         cursor.execute.return_value.fetchall.side_effect = [
-            [(cid, name, title, "/fake", None, "test-model", "low", 1000, source, 0)
+            [(cid, name, title, "/fake", None, "test-model", "low", 1000, 1000, source, 0)
              for cid, name, title, source in parents],
             [], [], [], [], [],
         ]

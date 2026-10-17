@@ -117,7 +117,7 @@ class WorkerDispatchTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--model") + 1], expected)
                 self.assertIn("--dangerously-skip-permissions", command)
                 self.assertEqual(self.run.call_args.kwargs["cwd"], "/tmp")
-                self.assertEqual(result["effort"], "ultra" if pool == "opus-5.5-ultra" else "xhigh")
+                self.assertEqual(result["effort"], "high")
                 self.assertEqual(workers._canonical_pool_key(pool), "claude")
 
     def test_fast_fallback_only_for_model_errors(self):
@@ -157,7 +157,7 @@ class WorkerDispatchTests(unittest.TestCase):
             result = workers.start_codex_worker("task", "/tmp", "medium", "priority", 30, pool=pool, model=model)
             command = self.run.call_args.args[0]
             self.assertEqual(command[command.index("-m") + 1], expected)
-            self.assertIn('service_tier="priority"', command)
+            self.assertIn('service_tier="default"', command)
             self.assertEqual(result["pool"], pool)
             self.assertIn(expected, result["model"])
             self.assertEqual(workers._canonical_pool_key(pool), "codex")
@@ -181,7 +181,7 @@ class WorkerDispatchTests(unittest.TestCase):
                     self.assertEqual(claude.call_args.args[3], effort)
                     codex.assert_not_called()
                 else:
-                    self.assertEqual(codex.call_args.args[2:4], (effort, "priority"))
+                    self.assertEqual(codex.call_args.args[2:4], (effort, "default"))
                     claude.assert_not_called()
 
 

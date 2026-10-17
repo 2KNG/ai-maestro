@@ -1,35 +1,45 @@
 # 🎼 Codex Orchestration Rules (`ai-maestro`)
-- Default tier: `service_tier = "priority"` (`Fast` ⚡). Use `"ultrafast"` (`⚡⚡⚡`) only when urgent real-time turnaround is explicitly requested.
-- For parallel sub-tasks, spawn child workers or use `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules).
+- Default tier: `service_tier = "default"` (standard) for background / cron / long autonomous work. Use `"priority"` (`Fast` ⚡) only for live interactive ping-pong, and `"ultrafast"` (`⚡⚡⚡`) only when urgent real-time turnaround is explicitly requested (see Speed Tier Policy below).
+- For parallel sub-tasks, spawn child workers or use `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules; `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
 
 ## Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 
 | Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
 |---|---|
 | Gemini 3.8 Flash (low · fast) / Sonnet 5.5 (high) | `⏱ 40초 · 5만 토큰 (1천원)` |
-| Opus 5.5 Fast (claude-fast) | `⏱ 45초 · 15만 토큰 (3천원)` |
+| Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
 | Opus 5.5 (high/xhigh) / Gemini 4 Argon (high) | `⏱ 2분 · 22만 토큰 (6천원)` |
-| gpt-6-astra (medium · priority) / gpt-6.1-sol (low) | `⏱ 1분 · 35만 토큰 (3천원)` |
-| gpt-6.1-sol (medium · priority) | `⏱ 1분 20초 · 80만 토큰 (7천원)` |
-| gpt-6.1-sol (high · priority) | `⏱ 2분 · 120만 토큰 (1만2천원)` |
-| gpt-6.1-sol (high · ultrafast) | `⏱ 1분 15초 · 120만 토큰 (1만2천원)` |
-| gpt-6.1-sol (ultra · priority/ultrafast) | `⏱ 2분 30초 · 180만 토큰 (1만8천원)` |
-| gpt-6-astra (ultra) / 멀티풀 병렬 합산 | `⏱ 4분 · 350만 토큰 (3만원)` |
+| gpt-6-astra (medium · default) / gpt-6.1-sol (low) | `⏱ 1분 · 35만 토큰 (3천원)` |
+| gpt-6.1-sol (medium · priority · interactive/urgent) | `⏱ 1분 20초 · 80만 토큰 (7천원)` |
+| gpt-6.1-sol (high · priority · interactive/urgent) | `⏱ 2분 · 120만 토큰 (1만2천원)` |
+| gpt-6.1-sol (high · ultrafast · urgent only) | `⏱ 1분 15초 · 120만 토큰 (1만2천원)` |
+| gpt-6.1-sol (ultra · priority/ultrafast · interactive/urgent) | `⏱ 2분 30초 · 180만 토큰 (1만8천원)` |
+| gpt-6-astra (ultra · default · `--max-capability`) / 멀티풀 병렬 합산 | `⏱ 4분 · 350만 토큰 (3만원)` |
 
-- These are **calibrated planning values (보정된 계획용 기준값), NOT actual measured billing (실측 청구액 아님)**. Pick the row matching each worker's assigned model · effort · tier.
+- These are **calibrated planning values (보정된 계획용 기준값), NOT actual measured billing (실측 청구액 아님)**. Pick the row matching each worker's assigned model · effort · tier. Default/standard tiers have no separate row — use the same-effort row; `priority` / `ultrafast` rows apply only under `--interactive` / `--urgent`.
 - NEVER write `~` ranges (`1~3분`, `3천~6천`), `"예상"`, `"평균"`, `"약"`, `"대"`, `"규모"`, `"구독"`, human calendar estimates (`"며칠/1주일"`), or raw `k/M` units.
+- Chat ETA output contains only a single wall-clock value, Korean tokens, and KRW: `⏱ 2분 · 35만 토큰 (5천원)`. Never append subscription percentages or cache-included parenthetical notes.
 - NEVER run or print `5h/7d` quota lookups (`"다시 조회"`, `"미제공"`) just to produce an ETA. Quota checks remain mandatory for **routing** (`--pool auto`, 3-Stage Weekly Protection, 0% Auto-Steering).
 
 ## Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
 - Whenever delegating one or many workers (`maestro worker-start`, `invoke_subagent`, child workers), ALWAYS state the exact **model + effort + speed tier** assigned to each concrete subtask **BEFORE launch**, with its ETA row.
 - After launch / completion, report every actual `--pool auto` assignment or fallback / failover change (`requested → actual` model · effort · tier + reason, e.g. 0% quota steering).
-- Speed tier: Codex default is `priority`; `ultrafast` ONLY with `--urgent` (urgent real-time turnaround).
+- **Speed Tier Policy (속도 티어 정책)**:
+  - Claude Opus 5.5 Fast (`claude-fast`) consumes **2x quota** vs. standard `claude-opus-5-5`; clean ETA: `⏱ 45초 · 16만 토큰 (4천원)`.
+  - `fast` / `priority` / `ultrafast` tiers are ONLY for live interactive ping-pong, immediate responsiveness, when the user says `"느리다"`, or when the user explicitly asks for fast.
+  - Scheduled cron / watchdog, long autonomous runs, and remote background work use standard/default tiers and standard `claude-opus-5-5`; multi-agent parallel orchestration stays active.
+  - CLI `maestro worker-start` defaults to background speed unless `--interactive` / `--urgent`; `--background` overrides interactive/urgent speed; explicit `--pool claude-fast` remains opt-in even in background.
+  - `--tier default|standard|priority|ultrafast` is supported: `priority` requires `--interactive` / `--urgent`; `ultrafast` requires `--urgent`.
+  - Astra (`gpt-6-astra`) is ALWAYS default tier, with a `medium` effort cap unless `--max-capability` unlocks `high` / `ultra`.
+  - `--max-capability` + `--domain coding|reasoning|frontend_ui|speed` uses the `benchmark_sync` recommendation and retains quota-exhaustion steering; an explicit `--pool` constrains the recommendation.
+  - The benchmark matrix has 11 profiles; JSON/YAML coding scores update only on a matching model + effort.
 
 | Concrete subtask | Model · Effort · Speed tier |
 |---|---|
-| Responsive UI / quick patch | Opus 5.5 Fast (`claude-fast`) |
-| Core architecture reasoning | Opus 5.5 (`xhigh`/`ultra`) |
-| Backend / system / test verification | gpt-6.1-sol (`high`, `ultrafast`/`priority`) |
-| Parallel submodule implementation | gpt-6-astra (`medium`, `priority`) |
+| Responsive UI / quick patch (live interactive only) | Opus 5.5 Fast (`claude-fast`, 2x quota) |
+| Cron / watchdog / long autonomous / remote background | Opus 5.5 (`claude-opus-5-5`, standard) |
+| Core architecture reasoning | Opus 5.5 (`high`; `xhigh`/`ultra` via `--max-capability`, standard) |
+| Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
+| Parallel submodule implementation | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
