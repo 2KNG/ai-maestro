@@ -22,6 +22,7 @@ from datetime import timezone, timedelta
 
 KST = timezone(timedelta(hours=9))
 ROUTING_MAX_AGE_SECONDS = 300
+CLAUDE_CACHE_MAX_AGE_SECONDS = 600
 AGY_TREE_CACHE_PATH = "/tmp/agy_tree_cache.json"
 AGY_METADATA_CACHE_PATH = "/tmp/agy_traj_meta_cache.json"
 _agy_tree_cache = None
@@ -606,6 +607,19 @@ def _codex_model_metadata() -> dict:
         return {"service_tiers": ["priority"], "catalog_fetched_at": None}
 
 
+def _is_iso_past(iso_str) -> bool:
+    """Whether an ISO reset timestamp is at or before the current UTC time."""
+    if not isinstance(iso_str, str) or not iso_str:
+        return False
+    try:
+        reset_at = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        return reset_at <= datetime.datetime.now(timezone.utc)
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
 def get_claude_status() -> dict:
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
     has_oauth = False
@@ -645,7 +659,8 @@ def get_claude_status() -> dict:
     data = None
     source = None
     stale = False
-    if os.path.exists(cache_path) and (datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) < 120):
+    reset_reconciled = False
+    if os.path.exists(cache_path) and (datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) < CLAUDE_CACHE_MAX_AGE_SECONDS):
         try:
             with open(cache_path, "r", encoding="utf-8") as cf:
                 data = json.load(cf)
@@ -681,23 +696,26 @@ def get_claude_status() -> dict:
                     with open(cache_path, "r", encoding="utf-8") as cf:
                         data = json.load(cf)
                     source = "cache"
-                    stale = datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) >= 120
+                    stale = datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) >= CLAUDE_CACHE_MAX_AGE_SECONDS
                 except Exception:
                     data = None
 
     if isinstance(data, dict):
-        fh = data.get("five_hour", {})
+        fh = data.get("five_hour") or {}
         if fh and fh.get("utilization") is not None:
             fh_util = float(fh.get("utilization", 0.0))
             fh_rst = fh.get("resets_at")
+            fh_reset = _is_iso_past(fh_rst)
+            if fh_reset:
+                fh_util = 0.0
             five_hour_info = {
                 "used_percent": round(fh_util, 2),
                 "remaining_percent": round(100.0 - fh_util, 2),
                 "reset_time_kst": fmt_iso_to_kst(fh_rst) if fh_rst else "대기 (미사용)",
-                "status": "가용 (대기)" if not fh_rst else ("한도 도달" if fh_util >= 100.0 else "활성"),
+                "status": "가용 (리셋 완료)" if fh_reset else ("가용 (대기)" if not fh_rst else ("한도 도달" if fh_util >= 100.0 else "활성")),
             }
 
-        sd = data.get("seven_day", {})
+        sd = data.get("seven_day") or {}
         fable_allowance = None
         for lim in data.get("limits", []):
             if lim.get("kind") == "weekly_scoped":
@@ -719,11 +737,14 @@ def get_claude_status() -> dict:
         if sd and sd.get("utilization") is not None:
             sd_util = float(sd.get("utilization", 0.0))
             sd_rst = sd.get("resets_at")
+            sd_reset = _is_iso_past(sd_rst)
+            if sd_reset:
+                sd_util = 0.0
             weekly_info = {
                 "used_percent": round(sd_util, 2),
                 "remaining_percent": round(100.0 - sd_util, 2),
                 "reset_time_kst": fmt_iso_to_kst(sd_rst),
-                "status": "한도 도달" if sd_util >= 100.0 else "활성",
+                "status": "활성 (리셋 완료)" if sd_reset else ("한도 도달" if sd_util >= 100.0 else "활성"),
                 "weekly_scoped": fable_allowance,
             }
             if sd_util >= 100.0:
@@ -733,6 +754,14 @@ def get_claude_status() -> dict:
                     "reset_time_kst": fmt_iso_to_kst(sd_rst),
                     "status": "한도 도달 (주간 소진)",
                 }
+        # Keep the age flag, but allow reset inference after an API rate limit
+        # only if every known window has reset or is idle without a reset date.
+        known_windows = [window for window in (fh, sd) if window.get("utilization") is not None]
+        reset_reconciled = any(_is_iso_past(window.get("resets_at")) for window in known_windows) and all(
+            _is_iso_past(window.get("resets_at"))
+            or (window.get("utilization") == 0 and not window.get("resets_at"))
+            for window in known_windows
+        )
 
     return {
         "authenticated": has_oauth,
@@ -743,6 +772,7 @@ def get_claude_status() -> dict:
         ),
         "source": source,
         "stale": stale,
+        "reset_reconciled": reset_reconciled,
         "five_hour": five_hour_info,
         "weekly": weekly_info,
         "last_activity": last_active,
@@ -1373,7 +1403,7 @@ def _routing_windows(usage: dict) -> tuple[float | None, float | None, float | N
     - Reserve Hold (0% < 7d <= 2%): hold last 2% for manual use unless all other pools are exhausted.
     - Exhausted (5h <= 0% or 7d <= 0%): hard block (0.0).
     """
-    if usage.get("error") or usage.get("stale") or usage.get("quota_available") is False:
+    if usage.get("error") or (usage.get("stale") and not usage.get("reset_reconciled")) or usage.get("quota_available") is False:
         return None, None, None, "unavailable"
     if usage.get("rate_limited"):
         return 0.0, 0.0, 0.0, "exhausted"
@@ -1446,7 +1476,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False) -> dict:
         ("antigravity_claude", "antigravity", "Claude & GPT-OSS Pool (Antigravity)", cl_pool, agy_model(cl_pool, "claude")),
         ("antigravity_gemini", "antigravity", "Gemini Pool (Argon / Flash)", gem_pool, agy_model(gem_pool, "gemini")),
         ("codex", "codex", "Codex " + str(codex.get("plan") or "ProMax"), codex, "gpt-6.1-sol"),
-        ("claude", "claude", "Claude " + str(claude.get("subscription") or "Team"), claude, "opus" if difficulty == "high" else "sonnet"),
+        ("claude", "claude", "Claude " + str(claude.get("subscription") or "Team"), claude, "claude-opus-5-5"),
     ]
     bench_info = {}
     try:

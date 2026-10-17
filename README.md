@@ -55,17 +55,42 @@ LLM 토큰을 단 1토큰도 소모하지 않고 로컬 프로세스·SQLite·JS
 
 ---
 
-### 3. ⏱ 직관적 단일 수치 소요시간 · 한글 토큰 · 원화(₩) 안내 표준
-인간 기준 달력 시간("며칠/1주일"), 영문 약어(`12k/1.5M`), 불필요한 범위(`~`)나 수식어("예상/평균/약/대"), 혹은 병목을 유발하는 쿼터 재조회 없이 **단일 수치로 간결하게** 안내합니다:
+### 3. ⏱ Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 
-- **단순 수정 / 단일 파일**: `⏱ 45초 · 1만 토큰 (5백원)`
-- **중간 기능 / 멀티 파일**: `⏱ 2분 · 12만 토큰 (5천원)`
-- **대규모 리팩토링 / 풀스택**: `⏱ 5분 · 120만 토큰 (5만원)`
-- **초대형 아키텍처 / 전체 감사**: `⏱ 10분 · 1천만 토큰 (53만원)`
+| Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
+|---|---|
+| Gemini 3.8 Flash (low · fast) / Sonnet 5.5 (high) | `⏱ 40초 · 5만 토큰 (1천원)` |
+| Opus 5.5 Fast (claude-fast) | `⏱ 45초 · 15만 토큰 (3천원)` |
+| Opus 5.5 (high/xhigh) / Gemini 4 Argon (high) | `⏱ 2분 · 22만 토큰 (6천원)` |
+| gpt-6-astra (medium · priority) / gpt-6.1-sol (low) | `⏱ 1분 · 35만 토큰 (3천원)` |
+| gpt-6.1-sol (medium · priority) | `⏱ 1분 20초 · 80만 토큰 (7천원)` |
+| gpt-6.1-sol (high · priority) | `⏱ 2분 · 120만 토큰 (1만2천원)` |
+| gpt-6.1-sol (high · ultrafast) | `⏱ 1분 15초 · 120만 토큰 (1만2천원)` |
+| gpt-6.1-sol (ultra · priority/ultrafast) | `⏱ 2분 30초 · 180만 토큰 (1만8천원)` |
+| gpt-6-astra (ultra) / 멀티풀 병렬 합산 | `⏱ 4분 · 350만 토큰 (3만원)` |
+
+- These are **calibrated planning values (보정된 계획용 기준값), NOT actual measured billing (실측 청구액 아님)**. Pick the row matching each worker's assigned model · effort · tier.
+- NEVER write `~` ranges (`1~3분`, `3천~6천`), `"예상"`, `"평균"`, `"약"`, `"대"`, `"규모"`, `"구독"`, human calendar estimates (`"며칠/1주일"`), or raw `k/M` units.
+- NEVER run or print `5h/7d` quota lookups (`"다시 조회"`, `"미제공"`) just to produce an ETA. Quota checks remain mandatory for **routing** (`--pool auto`, 3-Stage Weekly Protection, 0% Auto-Steering).
+
+#### 🧾 Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
+
+- Whenever delegating one or many workers (`maestro worker-start`, `invoke_subagent`, child workers), ALWAYS state the exact **model + effort + speed tier** assigned to each concrete subtask **BEFORE launch**, with its ETA row.
+- After launch / completion, report every actual `--pool auto` assignment or fallback / failover change (`requested → actual` model · effort · tier + reason, e.g. 0% quota steering).
+- Speed tier: Codex default is `priority`; `ultrafast` ONLY with `--urgent` (urgent real-time turnaround).
+
+| Concrete subtask | Model · Effort · Speed tier |
+|---|---|
+| Responsive UI / quick patch | Opus 5.5 Fast (`claude-fast`) |
+| Core architecture reasoning | Opus 5.5 (`xhigh`/`ultra`) |
+| Backend / system / test verification | gpt-6.1-sol (`high`, `ultrafast`/`priority`) |
+| Parallel submodule implementation | gpt-6-astra (`medium`, `priority`) |
+| Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
 
 ---
 
 ### 4. 🌿 Git Worktree 격리 병렬 실행 & SQLite/FTS5 세션 핸드오버 메모리
+
 - **Git Worktree 병렬 실행 (`--worktree`)**: 여러 에이전트가 동시에 코딩할 때 파일 충돌이 나지 않도록 독립 Git Worktree/브랜치를 생성해 작업 후 검증·병합합니다.
 - **로컬 핸드오버 메모리**: SQLite 데이터베이스(FTS5 전문 검색 지원)에 에이전트 간 인계 노트(수정한 파일, 요약, 다음 단계)를 자동 기록하여 `Codex ➔ Claude ➔ Antigravity` 간 무손실 컨텍스트 인계를 보장합니다.
 - **자동 품질 게이트 (`--verify`)**: 워커 종료 직후 `py_compile`, `pytest`, `ruff`, `tsc --noEmit` 등을 자동 실행해 통과 여부를 즉시 검증합니다.
@@ -84,8 +109,12 @@ maestro worker-start --pool auto --difficulty high --cwd "$PWD" --wait --spec "�
 # 3. Git Worktree 격리 브랜치에서 안전하게 코딩 워커 실행 + 자동 검증 게이트
 maestro worker-start --pool auto --difficulty high --worktree --verify "pytest -q" --cwd "$PWD" --wait --spec "기능 구현"
 
-# 4. 특정 풀 지정 실행 (codex | agy-argon | agy-claude | agy-flash | claude)
+# 4. 특정 풀 지정 실행 (codex | codex-astra | claude | claude-fast | agy-argon | agy-claude | agy-flash)
 maestro worker-start --pool codex --tier priority --cwd "$PWD" --wait --spec "백엔드 로직 리팩토링"
+maestro worker-start --pool codex-astra --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
+maestro worker-start --pool codex --model gpt-6-astra --tier priority --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
+maestro worker-start --pool claude-fast --cwd "$PWD" --wait --spec "반응형 UI 빠른 패치"
+maestro worker-start --pool claude --cwd "$PWD" --wait --spec "코어 아키텍처 설계"
 
 # 5. AOH 라이브 위젯 HTML 수동 생성 / 갱신
 ai-usage-widget /tmp/usage_widget.html

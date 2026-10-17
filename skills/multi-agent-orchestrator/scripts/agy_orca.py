@@ -9,12 +9,12 @@ Why this exists:
   `Claude Sonnet 5.5` = MODEL_PLACEHOLDER_M405, `GPT-OSS 120B` = MODEL_PLACEHOLDER_M412).
 - `maestro` talks directly to Antigravity's local LanguageServer (`StartCascade` + `SendUserCascadeMessage`
   with `cascadeConfig.plannerConfig.planModel = "MODEL_PLACEHOLDER_M402"`) AND to OpenAI Codex CLI
-  (`codex exec --full-auto -m gpt-6.1-sol -c service_tier="ultrafast"`), balancing quota across ALL pools
+  (`codex exec --full-auto -m gpt-6.1-sol -c service_tier="priority"`), balancing quota across ALL pools
   and keeping every conversation's `usage_widget.html` up to date.
 
 Commands:
   maestro status [--json]
-  maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|agy-flash] [--cwd <dir>] [--wait] [--timeout 180] [--json]
+  maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|codex-astra|claude|claude-fast|agy-flash] [--model <model>] [--cwd <dir>] [--wait] [--timeout 180] [--json]
   maestro check --id <cascade_id> [--wait] [--timeout 180] [--json]
   maestro sync-widgets [--json]
 """
@@ -44,6 +44,10 @@ MODEL_MAP = {
     "agy-flash": "MODEL_PLACEHOLDER_M322",       # Gemini 3.8 Flash (Fast) - Antigravity Gemini Pool
     "flash": "MODEL_PLACEHOLDER_M322",
 }
+CLAUDE_FAST_POOLS = ("claude-fast", "opus-5.5-fast", "opus-fast")
+CLAUDE_POOLS = ("claude", "opus-5.5-ultra", "opus-5.5-xhigh") + CLAUDE_FAST_POOLS
+CODEX_ASTRA_POOLS = ("codex-astra", "astra", "gpt-6-astra")
+CODEX_POOLS = ("codex",) + CODEX_ASTRA_POOLS
 
 
 def ls_post(addr: str, token: str, method: str, payload: dict, timeout: int = 10) -> dict:
@@ -68,8 +72,10 @@ def _canonical_pool_key(pool: str) -> str:
         return "antigravity_claude"
     if pool in ("agy-argon", "argon", "agy-argon-med", "agy-flash", "flash"):
         return "antigravity_gemini"
-    if pool == "codex":
+    if pool in CODEX_POOLS:
         return "codex"
+    if pool in CLAUDE_POOLS:
+        return "claude"
     return pool
 
 
@@ -84,6 +90,8 @@ def _map_canonical_to_cli_pool(winner: str, difficulty: str = "high") -> str:
         return "agy-claude" if difficulty == "high" else "agy-sonnet"
     if winner == "codex":
         return "codex"
+    if winner == "claude":
+        return "claude"
     return "agy-argon" if difficulty == "high" else "agy-flash"
 
 
@@ -122,7 +130,6 @@ def choose_auto_pool(difficulty: str = "high", exclude_canonical: set[str] | Non
             if c.get("pool") not in excl
             and c.get("status") == "available"
             and float(c.get("remaining_percent") or 0.0) > 0.0
-            and c.get("pool") != "claude"
         ]
         candidates.sort(key=lambda x: x[1], reverse=True)
         winner = candidates[0][0] if candidates else winner
@@ -326,11 +333,82 @@ def start_agy_worker(pool: str, spec: str, cwd: str, wait: bool, timeout: int) -
     return result
 
 
-def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int) -> dict:
+def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
+                        wait: bool, timeout: int) -> dict:
+    """Run local Claude; retry only Fast model/effort availability failures."""
+    import tempfile
+    import uuid
+    import orca_memory
+
+    abs_cwd = os.path.abspath(cwd)
+    title = make_agy_title(spec, abs_cwd)
+    session_id = str(uuid.uuid4())
+    handover = orca_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
+    prompt = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{title}\n\n{spec}"
+    if handover:
+        prompt += f"\n\n{handover}"
+    fast = pool in CLAUDE_FAST_POOLS
+    model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
+    selected_effort = effort or ("ultra" if pool == "opus-5.5-ultra" else "xhigh")
+    started = time.monotonic()
+
+    def command():
+        return ["/home/u24c9g5090r64/.local/bin/claude", "-p",
+                "--dangerously-skip-permissions", "--model", model,
+                "--effort", selected_effort, "--session-id", session_id, prompt]
+
+    result = {"pool": pool, "title": title, "cwd": abs_cwd,
+              "session_id": session_id, "handover_injected": bool(handover)}
+    try:
+        if not wait:
+            with tempfile.NamedTemporaryFile(prefix="maestro-claude-", suffix=".log", delete=False) as log:
+                proc = subprocess.Popen(command(), cwd=abs_cwd, stdin=subprocess.DEVNULL,
+                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
+                                               "effort": selected_effort, "pid": proc.pid})
+            return {**result, "ok": True, "status": "running", "model": model,
+                    "effort": selected_effort, "pid": proc.pid, "log_path": log.name}
+
+        proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=timeout)
+        error_text = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+        unsupported = any(marker in error_text for marker in (
+            "model not found", "unknown model", "invalid model", "unsupported model",
+            "model is not available", "model is unavailable", "not have access to model",
+            "not have access to the model", "invalid choice", "unsupported effort",
+            "does not support", "there's an issue with the selected model",
+        ))
+        if fast and proc.returncode != 0 and unsupported:
+            result["fallback_from"] = model
+            model, selected_effort = "claude-opus-5-5", "medium"
+            session_id = str(uuid.uuid4())
+            result["session_id"] = session_id
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command(), timeout)
+            proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=remaining)
+        output = (proc.stdout or "").strip()[-4000:]
+        result.update(ok=proc.returncode == 0, model=model, effort=selected_effort,
+                      elapsed_sec=round(time.monotonic() - started, 2), output=output,
+                      stderr=(proc.stderr or "").strip()[-1000:])
+        record_spawned_session(session_id, {**result, "provider": "claude"})
+        if output:
+            orca_memory.save_handover_note(cwd=abs_cwd, pool=pool, model=f"{model} ({selected_effort})",
+                                           title=title, summary=output[:280], session_id=session_id)
+        orca_memory.notify_long_task_completion(session_id=session_id, title=title, pool=pool,
+                                               elapsed_sec=result["elapsed_sec"], cwd=abs_cwd,
+                                               ok=result["ok"], min_elapsed_sec=60.0)
+        return result
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {**result, "ok": False, "model": model, "effort": selected_effort, "error": str(exc)}
+
+
+def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int,
+                       pool: str = "codex", model: str | None = None) -> dict:
     import shutil
     import threading
     import orca_memory
     abs_cwd = os.path.abspath(cwd)
+    model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
     agy_title = make_agy_title(spec, abs_cwd)
     handover_ctx = orca_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
     tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
@@ -346,7 +424,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "-m",
-        "gpt-6.1-sol",
+        model,
         "-c",
         f'model_reasoning_effort="{effort}"',
         "-c",
@@ -367,8 +445,8 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         if out_txt:
             orca_memory.save_handover_note(
                 cwd=abs_cwd,
-                pool="codex",
-                model=f"gpt-6.1-sol ({effort}, {tier})",
+                pool=pool,
+                model=f"{model} ({effort}, {tier})",
                 title=agy_title,
                 summary=out_txt[:280],
                 session_id=sid,
@@ -376,7 +454,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         orca_memory.notify_long_task_completion(
             session_id=sid,
             title=agy_title,
-            pool="codex",
+            pool=pool,
             elapsed_sec=elapsed,
             cwd=abs_cwd,
             ok=(proc.returncode == 0),
@@ -384,8 +462,8 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         )
         return {
             "ok": proc.returncode == 0,
-            "pool": "codex",
-            "model": f"gpt-6.1-sol ({effort}, {tier})",
+            "pool": pool,
+            "model": f"{model} ({effort}, {tier})",
             "title": agy_title,
             "thread_ids": stamped,
             "cwd": abs_cwd,
@@ -398,7 +476,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         stamped = stamp_codex_db_titles(t0, agy_title, abs_cwd)
         return {
             "ok": False,
-            "pool": "codex",
+            "pool": pool,
             "title": agy_title,
             "thread_ids": stamped,
             "error": f"Timeout after {timeout}s",
@@ -456,11 +534,14 @@ def main():
     p_start.add_argument(
         "--pool",
         default="auto",
-        choices=["auto", "agy-argon", "argon", "agy-argon-med", "agy-claude", "opus-5.5", "agy-sonnet", "sonnet-5.5", "agy-gpt-oss", "codex", "agy-flash", "flash"],
+        choices=["auto", *MODEL_MAP, *CODEX_POOLS, *CLAUDE_POOLS],
+        help="Quota pool: auto, Antigravity aliases, local claude/claude-fast, or codex/codex-astra",
     )
     p_start.add_argument("--difficulty", default="high", choices=["high", "medium", "low"])
     p_start.add_argument("--cwd", default=os.getcwd())
-    p_start.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "ultra"])
+    p_start.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "ultra"],
+                         help="Default: Codex high, Astra medium, Claude xhigh (ultra alias: ultra)")
+    p_start.add_argument("--model", help="Codex model override (e.g. gpt-6-astra); auto selects the Codex pool")
     p_start.add_argument("--tier", default="priority", choices=["priority", "ultrafast"])
     p_start.add_argument("--urgent", action="store_true", help="Use ultrafast tier only when urgent immediate response is required")
     p_start.add_argument("--wait", action="store_true")
@@ -509,6 +590,11 @@ def main():
     if args.cmd == "worker-start":
         import orca_memory
         requested_pool = args.pool
+        if args.model:
+            if requested_pool not in ("auto", *CODEX_POOLS):
+                parser.error("--model is supported only with auto or a Codex pool")
+            if requested_pool == "auto":
+                requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
         steered_from = None
         steer_reason = None
         if requested_pool == "auto":
@@ -527,9 +613,14 @@ def main():
                 pool = requested_pool
 
         def _dispatch(target_pool: str) -> dict:
-            if target_pool == "codex":
+            if target_pool in CODEX_POOLS:
                 eff_tier = "ultrafast" if args.urgent else args.tier
-                return start_codex_worker(args.spec, args.cwd, args.effort, eff_tier, args.timeout)
+                model = args.model if _canonical_pool_key(requested_pool) == "codex" else None
+                effort = args.effort or ("medium" if target_pool in CODEX_ASTRA_POOLS or model == "gpt-6-astra" else "high")
+                return start_codex_worker(args.spec, args.cwd, effort, eff_tier, args.timeout,
+                                          pool=target_pool, model=model)
+            if target_pool in CLAUDE_POOLS:
+                return start_claude_worker(target_pool, args.spec, args.cwd, args.effort, args.wait, args.timeout)
             return start_agy_worker(target_pool, args.spec, args.cwd, args.wait, args.timeout)
 
         res = _dispatch(pool)
