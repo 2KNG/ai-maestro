@@ -428,7 +428,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         "-c",
         f'model_reasoning_effort="{effort}"',
         "-c",
-        f'service_tier="{tier}"',
+        f'service_tier="{tier}"' if tier in ("priority", "ultrafast") else 'service_tier="default"',
         "-C",
         abs_cwd,
         tagged_spec,
