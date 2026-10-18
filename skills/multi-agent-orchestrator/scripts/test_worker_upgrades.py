@@ -119,6 +119,22 @@ class WorkerDispatchTests(unittest.TestCase):
                 self.assertEqual(self.run.call_args.kwargs["cwd"], "/tmp")
                 self.assertEqual(result["effort"], "ultra" if pool in workers.CLAUDE_ULTRA_POOLS else "high")
                 self.assertEqual(workers._canonical_pool_key(pool), "claude")
+        for pool, effort in (*( (p, None) for p in workers.CLAUDE_ULTRA_POOLS ), ("claude", "ultra"), ("claude-fast", "ultra")):
+            for kwargs in ({"interactive": True}, {"urgent": True}):
+                with self.subTest(pool=pool, effort=effort, kwargs=kwargs):
+                    result = workers.start_claude_worker(
+                        pool, "patch ultrathink files", "/tmp", effort, True, 30, **kwargs)
+                    command = self.run.call_args.args[0]
+                    self.assertEqual((result["model"], result["effort"], result["tier"]),
+                                     ("claude-opus-5-5", "ultra", "default"))
+                    self.assertEqual(command[command.index("--model") + 1], "claude-opus-5-5")
+                    self.assertEqual(command[command.index("--effort") + 1], "max")
+                    self.assertTrue(command[-1].startswith("ultrathink\n\n"))
+        result = workers.start_claude_worker("claude", "max effort task", "/tmp", "max", True, 30)
+        command = self.run.call_args.args[0]
+        self.assertEqual(result["effort"], "max")
+        self.assertEqual(command[command.index("--effort") + 1], "max")
+        self.assertFalse(command[-1].startswith("ultrathink\n\n"))
 
     def test_fast_fallback_only_for_model_errors(self):
         for failure, count in (("unknown model claude-opus-5-fast", 2), ("HTTP 429 rate limit", 1), ("task failed", 1)):

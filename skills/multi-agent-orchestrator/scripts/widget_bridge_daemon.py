@@ -588,7 +588,57 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/codex-exec":
+        if parsed.path == "/api/agent-control":
+            cid = body.get("cascadeId") or "4500bbbc-e155-49f9-b324-88364ca9b84b"
+            reason = body.get("reason", "manual request")
+            text = body.get("text") or (
+                f"[자동 복구 알림: {reason}] 네트워크 복구 완료. 진행 중이던 작업을 계속 수행해 주세요."
+            )
+            plan_model = body.get("planModel", "MODEL_PLACEHOLDER_M417")
+            addr, token = cau.discover_ls_credentials()
+            if not addr:
+                self._set_cors(500)
+                self.wfile.write(json.dumps({"ok": False, "error": "LanguageServer credentials not found"}).encode("utf-8"))
+                return
+            try:
+                msg_payload = {
+                    "cascadeId": cid,
+                    "items": [{"text": text}],
+                    "metadata": {
+                        "ideName": "antigravity",
+                        "ideVersion": "1.107.0",
+                        "extensionName": "antigravity",
+                        "extensionVersion": "1.107.0",
+                    },
+                    "cascadeConfig": {
+                        "plannerConfig": {
+                            "planModel": plan_model,
+                            "conversational": {
+                                "plannerMode": "CONVERSATIONAL_PLANNER_MODE_DEFAULT",
+                                "agenticMode": True,
+                            },
+                        }
+                    },
+                }
+                req = urllib.request.Request(
+                    f"http://{addr}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage",
+                    data=json.dumps(msg_payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Connect-Protocol-Version": "1",
+                        "x-codeium-csrf-token": token or "",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    res_raw = r.read().decode("utf-8")
+                    res = json.loads(res_raw) if res_raw else {}
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": True, "res": res}).encode("utf-8"))
+            except Exception as e:
+                self._set_cors(500)
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+            return
             prompt = (body.get("prompt") or "").strip()
             thread_id = (body.get("threadId") or "").strip()
             effort = (body.get("effort") or "high").strip()

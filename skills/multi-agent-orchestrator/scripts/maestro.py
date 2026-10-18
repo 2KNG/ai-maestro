@@ -345,7 +345,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     import maestro_memory
 
     if pool in CLAUDE_ULTRA_POOLS:
-        pool, effort = "claude", effort or "ultra"
+        pool, effort = "claude", "ultra"
     abs_cwd = os.path.abspath(cwd)
     title = make_agy_title(spec, abs_cwd)
     session_id = str(uuid.uuid4())
@@ -353,13 +353,13 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     prompt = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{title}\n\n{spec}"
     if handover:
         prompt += f"\n\n{handover}"
-    # An explicit Fast pool remains an opt-in, including background invocations.
-    fast = pool in CLAUDE_FAST_POOLS or ((interactive or urgent) and not background and not max_capability)
-    model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
     selected_effort = effort or ("xhigh" if max_capability else "high")
     if selected_effort in ("ultra", "xhigh", "max") and not max_capability and effort is None:
         selected_effort = "high"
-    if selected_effort == "ultra" and "ultrathink" not in prompt.lower():
+    # An explicit Fast pool remains an opt-in, including background invocations, unless ultra is requested.
+    fast = (pool in CLAUDE_FAST_POOLS or ((interactive or urgent) and not background and not max_capability)) and selected_effort != "ultra"
+    model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
+    if selected_effort == "ultra":
         prompt = "ultrathink\n\n" + prompt
     started = time.monotonic()
 
@@ -714,7 +714,7 @@ def main():
                                            pool=target_pool, model=model, **speed_flags)
             elif target_pool in CLAUDE_POOLS:
                 if target_pool in CLAUDE_ULTRA_POOLS:
-                    target_pool, effort = "claude", args.effort or "ultra"
+                    target_pool, effort = "claude", "ultra"
                 result = start_claude_worker(target_pool, args.spec, args.cwd, effort, args.wait,
                                             args.timeout, **speed_flags)
             else:

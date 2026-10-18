@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec python3 "/home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/cr_wifi_watchdog.py" "$@"

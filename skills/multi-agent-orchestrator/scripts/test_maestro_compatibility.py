@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import maestro_memory as memory
+import maestro_memory
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -31,8 +31,8 @@ class MemoryMigrationTests(unittest.TestCase):
         root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.target = root / 'maestro_memory.sqlite'
         self.legacy = root / 'orca_memory.sqlite'
-        self.stack.enter_context(mock.patch.object(memory, 'MEMORY_DB_PATH', str(self.target)))
-        self.stack.enter_context(mock.patch.object(memory, 'LEGACY_MEMORY_DB_PATH', str(self.legacy)))
+        self.stack.enter_context(mock.patch.object(maestro_memory, 'MEMORY_DB_PATH', str(self.target)))
+        self.stack.enter_context(mock.patch.object(maestro_memory, 'LEGACY_MEMORY_DB_PATH', str(self.legacy)))
 
     def test_migration_copies_committed_wal_rows_and_preserves_legacy(self):
         source = sqlite3.connect(self.legacy)
@@ -43,7 +43,7 @@ class MemoryMigrationTests(unittest.TestCase):
         source.execute("INSERT INTO migration_probe VALUES ('committed in WAL')")
         source.commit()
         self.assertTrue(Path(str(self.legacy) + '-wal').exists())
-        connection = memory._connect()
+        connection = maestro_memory._connect()
         try:
             self.assertEqual(connection.execute('SELECT value FROM migration_probe').fetchone(),
                              ('committed in WAL',))
@@ -59,14 +59,14 @@ class MemoryMigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 connection.execute('CREATE TABLE migration_probe (value TEXT)')
                 connection.execute('INSERT INTO migration_probe VALUES (?)', (value,))
-        connection = memory._connect()
+        connection = maestro_memory._connect()
         try:
             self.assertEqual(connection.execute('SELECT value FROM migration_probe').fetchone(), ('maestro',))
         finally:
             connection.close()
 
     def test_new_database_when_no_legacy_exists(self):
-        connection = memory._connect()
+        connection = maestro_memory._connect()
         try:
             self.assertEqual(connection.execute('SELECT count(*) FROM handover_notes').fetchone(), (0,))
         finally:
@@ -79,9 +79,9 @@ class MemoryMigrationTests(unittest.TestCase):
             if use_maestro:
                 env.update(MAESTRO_TELEGRAM_BOT_TOKEN='new-token', MAESTRO_TELEGRAM_CHAT_ID='new-chat')
             with self.subTest(use_maestro=use_maestro), mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(memory.shutil, 'which', return_value=None), \
-                    mock.patch.object(memory.urllib.request, 'urlopen') as http:
-                self.assertTrue(memory.notify_long_task_completion(
+                    mock.patch.object(maestro_memory.shutil, 'which', return_value=None), \
+                    mock.patch.object(maestro_memory.urllib.request, 'urlopen') as http:
+                self.assertTrue(maestro_memory.notify_long_task_completion(
                     session_id=f'notification-{use_maestro}', title='done', elapsed_sec=61, repo='test'))
                 request = http.call_args.args[0]
                 prefix = 'new' if use_maestro else 'old'

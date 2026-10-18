@@ -190,10 +190,22 @@ class SpeedAndDispatchTests(unittest.TestCase):
 
     def test_claude_ultra_aliases_and_explicit_efforts(self):
         for pool in workers.CLAUDE_ULTRA_POOLS:
-            with self.subTest(pool=pool):
-                result = self.cli('--pool', pool)
+            for flags in ([], ['--interactive'], ['--urgent'], ['--effort', 'high', '--interactive']):
+                with self.subTest(pool=pool, flags=flags):
+                    result = self.cli('--pool', pool, *flags)
+                    command = self.run.call_args.args[0]
+                    self.assertEqual((result['pool'], result['model'], result['effort'], result['tier']),
+                                     ('claude', 'claude-opus-5-5', 'ultra', 'default'))
+                    self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
+                    self.assertEqual(command[command.index('--effort') + 1], 'max')
+                    self.assertTrue(command[-1].startswith('ultrathink\n\n'))
+        for flags in ([], ['--interactive'], ['--urgent']):
+            with self.subTest(explicit_ultra_flags=flags):
+                result = self.cli('--pool', 'claude', '--effort', 'ultra', *flags)
                 command = self.run.call_args.args[0]
-                self.assertEqual((result['pool'], result['effort']), ('claude', 'ultra'))
+                self.assertEqual((result['model'], result['effort'], result['tier']),
+                                 ('claude-opus-5-5', 'ultra', 'default'))
+                self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
                 self.assertEqual(command[command.index('--effort') + 1], 'max')
                 self.assertTrue(command[-1].startswith('ultrathink\n\n'))
         for effort in ('ultra', 'max', 'xhigh', 'high'):
@@ -204,14 +216,22 @@ class SpeedAndDispatchTests(unittest.TestCase):
                 self.assertEqual(command[command.index('--effort') + 1],
                                  'max' if effort in ('ultra', 'max') else effort)
                 self.assertEqual(command[-1].startswith('ultrathink\n\n'), effort == 'ultra')
+                if effort == 'max':
+                    self.assertNotIn('ultrathink', command[-1].lower())
 
-    def test_ultrathink_is_not_duplicated_and_explicit_effort_overrides_alias(self):
-        workers.start_claude_worker('claude-ultra', '✦ Use ULTRATHINK please', '/tmp', None, True, 30)
-        self.assertEqual(self.run.call_args.args[0][-1].lower().count('ultrathink'), 1)
-        self.assertFalse(self.run.call_args.args[0][-1].startswith('ultrathink\n\n'))
-        result = self.cli('--pool', 'claude-ultra', '--effort', 'high')
-        self.assertEqual(result['effort'], 'high')
-        self.assertEqual(self.run.call_args.args[0][-1].lower().count('ultrathink'), 0)
+    def test_ultrathink_prefix_prepended_even_when_word_appears_later(self):
+        for pool, effort in (('claude-ultra', None), ('claude', 'ultra')):
+            for kwargs in ({}, {'interactive': True}, {'urgent': True}):
+                with self.subTest(pool=pool, effort=effort, kwargs=kwargs):
+                    result = workers.start_claude_worker(
+                        pool, '✦ Explain how ultrathink and ULTRATHINK work', '/tmp', effort, True, 30, **kwargs)
+                    command = self.run.call_args.args[0]
+                    self.assertEqual((result['model'], result['effort'], result['tier']),
+                                     ('claude-opus-5-5', 'ultra', 'default'))
+                    self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
+                    self.assertEqual(command[command.index('--effort') + 1], 'max')
+                    self.assertTrue(command[-1].startswith('ultrathink\n\n✦ Explain how ultrathink and ULTRATHINK work'))
+                    self.assertEqual(command[-1].lower().count('ultrathink'), 3)
 
     def test_max_capability_domain_and_model_override(self):
         result = self.cli('--max-capability','--urgent')
