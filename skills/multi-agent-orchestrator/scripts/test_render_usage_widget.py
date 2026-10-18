@@ -11,6 +11,11 @@ import render_usage_widget as widget
 
 
 class RenderingTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(widget, '_worker_registry', return_value={})
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
     def test_closed_sessions_use_exact_recency_and_stop_at_eight(self):
         # Sessions older than seven days are closed; all share age_days, in oldest-first input order.
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Session {i}',

@@ -416,6 +416,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
             register("failed", ok=False, stderr=(proc.stderr or "").strip()[-1000:])
             result["fallback_from"] = model
             model, selected_effort = "claude-opus-5-5", "medium"
+            result["pool"] = "claude"
             result["tier"] = "default"
             session_id = str(uuid.uuid4())
             result["session_id"] = session_id

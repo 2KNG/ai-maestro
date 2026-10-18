@@ -677,11 +677,21 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       display: inline-flex;
       align-items: center;
       line-height: 1.2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .model-pill .mp-full,
+    .model-pill .mp-short {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
     }
     .model-pill.argon { color: #60a5fa; border-color: rgba(96, 165, 250, 0.32); }
     .model-pill.flash { color: #38bdf8; border-color: rgba(56, 189, 248, 0.32); }
     .model-pill.codex { color: #34d399; border-color: rgba(52, 211, 153, 0.32); }
-    .model-pill.claude { color: #f59e0b; border-color: rgba(245, 158, 11, 0.32); }
+    .model-pill.claude { color: var(--claude, #d97757); border-color: rgba(217, 119, 87, 0.35); }
 
     .fast-badge {
       display: inline-flex;
@@ -1603,6 +1613,32 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
             f'{eff_svg}{bolt_svg}</span>',
             "",
         )
+    if provider == "claude":
+        m_raw = (model_str or "claude-opus-5-5").lower()
+        is_fast = (service_tier == "fast") and ("fast" in m_raw and "5-5" not in m_raw)
+        is_ultra = (effort in ("ultra", "max")) or ("ultra" in m_raw)
+        if "opus" in m_raw:
+            m_full = "Opus 5.5 Ultra" if is_ultra else ("Opus 5.5 Fast" if is_fast else "Opus 5.5")
+            m_short = "O-5.5U" if is_ultra else ("O-5.5F" if is_fast else "O-5.5")
+        elif "sonnet" in m_raw:
+            m_full = "Sonnet 5.5"
+            m_short = "S-5.5"
+        else:
+            m_full = model_str.replace("claude-", "")
+            m_short = m_full[:6]
+        eff_svg = _effort_gauge_svg("max" if is_ultra else (effort or "high"))
+        bolt_svg = (
+            '<svg width="11" height="10" style="flex-shrink:0" aria-label="fast"><title>Claude service_tier: Fast (2x quota)</title><use href="#ico-bolt-1"/></svg>'
+            if is_fast else ""
+        )
+        return (
+            '<svg class="brand-icon" width="15" height="15" style="color:var(--claude, #d97757)"><use href="#ico-claude"/></svg>',
+            f'<span class="model-pill claude" title="Claude {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
+            f'<span class="mp-full">{_html_esc(m_full)}</span>'
+            f'<span class="mp-short">{_html_esc(m_short)}</span>'
+            f'{eff_svg}{bolt_svg}</span>',
+            "",
+        )
     m = model_str or "Gemini 4 Argon (High)"
     m_info = normalize_agy_model(m)
     eff_svg = _effort_gauge_svg(m_info.get("effort", "high"))
@@ -2127,31 +2163,63 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
 
 
 def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
-    sid = _html_esc(str(node["session_id"]))
+    sid = _html_esc(str(node.get("session_id") or node.get("id") or ""))
     model = node.get("model") or "claude-opus-5-5"
     effort = node.get("effort") or node.get("reasoning_effort") or "high"
     tier = node.get("tier") or node.get("service_tier") or "default"
     pool = node.get("pool") or ""
-    badge = " Ultra" if effort in ("ultra", "max") or "ultra" in pool else " Fast" if tier == "fast" or "fast" in model or "fast" in pool else ""
+
+    is_fallback = bool(node.get("fallback_from"))
+    is_fast = (tier == "fast" or pool in ("claude-fast", "fast") or "fast" in model.lower()) and not is_fallback and tier != "default" and "opus-5-5" not in model.lower()
+    is_ultra = (effort in ("ultra", "max")) or ("ultra" in model.lower()) or ("ultra" in pool)
+    service_tier = "fast" if is_fast else tier
+
+    m_raw = model.lower()
+    if "opus" in m_raw:
+        mp_full = "Opus 5.5 Ultra" if is_ultra else ("Opus 5.5 Fast" if is_fast else "Opus 5.5")
+        mp_short = "Opus-U" if is_ultra else ("Opus-F" if is_fast else "Opus")
+    elif "sonnet" in m_raw:
+        mp_full = "Sonnet 5.5"
+        mp_short = "Sonnet"
+    else:
+        mp_full = model.replace("claude-", "")
+        mp_short = mp_full[:6]
+
     is_terminal = node.get("status") in ("completed", "failed", "timeout", "done", "closed") or node.get("ok") is not None
     running = (node.get("session_id") in live_ids or node.get("is_running") is True) and not is_terminal
     age = max(0, now_sec - (_parse_any_ts(node.get("updated_at")) or now_sec))
-    dot, tip, age = _sub_status_dot_from_age(running, age)
+    dot, tip, eff_age = _sub_status_dot_from_age(running, age)
+
     tokens = node.get("token_count") or node.get("usage") or node.get("context_usage") or {}
     total = tokens.get("total_tokens") or tokens.get("used_tokens") or sum(
-        tokens.get(k, 0) or 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        tokens.get(k, 0) or 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    )
     cost = node.get("cost_usd", node.get("total_cost_usd", tokens.get("cost_usd", 0))) or 0
-    title = _html_esc(node.get("display_name") or node.get("title") or node.get("spec") or "Claude worker")
-    label = _html_esc(f"{model} · {effort}{badge}")
+
+    raw_title = node.get("display_name") or node.get("title") or node.get("spec_preview") or node.get("spec") or "Claude worker"
+    raw_title = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", raw_title)
+    raw_title = re.sub(r"^ultrathink\s+", "", raw_title).strip()
+    title_line = (raw_title.splitlines() or ["Claude worker"])[0].strip()
+    title = _html_esc(title_line)
+
+    badge = " Ultra" if is_ultra else (" Fast" if is_fast else "")
+    label = _html_esc(f"{mp_full} · {effort}{badge}")
+    c_icon, c_pill, _ = _provider_icon_and_pill(model, "claude", service_tier, effort)
+    c_node_id = f"node-sub-claude-{sid}"
+    pct = float(tokens.get("percent") or 0.0)
+
     return (
-        f'<div class="tree-node sub-ripening" data-node-id="node-sub-claude-{sid}" data-sub-running="{int(running)}" data-sub-age="{age}">'
+        f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}">'
         f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-claude-{sid}\')">'
         f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
-        f'<svg class="brand-icon" width="15" height="15"><use href="#ico-claude"/></svg>'
-        f'<span class="agent-name">{title}</span></div><div class="agent-right">'
-        f'<span class="model-pill claude" title="{label} · {_html_esc(tier)}">'
-        f'<span class="mp-full">{label}</span><span class="mp-short">{label}</span>{_effort_gauge_svg(effort)}</span>'
-        f'{_context_pill_html(fmt_k(total), float(tokens.get("percent") or 0), "green", node, running, dot)}</div></div>'
+        f'{c_icon}'
+        f'<span class="agent-name" title="{title}">{title}</span></div><div class="agent-right">'
+        f'{c_pill}'
+        f'{_context_pill_html(fmt_k(total), pct, "green", node, running, dot)}'
+        f'<span class="row-actions">'
+        f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(title_line[:24])}\')">✕</button>'
+        f'</span>'
+        f'</div></div>'
         f'<div class="agent-detail" id="det-sub-claude-{sid}"><div class="agent-detail-row">'
         f'<span>Claude Subagent: {sid} · cwd: {_html_esc(node.get("cwd") or "")} · {label}</span>'
         f'<span>{total} tokens · ${float(cost):.4f}</span></div>'
@@ -2162,13 +2230,6 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
 
 def _worker_registry() -> dict:
     path = os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json")
-    try:
-        import maestro
-        m_path = getattr(maestro, "SPAWN_REGISTRY_PATH", None)
-        if m_path and not m_path.startswith("/home/mjserver/"):
-            path = m_path
-    except Exception:
-        pass
     try:
         with open(path) as f:
             value = json.load(f)

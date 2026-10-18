@@ -1516,9 +1516,11 @@
     /* Responsive & Long-Label Short Model Pill (4-A / 3.8-F / O-5.5 + Color Speedometer Gauge Icon) */
     .model-pill .mp-full {
       display: inline-flex; align-items: center; gap: 3px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
     }
     .model-pill .mp-short {
       display: none; align-items: center; gap: 3px; font-weight: 700;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
     }
     .model-pill.is-long .mp-full { display: none; }
     .model-pill.is-long .mp-short { display: inline-flex; }
