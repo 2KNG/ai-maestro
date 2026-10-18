@@ -8,6 +8,7 @@ Usage:
 """
 import base64
 import gzip
+import glob
 import json
 import math
 import os
@@ -1542,9 +1543,9 @@ def _repo_from_uris_or_cwd(workspaces: list[str] | None = None, cwd: str | None 
     if not path:
         return "dev", "current"
     base = os.path.basename(path) or "dev"
-    if path in (os.path.expanduser("~/dev"), "/home/u24c9g5090r64") or "/.gemini/" in path:
+    if path in (os.path.expanduser("~/dev"), os.path.expanduser("~"), "/home/u24c9g5090r64") or "/.gemini/" in path:
         return "dev", "current"
-    if path.startswith("/home/u24c9g5090r64/dev/"):
+    if path.startswith(os.path.expanduser("~/dev/")) or path.startswith("/home/u24c9g5090r64/dev/"):
         return base, "current"
     return base, "external"
 
@@ -2020,21 +2021,208 @@ def _detail_extras_html(provider: str, session_id: str, repo: str = "", is_paren
     )
 
 
-def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str]]:
+def _merge_registry_workers(nodes: list[dict], provider: str) -> list[dict]:
+    """Keep collected usage while joining early registry IDs to final session IDs."""
+    merged = []
+    id_key = "thread_id" if provider == "codex" else "session_id"
+    raw_nodes = [n for n in nodes if isinstance(n, dict) and "error" not in n]
+    known_ids = set()
+    for n in raw_nodes:
+        nid = n.get(id_key) or n.get("session_id") or n.get("thread_id") or n.get("id")
+        if nid:
+            known_ids.add(nid)
+    registry = [{**w, "registry_id": w.get("registry_id") or key,
+                 id_key: w.get(id_key) or w.get("session_id") or key,
+                 "registry_only": (w.get(id_key) or w.get("session_id") or key) not in known_ids}
+                for key, w in _worker_registry().items()
+                if isinstance(w, dict) and w.get("provider") == provider]
+    for node in registry + raw_nodes:
+        node = dict(node)
+        node[id_key] = node.get(id_key) or node.get("session_id") or node.get("id")
+        if not node[id_key]:
+            continue
+        aliases = {node.get(k) for k in (id_key, "session_id", "registry_id")} - {None, ""}
+        matches = [old for old in merged if aliases.intersection(
+            {old.get(k) for k in (id_key, "session_id", "registry_id")} - {None, ""})]
+        combined = {}
+        for old in matches:
+            combined.update(old)
+            merged.remove(old)
+        canonical = combined.get("session_id") or node.get("session_id")
+        combined.update(node)
+        if canonical:
+            combined[id_key] = canonical
+        if provider == "codex" and combined.get("registry_id"):
+            combined.setdefault("source", "exec")
+            ctx = dict(combined.get("turn_context") or {})
+            for key, value in (("model", combined.get("model")), ("reasoning_effort", combined.get("effort")),
+                               ("service_tier", combined.get("tier"))):
+                if value:
+                    ctx.setdefault(key, value)
+            combined["turn_context"] = ctx
+        merged.append(combined)
+    return merged
+
+
+def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str], now_sec: float) -> str | None:
+    """Prefer explicit evidence; ties never resolve by list order or repo basename."""
+    def identity(n):
+        return n.get("conversation_id") or n.get("thread_id") or n.get("session_id")
+
+    ids = {worker.get(k) for k in ("thread_id", "session_id", "registry_id")} - {None, ""}
+    candidates = [p for p in parents if identity(p) not in ids]
+    explicit = [p for p in candidates if identity(p) in
+                (worker.get("parent_id"), worker.get("parent_session_id"), worker.get("parent_thread_id"))
+                or any(ids.intersection({c.get("thread_id"), c.get("session_id"), c.get("registry_id")})
+                       for c in (p.get("children") or []))]
+    if explicit:
+        return identity(explicit[0]) if len(explicit) == 1 else None
+    title = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", worker.get("spec") or worker.get("title") or "").strip()
+    for by_id in (True, False):
+        matches = [p for p in candidates if any(
+            value in transcripts.get(identity(p), "")
+            for value in (ids if by_id else [title] if len(title) >= 8 else []))]
+        if matches:
+            if len(matches) == 1:
+                return identity(matches[0])
+            candidates = matches
+            break
+    cwd = worker.get("cwd")
+    if cwd and os.path.isabs(cwd):
+        ranked = []
+        w_repo, _ = _repo_from_uris_or_cwd(None, cwd)
+        for p in candidates:
+            paths = p.get("workspaces") or ([p.get("cwd")] if p.get("cwd") else [])
+            p_repo, _ = _repo_from_uris_or_cwd(p.get("workspaces"))
+            if not p_repo and identity(p) == "521b781e-43da-4647-b411-585e65e5f002":
+                p_repo = "dev"
+            matched_path = False
+            for path in paths:
+                path = path.removeprefix("file://")
+                if not path or not os.path.isabs(path):
+                    continue
+                path, child = os.path.realpath(path), os.path.realpath(cwd)
+                if path != "/" and os.path.commonpath([path, child]) == path:
+                    ranked.append((len(path), p))
+                    matched_path = True
+            if not matched_path and not paths and p_repo and w_repo and p_repo == w_repo:
+                ranked.append((1, p))
+        if ranked:
+            best = max(rank for rank, _ in ranked)
+            candidates = list({identity(p): p for rank, p in ranked if rank == best}.values())
+            if len(candidates) == 1:
+                return identity(candidates[0])
+        else:
+            candidates = []
+    start = _parse_any_ts(worker.get("started_at") or worker.get("created_at") or worker.get("updated_at"))
+    end = _parse_any_ts(worker.get("completed_at") or worker.get("updated_at")) or now_sec
+    overlaps = []
+    if start:
+        for p in candidates:
+            p_start = _parse_any_ts(p.get("started_at") or p.get("created_at") or p.get("created_time"))
+            p_end = _parse_any_ts(p.get("updated_at") or p.get("last_modified_time"))
+            if p_start and p_end and p_start <= end and start <= p_end:
+                overlaps.append(p)
+    return identity(overlaps[0]) if len(overlaps) == 1 else None
+
+
+def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
+    sid = _html_esc(str(node["session_id"]))
+    model = node.get("model") or "claude-opus-5-5"
+    effort = node.get("effort") or node.get("reasoning_effort") or "high"
+    tier = node.get("tier") or node.get("service_tier") or "default"
+    pool = node.get("pool") or ""
+    badge = " Ultra" if effort in ("ultra", "max") or "ultra" in pool else " Fast" if tier == "fast" or "fast" in model or "fast" in pool else ""
+    is_terminal = node.get("status") in ("completed", "failed", "timeout", "done", "closed") or node.get("ok") is not None
+    running = (node.get("session_id") in live_ids or node.get("is_running") is True) and not is_terminal
+    age = max(0, now_sec - (_parse_any_ts(node.get("updated_at")) or now_sec))
+    dot, tip, age = _sub_status_dot_from_age(running, age)
+    tokens = node.get("token_count") or node.get("usage") or node.get("context_usage") or {}
+    total = tokens.get("total_tokens") or tokens.get("used_tokens") or sum(
+        tokens.get(k, 0) or 0 for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+    cost = node.get("cost_usd", node.get("total_cost_usd", tokens.get("cost_usd", 0))) or 0
+    title = _html_esc(node.get("display_name") or node.get("title") or node.get("spec") or "Claude worker")
+    label = _html_esc(f"{model} · {effort}{badge}")
+    return (
+        f'<div class="tree-node sub-ripening" data-node-id="node-sub-claude-{sid}" data-sub-running="{int(running)}" data-sub-age="{age}">'
+        f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-claude-{sid}\')">'
+        f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
+        f'<svg class="brand-icon" width="15" height="15"><use href="#ico-claude"/></svg>'
+        f'<span class="agent-name">{title}</span></div><div class="agent-right">'
+        f'<span class="model-pill claude" title="{label} · {_html_esc(tier)}">'
+        f'<span class="mp-full">{label}</span><span class="mp-short">{label}</span>{_effort_gauge_svg(effort)}</span>'
+        f'{_context_pill_html(fmt_k(total), float(tokens.get("percent") or 0), "green", node, running, dot)}</div></div>'
+        f'<div class="agent-detail" id="det-sub-claude-{sid}"><div class="agent-detail-row">'
+        f'<span>Claude Subagent: {sid} · cwd: {_html_esc(node.get("cwd") or "")} · {label}</span>'
+        f'<span>{total} tokens · ${float(cost):.4f}</span></div>'
+        f'<div class="agent-detail-row">{_html_esc(json.dumps(tokens, ensure_ascii=False))}</div>'
+        f'{_detail_extras_html("claude", sid)}</div></div>'
+    )
+
+
+def _worker_registry() -> dict:
+    path = os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json")
+    try:
+        import maestro
+        m_path = getattr(maestro, "SPAWN_REGISTRY_PATH", None)
+        if m_path and not m_path.startswith("/home/mjserver/"):
+            path = m_path
+    except Exception:
+        pass
+    try:
+        with open(path) as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str], set[str]]:
     """Resolve actual worker processes to sessions, never every session in a cwd."""
-    codex_ids, agy_ids = set(), set()
+    codex_ids, agy_ids, claude_ids = set(), set(), set()
+    workers = _worker_registry()
+    for path in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
+        try:
+            with open(path) as f:
+                session = json.load(f)
+            if _pid_alive(session.get("pid")):
+                sid = session.get("sessionId") or session.get("session_id")
+                if sid:
+                    claude_ids.add(sid)
+        except (OSError, ValueError, AttributeError):
+            pass
+    for key, worker in workers.items():
+        if isinstance(worker, dict) and _pid_alive(worker.get("pid")):
+            if worker.get("status") in ("completed", "failed", "timeout", "done", "closed") or worker.get("ok") is not None:
+                continue
+            provider = worker.get("provider")
+            ids = claude_ids if provider == "claude" else codex_ids if provider == "codex" else agy_ids
+            ids.add(worker.get("session_id") or key)
     try:
         processes = subprocess.check_output(
             ["ps", "-eo", "pid=,comm=,etimes="], text=True,
             stderr=subprocess.DEVNULL, timeout=2,
         )
     except (OSError, subprocess.SubprocessError):
-        return codex_ids, agy_ids
+        return codex_ids, agy_ids, claude_ids
     registry = None
     for line in processes.splitlines():
         try:
             pid, command, elapsed = line.split()
-            if command not in ("codex", "node", "python", "python3", "maestro", "agy-orca"):
+            if command not in ("codex", "node", "python", "python3", "maestro", "agy-orca", "claude"):
                 continue
             with open(f"/proc/{pid}/cmdline", "rb") as f:
                 argv = f.read().decode(errors="replace").strip("\0").split("\0")
@@ -2055,9 +2243,29 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str]]:
                 for arg in args[1:]:
                     if re.fullmatch(r"[0-9a-f-]{36}", arg):
                         codex_ids.add(arg)
-            elif tool in ("maestro", "agy-orca") and args and args[0] == "worker-start":
+            elif tool in ("claude", "claude.js", "cli.js") and ("--session-id" in args or any(a.startswith("--session-id=") for a in args) or "-p" in args or "--print" in args):
+                if "--session-id" in args:
+                    claude_ids.add(args[args.index("--session-id") + 1])
+                for arg in args:
+                    if arg.startswith("--session-id="):
+                        claude_ids.add(arg.split("=", 1)[1])
+                for key, worker in workers.items():
+                    if isinstance(worker, dict) and str(worker.get("pid")) == pid:
+                        claude_ids.add(worker.get("session_id") or key)
+            elif tool in ("maestro", "maestro.py", "agy-orca") and args and args[0] == "worker-start":
                 pool_idx = args.index("--pool")
                 pool = args[pool_idx + 1]
+                if pool in ("claude", "claude-fast", "claude-ultra", "opus", "opus-ultra", "opus-5.5-ultra"):
+                    cwd = args[args.index("--cwd") + 1] if "--cwd" in args else os.readlink(f"/proc/{pid}/cwd")
+                    spec = args[args.index("--spec") + 1] if "--spec" in args else ""
+                    matches = [w.get("session_id") or key for key, w in workers.items()
+                               if isinstance(w, dict) and w.get("provider") == "claude"
+                               and os.path.abspath(w.get("cwd") or ".") == os.path.abspath(cwd)
+                               and (spec and (w.get("spec") == spec or spec in (w.get("title") or "")))
+                               and now_sec - int(elapsed) - 2 <= float(w.get("updated_at") or 0) <= now_sec]
+                    if len(matches) == 1:
+                        claude_ids.add(matches[0])
+                    continue
                 if pool not in ("agy-claude", "agy-sonnet"):
                     continue
                 if registry is None:
@@ -2074,7 +2282,7 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str]]:
                         agy_ids.add(cid)
         except (OSError, ValueError, IndexError, TypeError):
             continue
-    return codex_ids, agy_ids
+    return codex_ids, agy_ids, claude_ids
 
 
 def _codex_rollout_paths(nodes: list[dict]) -> dict[str, str]:
@@ -2129,7 +2337,10 @@ def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], 
         or _codex_worker_is_active(child, live_ids, paths, now_sec)
         for child in (node.get("children") or [])
     )
-    if node.get("turn_completed") is True:
+    is_terminal = (node.get("status") in ("completed", "failed", "timeout", "done", "closed")
+                   or node.get("turn_completed") is True
+                   or node.get("ok") is not None)
+    if is_terminal:
         return has_running_child, max(updated_ts, rollout_ts)
     is_live_running = (max(0, now_sec - updated_ts) <= 90
                        or (rollout_ts > 0 and max(0, now_sec - rollout_ts) <= 60)
@@ -2147,7 +2358,11 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     pinned = set(state.get("pinned") or [])
     imported = set(state.get("imported") or [])
     now_sec = datetime.now().timestamp()
-    live_codex_ids, live_agy_ids = _running_worker_sessions(now_sec)
+    live_codex_ids, live_agy_ids, live_claude_ids = _running_worker_sessions(now_sec)
+    cdx_list = _merge_registry_workers(cdx_list, "codex")
+    claude_list = _merge_registry_workers(trees_raw.get("claude", []), "claude")
+    claude_list = [c for c in claude_list if c.get("session_id") in live_claude_ids
+                   or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= 1200]
     rollout_paths = _codex_rollout_paths(cdx_list)
     running_codex = [
         c for c in cdx_list
@@ -2256,12 +2471,13 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         if is_internal_cdx and not is_pinned and not is_imported:
             if is_live_running or age_sec_cdx <= 1200:
                 internal_cdx_workers.append(c)
-            closed_cdx.append(c)
+            if not c.get("registry_only"):
+                closed_cdx.append(c)
         elif (is_live_running or is_pinned or is_imported or age_days_cdx <= 7) and not is_dismissed:
             active_cdx.append(c)
             if c.get("source") == "vscode":
                 active_vscode_repos.add(_repo_from_uris_or_cwd(None, c.get("cwd") or "")[0])
-        else:
+        elif not c.get("registry_only"):
             closed_cdx.append(c)
 
     # Map maestro worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
@@ -2282,10 +2498,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         if os.path.exists(t_path):
             try:
                 with open(t_path, encoding="utf-8", errors="ignore") as tf:
-                    maestro_lines = [
-                        ln for ln in tf
-                        if any(cmd in ln for cmd in ("maestro", "agy-orca")) and "worker-start" in ln and "python3 -c" not in ln
-                    ]
+                    maestro_lines = list(tf)
                 if maestro_lines:
                     maestro_specs_by_cid[p_cid] = "\n".join(maestro_lines)
             except OSError:
@@ -2312,21 +2525,30 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 "role": w_raw or "maestro worker",
             })
 
+    parents = active_ag + active_cdx
+    for parent in active_cdx:
+        path = parent.get("rollout_path") or rollout_paths.get(parent.get("thread_id"))
+        if path:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    maestro_specs_by_cid[parent["thread_id"]] = f.read()
+            except OSError:
+                pass
     attached_cdx_workers_by_parent: dict[str, list[dict]] = {}
-    for w_cdx in internal_cdx_workers:
-        w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", ((w_cdx.get("title") or "").splitlines() or [""])[0]).strip()
-        w_key = w_raw[:24].strip()
-        w_repo, _ = _repo_from_uris_or_cwd(None, w_cdx.get("cwd") or "")
-        target_p = None
-        if len(w_key) >= 8:
-            for p_cid, specs_txt in maestro_specs_by_cid.items():
-                if w_key in specs_txt:
-                    target_p = p_cid
-                    break
-        if not target_p and w_repo not in active_vscode_repos:
-            target_p = repo_to_parent_cid.get(w_repo)
-        if target_p:
-            attached_cdx_workers_by_parent.setdefault(target_p, []).append(w_cdx)
+    attached_claude_workers_by_parent: dict[str, list[dict]] = {}
+    unattached_claude = []
+    for provider, workers, attached in (
+        ("codex", internal_cdx_workers, attached_cdx_workers_by_parent),
+        ("claude", claude_list, attached_claude_workers_by_parent),
+    ):
+        for worker in workers:
+            target = _worker_parent(worker, parents, maestro_specs_by_cid, now_sec)
+            if target:
+                attached.setdefault(target, []).append(worker)
+            elif provider == "claude":
+                unattached_claude.append(worker)
+            elif worker not in active_cdx:
+                active_cdx.append(worker)
 
     active_parts = ["<!--__ACTIVE_TREE_HTML_START__-->"]
     active_entries = []
@@ -2359,9 +2581,11 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
         extra_ag_workers = attached_ag_workers_by_parent.get(cid, [])
         extra_cdx_workers = attached_cdx_workers_by_parent.get(cid, [])
+        extra_claude_workers = attached_claude_workers_by_parent.get(cid, [])
         is_busy_ag = (
             _agy_worker_is_active(ag, live_agy_ids)
             or any(_agy_worker_is_active(c, live_agy_ids) for c in (ag.get("children") or []))
+            or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in extra_claude_workers)
             or any(_agy_worker_is_active(c, live_agy_ids) for c in extra_ag_workers)
             or any(_codex_root_activity(c, live_codex_ids, rollout_paths, now_sec)[0] for c in extra_cdx_workers)
         )
@@ -2375,7 +2599,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         br_id = f"br-act-{cid8}"
         det_id = f"det-act-{cid8}"
 
-        child_rows_html = []
+        child_rows_html = [_claude_worker_row(c, live_claude_ids, now_sec) for c in extra_claude_workers
+                           if c["session_id"] not in dismissed and f"node-sub-claude-{c['session_id']}" not in dismissed]
         sub_slot_idx = 0
         seen_ctids = set()
         for repo_codex in extra_cdx_workers:
@@ -2384,8 +2609,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 continue
             seen_ctids.add(ctid)
             rendered_codex_child_ids.add(ctid)
-            if len(seen_ctids) > 4:
-                break
             ctid_short = ctid[-8:] if len(ctid) >= 8 else ctid
             c_node_id = f"node-sub-cdx-{ctid}"
             if c_node_id in dismissed or ctid in dismissed:
@@ -2600,7 +2823,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             tctx.get("reasoning_effort") or "high",
         )
         is_live_running, updated_ts = _codex_root_activity(cdx, live_codex_ids, rollout_paths, now_sec)
-        child_rows_html = []
+        claude_children = attached_claude_workers_by_parent.get(tid, [])
+        child_rows_html = [_claude_worker_row(c, live_claude_ids, now_sec) for c in claude_children
+                           if c["session_id"] not in dismissed and f"node-sub-claude-{c['session_id']}" not in dismissed]
+        is_live_running = is_live_running or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in claude_children)
         if not cdx.get("agy_origin") or cdx.get("source") == "vscode":
             child_candidates = [
                 ch for ch in (cdx.get("children") or [])
@@ -2608,15 +2834,14 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
             ]
             child_candidates.extend(
-                ch for ch in running_codex
-                if os.path.abspath(ch.get("cwd") or ".") == os.path.abspath(cwd)
+                ch for ch in attached_cdx_workers_by_parent.get(tid, [])
             )
             seen_child_ids = {tid}
             active_children = []
             for ch in child_candidates:
                 child_tid = ch.get("thread_id", "")
                 child_node_id = f"node-sub-cdx-{tid}-{child_tid}"
-                if (not child_tid or child_tid in seen_child_ids
+                if (not child_tid or child_tid in seen_child_ids or child_tid in rendered_codex_child_ids
                         or child_tid in dismissed or child_node_id in dismissed):
                     continue
                 seen_child_ids.add(child_tid)
@@ -2695,12 +2920,19 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "html": parent_html,
         })
 
+    for worker in unattached_claude:
+        sid = worker["session_id"]
+        if sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
+            continue
+        active_entries.append({"is_main_orch": False, "is_live_running": sid in live_claude_ids,
+                               "updated_ts": _parse_any_ts(worker.get("updated_at")) or 0,
+                               "html": _claude_worker_row(worker, live_claude_ids, now_sec)})
     active_entries.sort(key=lambda item: (
         0 if item["is_main_orch"] else 1,
         0 if item["is_live_running"] else 1,
         -item["updated_ts"],
     ))
-    active_parts.extend(item["html"] for item in active_entries[:25])
+    active_parts.extend(item["html"] for item in active_entries)
     active_parts.append("<!--__ACTIVE_TREE_HTML_END__-->")
 
     # 2. Build #view-closed (recently worked on & closed/completed within 7d / 30d)

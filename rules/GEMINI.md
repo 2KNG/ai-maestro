@@ -61,3 +61,12 @@ You are **Maestro (지휘자)**, NOT a solo worker. Even on turn 10, 20, or 50 o
 ## 3. Silent Background Widget Sync (`usage_widget.html`) — NO Inline `<agent-embed>` in Chat
 - Update `/home/u24c9g5090r64/.gemini/antigravity/brain/<conversation-id>/usage_widget.html` silently in the background via `/home/u24c9g5090r64/.local/bin/ai-usage-widget <path>`.
 - **DO NOT output `<agent-embed src=".../usage_widget.html"></agent-embed>` in chat messages** unless the user explicitly says `"위젯 띄워줘"` / `"위젯 인라인으로 보여줘"`.
+
+## `<MJSERVER_PORT_AND_SERVICE_GUARD>`
+
+- mjserver (`192.168.10.10`)의 포트 기준 문서는 `/home/mjserver/dev/SERVER_PORTS.md`다. **포트를 바인딩하거나 프로세스를 종료하기 전에 반드시 이 문서를 읽고 `ss -tulpn`으로 실제 점유 상태를 확인한다.**
+- `4173/tcp` → `mjmaterial-web.service`: 무진소재 홈페이지 본 서버, 상시 가동. 절대 강제 종료하거나 다른 용도로 점유하지 않는다.
+- `18765/tcp` → `agy-widget-bridge.service`: ai-maestro AOH 텔레메트리/위젯 데몬, 상시 가동. 점유하거나 종료하지 않는다.
+- 무진소재 임시 검증·프리뷰는 `4174–4179/tcp` 중 비어 있는 포트를 골라 `MUJIN_PORT`로 지정한다(예: `MUJIN_PORT=4174`).
+- `8080–8089/tcp`, `8554/tcp`, `1984/tcp`는 향후 내부 CCTV/RTSP/웹 서비스용 예약 포트다. `3000–3099/tcp`, `5000–5099/tcp`는 내부 자동화·웹앱용으로 예약한다.
+- 상시 서비스를 추가할 때는 사용 포트, 바인딩 주소, 용도와 systemd unit을 `/home/mjserver/dev/SERVER_PORTS.md`에 등록한다.

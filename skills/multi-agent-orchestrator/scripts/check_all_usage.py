@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import tempfile
@@ -1228,6 +1229,205 @@ def _running_codex_cwds_and_snippets() -> tuple[set[str], list[str]]:
     return cwds, snippets
 
 
+
+def get_claude_agent_tree() -> list[dict]:
+    """Return up to 30 sessions updated in 24h or with a verified live PID.
+
+    Times are Unix seconds; tokens include input, output and cache tokens.
+    Streaming usage is merged by message ID before summing. Local reads only.
+    """
+    now = time.time()
+    nodes = {}
+    counters = ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                "cache_read_input_tokens")
+
+    def timestamp(value):
+        ts = _timing_timestamp(value)
+        return ts / 1000 if ts and ts > 100_000_000_000 else ts
+
+    def string(value):
+        return value.strip() if isinstance(value, str) else ""
+
+    def node_for(sid):
+        sid = string(sid)
+        if not sid:
+            return None
+        return nodes.setdefault(sid, {"id": sid, "session_id": sid,
+            "thread_id": sid, "provider": "claude", "title": "", "model": "",
+            "effort": "", "cwd": "", "created_at": None, "updated_at": None,
+            "rollout_path": "", "jsonl_path": "", "spec_preview": "",
+            "agy_origin": False, "children": [], "_pids": set(), "_usage": {},
+            "_fallback_time": 0})
+
+    def merge(node, data):
+        for key, aliases in {
+            "title": ("title", "customTitle", "summary"),
+            "model": ("model",), "effort": ("effort", "reasoning_effort", "effortLevel"),
+            "cwd": ("cwd", "workingDirectory"),
+            "spec_preview": ("spec_preview", "spec", "prompt"),
+            "status": ("status",),
+        }.items():
+            for alias in aliases:
+                value = string(data.get(alias))
+                if value:
+                    node[key] = value[:500] if key == "spec_preview" else value
+                    break
+        if data.get("ok") is not None:
+            node["ok"] = data.get("ok")
+        for key, aliases in {
+            "created_at": ("created_at", "createdAt", "startTime", "timestamp"),
+            "updated_at": ("updated_at", "updatedAt", "lastActivity", "timestamp"),
+        }.items():
+            values = [timestamp(data.get(a)) for a in aliases]
+            values = [v for v in values if v is not None]
+            if node[key] is not None:
+                values.append(node[key])
+            if values:
+                node[key] = min(values) if key == "created_at" else max(values)
+        pid = data.get("pid")
+        if not isinstance(pid, bool) and str(pid).isdigit() and int(pid) > 0:
+            node["_pids"].add(int(pid))
+
+    def remember_mtime(node, path):
+        try:
+            node["_fallback_time"] = max(node["_fallback_time"], os.path.getmtime(path))
+        except OSError:
+            pass
+
+    for path in sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))):
+        default_sid = os.path.basename(path)[:-6]
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for index, line in enumerate(handle):
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue  # A writer may still be appending the last record.
+                    if not isinstance(event, dict):
+                        continue
+                    node = node_for(event.get("sessionId") or event.get("session_id") or default_sid)
+                    if node is None:
+                        continue
+                    merge(node, event)
+                    remember_mtime(node, path)
+                    node["rollout_path"] = node["jsonl_path"] = path
+                    message = event.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    if event.get("type") == "user" and not node["spec_preview"]:
+                        content = message.get("content")
+                        if isinstance(content, list):
+                            content = " ".join(string(b.get("text")) for b in content
+                                               if isinstance(b, dict) and b.get("type") == "text")
+                        node["spec_preview"] = string(content)[:500]
+                    if event.get("type") != "assistant":
+                        continue
+                    merge(node, message)
+                    usage = message.get("usage")
+                    if not isinstance(usage, dict):
+                        continue
+                    mid = string(message.get("id")) or string(event.get("uuid")) or f"{path}:{index}"
+                    totals = node["_usage"].setdefault(mid, {})
+                    for key in counters:
+                        value = usage.get(key)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+                            totals[key] = max(totals.get(key, 0), int(value))
+        except OSError:
+            continue
+
+    for path in sorted(glob.glob(os.path.expanduser("~/.claude/sessions/*.json"))):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        node = node_for(data.get("sessionId") or data.get("session_id") or data.get("id"))
+        if node is not None:
+            merge(node, data)
+            remember_mtime(node, path)
+
+    for sid, data in _load_agy_spawn_registry().items():
+        if not isinstance(data, dict) or data.get("provider") != "claude":
+            continue
+        node = node_for(data.get("session_id") or data.get("sessionId") or sid)
+        if node is not None:
+            merge(node, data)
+            node["agy_origin"] = True
+
+    # Exact CLI options avoid matching session IDs merely mentioned in prompts.
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=,args="], text=True, stderr=subprocess.DEVNULL, timeout=2)
+        for line in output.splitlines():
+            try:
+                pid_text, command = line.strip().split(None, 1)
+                args = shlex.split(command)
+            except ValueError:
+                continue
+            if not pid_text.isdigit() or not args:
+                continue
+            executable = os.path.basename(args[0])
+            is_claude = executable in ("claude", "claude.exe") or (
+                executable in ("node", "nodejs", "bun") and len(args) > 1 and
+                ("claude" in args[1] and args[1].endswith((".js", "/claude"))))
+            if not is_claude:
+                continue
+            for i, arg in enumerate(args):
+                option, _, inline = arg.partition("=")
+                if option not in ("--session-id", "--resume", "-r"):
+                    continue
+                sid = inline or (args[i + 1] if i + 1 < len(args) else "")
+                if sid in nodes:
+                    nodes[sid]["_pids"].add(int(pid_text))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    live_pids = {}
+
+    def alive(pid):
+        if pid not in live_pids:
+            try:
+                os.kill(pid, 0)
+                live_pids[pid] = True
+            except PermissionError:
+                live_pids[pid] = True
+            except (OSError, OverflowError):
+                live_pids[pid] = False
+        return live_pids[pid]
+
+    result = []
+    for node in nodes.values():
+        pids = sorted(node.pop("_pids"))
+        live = [pid for pid in pids if alive(pid)]
+        fallback = node.pop("_fallback_time")
+        node["updated_at"] = node["updated_at"] or node["created_at"] or fallback
+        node["created_at"] = node["created_at"] or node["updated_at"]
+        if not live and node["updated_at"] < now - 86400:
+            continue
+        node["pid"] = live[0] if live else (pids[0] if pids else None)
+        is_term = node.get("status") in ("completed", "failed", "timeout", "done", "closed") or node.get("ok") is not None
+        if is_term:
+            node["running"] = node["is_running"] = False
+            node["status"] = node.get("status") or "closed"
+        else:
+            node["running"] = node["is_running"] = bool(live)
+            node["status"] = "running" if live else "closed"
+        messages = node.pop("_usage")
+        node["usage"] = {key: sum(m.get(key, 0) for m in messages.values()) for key in counters}
+        node["tokens"] = sum(node["usage"].values())
+        node["usage"]["total_tokens"] = node["tokens"]
+        node["token_count"] = {"total_tokens": node["tokens"],
+                               "input_tokens": node["usage"]["input_tokens"],
+                               "output_tokens": node["usage"]["output_tokens"]}
+        node["title"] = node["title"] or node["spec_preview"].split("\n", 1)[0][:120] or "Claude Session"
+        node["display_name"] = node["title"]
+        node["turn_context"] = {"model": node["model"], "reasoning_effort": node["effort"]}
+        result.append(node)
+    return sorted(result, key=lambda n: (-n["updated_at"], n["id"]))[:30]
+
+
 def get_codex_agent_tree(db_path: str = "~/.codex/state_5.sqlite", max_parents: int = 12, max_children: int = 4) -> list[dict]:
     db_full = os.path.expanduser(db_path)
     if not os.path.exists(db_full):
@@ -1567,6 +1767,7 @@ def collect_usage(include_agent_trees=True) -> dict:
         report["agent_trees"] = {
             "antigravity": get_antigravity_agent_tree(),
             "codex": get_codex_agent_tree(),
+            "claude": get_claude_agent_tree(),
         }
     return report
 

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec python3 "/home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/check_all_usage.py" "$@"
+exec python3 "/home/mjserver/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/check_all_usage.py" "$@"

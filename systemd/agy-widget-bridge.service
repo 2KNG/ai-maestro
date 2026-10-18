@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/env python3 /home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/widget_bridge_daemon.py
+ExecStart=/usr/bin/env python3 /home/mjserver/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/widget_bridge_daemon.py
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/home/u24c9g5090r64/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/mjserver/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

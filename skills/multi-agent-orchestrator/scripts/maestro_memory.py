@@ -340,11 +340,54 @@ def notify_long_task_completion(
 
 
 def extract_session_log_tail(provider: str, session_id: str, max_lines: int = 25) -> dict:
-    """On-demand lightweight log tail extractor for Codex rollout .jsonl or Antigravity trajectory."""
+    """On-demand log tail for Claude/Codex transcripts or Antigravity trajectories."""
     provider = (provider or "").lower()
     session_id = (session_id or "").strip()
     if not session_id:
         return {"ok": False, "error": "session_id required", "lines": []}
+
+    if provider == "claude":
+        # Match a filename, never interpolate a request parameter into a path/glob.
+        projects = Path(os.path.expanduser("~/.claude/projects"))
+        transcripts = [p for p in projects.glob("*/*.jsonl") if p.stem == session_id]
+        if not transcripts:
+            return {"ok": False, "error": "Claude transcript not found", "lines": []}
+        lines_out = []
+        try:
+            path = max(transcripts, key=lambda p: p.stat().st_mtime)
+            with path.open("rb") as transcript:
+                transcript.seek(0, os.SEEK_END)
+                transcript.seek(max(0, transcript.tell() - 131072))
+                raw_lines = transcript.read().decode("utf-8", errors="replace").splitlines()
+            for raw in raw_lines:
+                try:
+                    obj = json.loads(raw)
+                    if not isinstance(obj, dict):
+                        continue
+                    message = obj.get("message") or {}
+                    if not isinstance(message, dict):
+                        continue
+                    content = message.get("content") or []
+                    if isinstance(content, str):
+                        content = [{"type": "text", "text": content}]
+                    if not isinstance(content, list):
+                        continue
+                    timestamp = str(obj.get("timestamp") or "")[11:19]
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "tool_use":
+                            lines_out.append(f"[{timestamp}] 🔧 도구 호출: {str(block.get('name') or 'tool')[:100]}")
+                        elif block.get("type") == "text":
+                            text = str(block.get("text") or "").strip().replace("\n", " ")
+                            if text:
+                                lines_out.append(f"[{timestamp}] {message.get('role') or obj.get('type') or 'message'}: {text[:120]}")
+                except (ValueError, TypeError):
+                    continue
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "lines": []}
+        return {"ok": True, "provider": provider, "session_id": session_id,
+                "lines": lines_out[-max(1, max_lines):] or ["(아직 기록된 도구/출력 이벤트가 없습니다)"]}
 
     if provider == "codex":
         db_path = os.path.expanduser("~/.codex/state_5.sqlite")

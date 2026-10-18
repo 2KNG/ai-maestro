@@ -185,18 +185,33 @@ def make_agy_title(spec: str, cwd: str) -> str:
     return f"{AGY_PREFIX} {short}"
 
 
-def record_spawned_session(session_id: str, info: dict) -> None:
+def record_spawned_session(session_id: str, info: dict, *, replace_session_id: str | None = None) -> None:
+    """Merge under a stable lock; atomically publish for lock-free readers."""
+    import fcntl
+    import tempfile
+    temporary = None
     try:
         os.makedirs(os.path.dirname(SPAWN_REGISTRY_PATH), exist_ok=True)
-        reg = {}
-        if os.path.exists(SPAWN_REGISTRY_PATH):
-            with open(SPAWN_REGISTRY_PATH, "r", encoding="utf-8") as f:
-                reg = json.load(f)
-        reg[session_id] = {**reg.get(session_id, {}), **info, "updated_at": int(time.time())}
-        with open(SPAWN_REGISTRY_PATH, "w", encoding="utf-8") as f:
-            json.dump(reg, f, ensure_ascii=False, indent=2)
+        with open(SPAWN_REGISTRY_PATH + ".lock", "a", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            reg = {}
+            if os.path.exists(SPAWN_REGISTRY_PATH):
+                with open(SPAWN_REGISTRY_PATH, "r", encoding="utf-8") as f:
+                    reg = json.load(f)
+            previous = reg.pop(replace_session_id, {}) if replace_session_id else {}
+            reg[session_id] = {**previous, **reg.get(session_id, {}), **info,
+                               "session_id": session_id, "updated_at": int(time.time())}
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                             dir=os.path.dirname(SPAWN_REGISTRY_PATH), delete=False) as f:
+                temporary = f.name
+                json.dump(reg, f, ensure_ascii=False, indent=2)
+            os.replace(temporary, SPAWN_REGISTRY_PATH)
+            temporary = None
     except Exception:
         pass
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
 
 
 def stamp_codex_db_titles(since_ts: int, agy_title: str, abs_cwd: str) -> list[str]:
@@ -364,7 +379,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     started = time.monotonic()
 
     def command():
-        return ["/home/u24c9g5090r64/.local/bin/claude", "-p",
+        return [os.path.expanduser("~/.local/bin/claude"), "-p",
                 "--dangerously-skip-permissions", "--model", model,
                 "--effort", "max" if selected_effort in ("ultra", "max") else selected_effort,
                 "--session-id", session_id, prompt]
@@ -372,13 +387,20 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     result = {"pool": pool, "title": title, "cwd": abs_cwd,
               "session_id": session_id, "handover_injected": bool(handover),
               "tier": "fast" if fast else "default"}
+
+    def register(status, **extra):
+        record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
+                                           "effort": selected_effort, "spec_preview": spec[:160],
+                                           "started_at": started_at, "status": status, **extra})
+
+    started_at = int(time.time())
+    register("running")
     try:
         if not wait:
             with tempfile.NamedTemporaryFile(prefix="maestro-claude-", suffix=".log", delete=False) as log:
                 proc = subprocess.Popen(command(), cwd=abs_cwd, stdin=subprocess.DEVNULL,
                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
-                                               "effort": selected_effort, "pid": proc.pid})
+            register("running", pid=proc.pid)
             return {**result, "ok": True, "status": "running", "model": model,
                     "effort": selected_effort, "pid": proc.pid, "log_path": log.name}
 
@@ -391,11 +413,14 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
             "does not support", "there's an issue with the selected model",
         ))
         if fast and proc.returncode != 0 and unsupported:
+            register("failed", ok=False, stderr=(proc.stderr or "").strip()[-1000:])
             result["fallback_from"] = model
             model, selected_effort = "claude-opus-5-5", "medium"
             result["tier"] = "default"
             session_id = str(uuid.uuid4())
             result["session_id"] = session_id
+            started_at = int(time.time())
+            register("running")
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command(), timeout)
@@ -404,7 +429,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         result.update(ok=proc.returncode == 0, model=model, effort=selected_effort,
                       elapsed_sec=round(time.monotonic() - started, 2), output=output,
                       stderr=(proc.stderr or "").strip()[-1000:])
-        record_spawned_session(session_id, {**result, "provider": "claude"})
+        register("completed" if proc.returncode == 0 else "failed")
         if output:
             maestro_memory.save_handover_note(cwd=abs_cwd, pool=pool, model=f"{model} ({selected_effort})",
                                            title=title, summary=output[:280], session_id=session_id)
@@ -413,6 +438,8 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
                                                ok=result["ok"], min_elapsed_sec=60.0)
         return result
     except (OSError, subprocess.TimeoutExpired) as exc:
+        register("timeout" if isinstance(exc, subprocess.TimeoutExpired) else "failed",
+                 ok=False, error=str(exc))
         return {**result, "ok": False, "model": model, "effort": selected_effort, "error": str(exc)}
 
 
@@ -467,6 +494,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
                        urgent: bool = False, background: bool = False) -> dict:
     import shutil
     import threading
+    import uuid
     import maestro_memory
     abs_cwd = os.path.abspath(cwd)
     model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
@@ -498,14 +526,36 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         tagged_spec,
     ]
     t0 = int(time.time())
+    temporary_sid = f"codex-{uuid.uuid4()}"
+    registration = {"provider": "codex", "pool": pool, "model": model,
+                    "effort": effort, "tier": tier, "cwd": abs_cwd, "title": agy_title,
+                    "spec_preview": spec[:160], "started_at": t0, "status": "running"}
+    record_spawned_session(temporary_sid, registration)
+    registration_lock = threading.Lock()
+    thread_ids = []
+
+    def stamp_and_register(status=None, **extra):
+        # Serialize the timer with finalization so a late callback cannot revive a worker.
+        with registration_lock:
+            if status is not None:
+                registration.update(status=status, **extra)
+            for tid in stamp_codex_db_titles(t0, agy_title, abs_cwd):
+                if tid not in thread_ids:
+                    thread_ids.append(tid)
+            for tid in thread_ids or [temporary_sid]:
+                record_spawned_session(tid, registration, replace_session_id=temporary_sid)
+            return list(thread_ids)
+
     # Stamp the SQLite thread row right after codex creates it (so it shows [AGY] even while running!)
-    threading.Timer(2.5, stamp_codex_db_titles, args=(t0, agy_title, abs_cwd)).start()
+    timer = threading.Timer(2.5, stamp_and_register)
+    timer.start()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
-        stamped = stamp_codex_db_titles(t0, agy_title, abs_cwd)
+        stamped = stamp_and_register("completed" if proc.returncode == 0 else "failed",
+                                     ok=proc.returncode == 0)
         elapsed = round(time.time() - t0, 2)
         out_txt = (proc.stdout or "").strip()[-4000:]
-        sid = stamped[0] if stamped else f"codex-{t0}"
+        sid = stamped[0] if stamped else temporary_sid
         if out_txt:
             maestro_memory.save_handover_note(
                 cwd=abs_cwd,
@@ -539,7 +589,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             "stderr": (proc.stderr or "").strip()[-1000:],
         }
     except subprocess.TimeoutExpired as e:
-        stamped = stamp_codex_db_titles(t0, agy_title, abs_cwd)
+        stamped = stamp_and_register("timeout", ok=False, error=f"Timeout after {timeout}s")
         return {
             "ok": False,
             "pool": pool,
@@ -548,6 +598,12 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             "error": f"Timeout after {timeout}s",
             "output": (e.stdout or "")[-2000:] if e.stdout else "",
         }
+    except OSError as e:
+        stamped = stamp_and_register("failed", ok=False, error=str(e))
+        return {"ok": False, "pool": pool, "title": agy_title,
+                "thread_ids": stamped, "error": str(e)}
+    finally:
+        timer.cancel()
 
 
 def sync_all_widgets() -> dict:
