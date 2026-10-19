@@ -45,18 +45,27 @@ def main() -> int:
     except Exception:
         payload = {}
     event = (sys.argv[1] if len(sys.argv) > 1 else "") or payload.get("hook_event_name") or payload.get("event") or "PreInvocation"
+
+    # Immediately bypass if running inside an active sub-worker (prevents blocking worker execution)
+    if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1":
+        if event in ("PreToolUse", "BeforeTool"):
+            print('{"decision":"allow"}')
+        return 0
+
     is_agy = "conversationId" in payload or "toolCall" in payload
     session_id = str(payload.get("conversationId") or payload.get("session_id") or "default")
     st = _load_session_state(session_id)
 
     if event in ("PreInvocation", "UserPromptSubmit", "BeforeAgent", "SessionStart"):
+        prev_streak = int(st.get("solo_streak", 0))
         st["solo_streak"] = 0
         st["delegated_in_turn"] = False
         _save_session_state(session_id, st)
         if is_agy:
             print('{"decision":"allow"}')
         else:
-            print("[🎼 MAESTRO HARNESS] <thought>는 3~4줄 이내로 끝내고 첫 툴로 invoke_subagent(Model='flash') 또는 maestro worker-start에 즉시 위임할 것.")
+            if prev_streak >= 2:
+                print("[🎼 MAESTRO HARNESS] 단독 작업이 연속되었습니다. 첫 툴로 위임 도구(invoke_subagent / maestro worker-start)를 사용하세요.")
         return 0
 
     if event in ("PreToolUse", "BeforeTool"):
