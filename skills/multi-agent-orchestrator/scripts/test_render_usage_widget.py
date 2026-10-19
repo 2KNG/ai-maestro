@@ -120,10 +120,10 @@ class RenderingTests(unittest.TestCase):
             self.assertIn('└─', active[pos_cron - 350:pos_cron])
             self.assertIn('├─', active[pos_run_sub - 350:pos_run_sub])
 
-            # 3. Cron indicator: calm idle-fresh status dot, ctx-time-txt with ⏱ 15m ↻
+            # 3. Cron indicator: calm idle-fresh status dot, SVG repeat icon, ctx-time-txt with ⏱ 15m
             self.assertIn('status-dot idle-fresh', active[pos_cron - 350:pos_cron])
-            self.assertIn('⏱ 15m ↻', active)
-            self.assertIn('<span class="ctx-time-txt">⏱ 15m ↻</span>', active)
+            self.assertIn('ctx-repeat-ico', active[pos_cron:pos_cron + 1000])
+            self.assertIn('<span class="ctx-time-txt">⏱ 15m</span>', active[pos_cron:pos_cron + 1000])
 
     def test_cron_alone_does_not_force_parent_running(self):
         now = datetime.now(timezone.utc)
@@ -238,27 +238,27 @@ class RenderingTests(unittest.TestCase):
 
     def test_cron_quote_and_hourly_formatting(self):
         badge, tooltip = widget._fmt_cron_short('"7 * * * *"')
-        self.assertEqual(badge, '⏱ 1h ↻')
+        self.assertEqual(badge, '⏱ 1h')
         self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('7 * * * *')
-        self.assertEqual(badge, '⏱ 1h ↻')
+        self.assertEqual(badge, '⏱ 1h')
         self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('"0 */2 * * *"')
-        self.assertEqual(badge, '⏱ 2h ↻')
+        self.assertEqual(badge, '⏱ 2h')
         self.assertEqual(tooltip, '주기: 0 */2 * * *')
 
         badge, tooltip = widget._fmt_cron_short('"0 * * * *"')
-        self.assertEqual(badge, '⏱ 1h ↻')
+        self.assertEqual(badge, '⏱ 1h')
         self.assertEqual(tooltip, '매시간 정각 (0 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('0 0 * * *')
-        self.assertEqual(badge, '⏱ 1d ↻')
+        self.assertEqual(badge, '⏱ 1d')
         self.assertEqual(tooltip, '매일 (0 0 * * *)')
 
         badge, tooltip = widget._fmt_cron_short('')
-        self.assertEqual(badge, '⏱ ↻')
+        self.assertEqual(badge, '⏱ 반복')
         self.assertEqual(tooltip, '정기 실행 대기')
 
     def test_stale_subagent_over_180s_not_active(self):

@@ -1504,6 +1504,9 @@
       justify-content: center;
       font-weight: 500;
     }
+    .ctx-pill.bg-time:has(.ctx-repeat-ico), .ctx-pill.has-repeat-ico {
+      justify-content: flex-start;
+    }
     .row-actions.bg-actions {
       justify-content: flex-end;
       gap: 5px;
@@ -1979,6 +1982,8 @@
     .ctx-vbar .ctx-vbar-fill.ok { background: #54c9a0; }
     .ctx-vbar .ctx-vbar-fill.warn { background: #e9b45b; }
     .ctx-vbar .ctx-vbar-fill.crit { background: #ef7a85; }
+    .ctx-repeat-ico { width: 11px; height: 11px; flex: none; color: #54c9a0; opacity: 0.95; }
+    html.light .ctx-repeat-ico { color: #059669; }
     .agent-row .ctx-pill {
       background: transparent !important; border: none !important; padding: 0 2px !important;
     }

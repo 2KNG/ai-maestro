@@ -977,6 +977,9 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .ctx-vbar .ctx-vbar-fill.ok { background: #54c9a0; }
     .ctx-vbar .ctx-vbar-fill.warn { background: #e9b45b; }
     .ctx-vbar .ctx-vbar-fill.crit { background: #ef7a85; }
+    .ctx-repeat-ico { width: 11px; height: 11px; flex: none; color: #54c9a0; opacity: 0.95; }
+    html.light .ctx-repeat-ico { color: #059669; }
+    .ctx-pill.has-repeat-ico { justify-content: flex-start !important; }
     .agent-row .ctx-pill {
       background: transparent !important; border: none !important; padding: 0 2px !important;
     }
@@ -1893,35 +1896,35 @@ def _sub_prefix_html(
 def _fmt_cron_short(expr: str) -> tuple[str, str]:
     e = (expr or "").strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
     if not e:
-        return "⏱ ↻", "정기 실행 대기"
+        return "⏱ 반복", "정기 실행 대기"
     if e in ("@hourly", "0 * * * *"):
-        return "⏱ 1h ↻", f"매시간 정각 ({e})"
+        return "⏱ 1h", f"매시간 정각 ({e})"
     if e in ("@daily", "0 0 * * *"):
-        return "⏱ 1d ↻", f"매일 ({e})"
+        return "⏱ 1d", f"매일 ({e})"
     m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", e)
     if m:
-        return f"⏱ {m.group(1)}m ↻", f"{m.group(1)}분마다 ({e})"
+        return f"⏱ {m.group(1)}m", f"{m.group(1)}분마다 ({e})"
     parts = e.split()
     if len(parts) == 5:
         if parts[0] == "0" and parts[1] == "0" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
-            return "⏱ 1d ↻", f"매일 ({e})"
+            return "⏱ 1d", f"매일 ({e})"
         if parts[0].isdigit() and parts[1] == "*" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
             ko_tip = f"매시간 정각 ({e})" if parts[0] == "0" else f"매시 {parts[0]}분 ({e})"
-            return "⏱ 1h ↻", ko_tip
+            return "⏱ 1h", ko_tip
         if parts[0].isdigit() and parts[1].startswith("*/"):
-            return f"⏱ {parts[1][2:]}h ↻", f"주기: {e}"
+            return f"⏱ {parts[1][2:]}h", f"주기: {e}"
     m_hr = re.match(r"^0\s+\*/(\d+)\s+\*\s+\*\s+\*$", e)
     if m_hr:
-        return f"⏱ {m_hr.group(1)}h ↻", f"{m_hr.group(1)}시간마다 ({e})"
+        return f"⏱ {m_hr.group(1)}h", f"{m_hr.group(1)}시간마다 ({e})"
     m_day = re.match(r"^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$", e)
     if m_day:
         h = int(m_day.group(2))
         m_min = int(m_day.group(1))
         if h == 0 and m_min == 0:
-            return "⏱ 1d ↻", f"매일 ({e})"
+            return "⏱ 1d", f"매일 ({e})"
         hm = f"{h:02d}:{m_min:02d}"
-        return f"⏱ {hm} ↻", f"매일 {hm} ({e})"
-    return f"⏱ {e[:8]} ↻", f"주기: {e}"
+        return f"⏱ {hm}", f"매일 {hm} ({e})"
+    return f"⏱ {e[:8]}", f"주기: {e}"
 
 def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, str]:
     """Return (left_tag, kind_label, time_col_str, detail_timing_ko) with zero LLM token overhead."""
@@ -2931,11 +2934,26 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="mp-short">{_html_esc(bt_kind_lbl)}</span>'
                 f'</span>'
             )
-            bt_time_cls = f"ctx-pill bg-time {bt_dot}"
-            bt_time_pill = (
-                f'<span class="{bt_time_cls}" title="{_html_esc(bt_timing_ko)}">'
-                f'<span class="ctx-time-txt">{_html_esc(bt_time_str)}</span></span>'
-            )
+            if bt_kind == "cron":
+                repeat_svg = (
+                    '<svg class="ctx-repeat-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" '
+                    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+                    '<path d="M11.5 2.5L14 5l-2.5 2.5"/><path d="M2 8V6a1 1 0 0 1 1-1h11"/>'
+                    '<path d="M4.5 13.5L2 11l2.5-2.5"/><path d="M14 8v2a1 1 0 0 1-1 1H2"/>'
+                    '</svg>'
+                )
+                bt_time_cls = f"ctx-pill bg-time {bt_dot} has-repeat-ico"
+                bt_time_pill = (
+                    f'<span class="{bt_time_cls}" title="{_html_esc(bt_timing_ko)}">'
+                    f'{repeat_svg}'
+                    f'<span class="ctx-time-txt">{_html_esc(bt_time_str)}</span></span>'
+                )
+            else:
+                bt_time_cls = f"ctx-pill bg-time {bt_dot}"
+                bt_time_pill = (
+                    f'<span class="{bt_time_cls}" title="{_html_esc(bt_timing_ko)}">'
+                    f'<span class="ctx-time-txt">{_html_esc(bt_time_str)}</span></span>'
+                )
             return (
                 f'<div class="{node_cls}" data-node-id="{bt_node_id}" data-bg-kind="{bt_kind}">'
                 f'<div class="agent-row child bg-task-row" onclick="toggleDetail(\'det-bg-{cid8}-{bt_id}\')">'
