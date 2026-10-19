@@ -2379,17 +2379,6 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str], set[st
                         agy_ids.add(cid)
         except (OSError, ValueError, IndexError, TypeError):
             continue
-    try:
-        for t_path in glob.glob(os.path.expanduser("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl")):
-            try:
-                if 0 <= now_sec - os.path.getmtime(t_path) <= 45:
-                    parts = t_path.split(os.sep)
-                    if len(parts) >= 4:
-                        agy_ids.add(parts[-4])
-            except OSError:
-                pass
-    except Exception:
-        pass
     return codex_ids, agy_ids, claude_ids
 
 
@@ -2426,19 +2415,8 @@ def _codex_worker_is_active(node: dict, live_ids: set[str], paths: dict[str, str
 
 
 def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
-    if str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING") or node.get("is_running") is True:
-        return True
-    cid = node.get("conversation_id")
-    if cid and cid in live_ids:
-        return True
-    if cid:
-        t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
-        try:
-            if os.path.exists(t_path) and time.time() - os.path.getmtime(t_path) <= 60:
-                return True
-        except OSError:
-            pass
-    return False
+    return (str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING")
+            or node.get("is_running") is True or node.get("conversation_id") in live_ids)
 
 
 def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], now_sec: float) -> tuple[bool, float]:

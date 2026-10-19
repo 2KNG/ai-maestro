@@ -3553,8 +3553,13 @@
           }
           const oldRow = existingNode.querySelector(':scope > .agent-row');
           const newRow = newNode.querySelector(':scope > .agent-row');
-          if (oldRow && newRow && oldRow.innerHTML !== newRow.innerHTML) {
-            oldRow.innerHTML = newRow.innerHTML;
+          const pRunningChanged = (existingNode.dataset.running || '0') !== (newNode.dataset.running || '0');
+          if (oldRow && newRow) {
+            if (pRunningChanged) {
+              oldRow.innerHTML = newRow.innerHTML;
+            } else {
+              patchAgentRowInPlace(oldRow, newRow, false);
+            }
           }
           const oldDet = existingNode.querySelector(':scope > .agent-detail');
           const newDet = newNode.querySelector(':scope > .agent-detail');
@@ -3580,18 +3585,67 @@
       return true;
     }
 
-    function normalizeRowSig(row) {
-      if (!row) return '';
-      const clone = row.cloneNode(true);
-      clone.querySelectorAll('.status-dot').forEach(d => {
-        d.className = 'status-dot';
-        d.removeAttribute('title');
-      });
-      clone.querySelectorAll('.ctx-pill').forEach(p => {
-        p.className = 'ctx-pill';
-        p.removeAttribute('title');
-      });
-      return clone.innerHTML;
+    function patchAgentRowInPlace(oldRow, newRow, isSub) {
+      if (!oldRow || !newRow) return;
+
+      const oName = oldRow.querySelector('.agent-name');
+      const nName = newRow.querySelector('.agent-name');
+      if (oName && nName && oName.textContent !== nName.textContent) {
+        oName.textContent = nName.textContent;
+      }
+
+      const oPill = oldRow.querySelector('.model-pill');
+      const nPill = newRow.querySelector('.model-pill');
+      if (oPill && nPill && (oPill.className !== nPill.className || oPill.innerHTML !== nPill.innerHTML)) {
+        oPill.className = nPill.className;
+        oPill.innerHTML = nPill.innerHTML;
+        oPill.title = nPill.title;
+      }
+
+      const oDot = oldRow.querySelector('.status-dot');
+      const nDot = newRow.querySelector('.status-dot');
+      if (oDot && nDot) {
+        const isClientRipening = isSub && !nDot.classList.contains('busy') && !oDot.classList.contains('busy');
+        if (!isClientRipening) {
+          if (oDot.className !== nDot.className) {
+            oDot.className = nDot.className;
+          }
+          if (oDot.title !== nDot.title) {
+            oDot.title = nDot.title;
+          }
+        }
+      }
+
+      const oCtx = oldRow.querySelector('.ctx-pill');
+      const nCtx = newRow.querySelector('.ctx-pill');
+      if (oCtx && nCtx) {
+        const isClientRipening = isSub && !nCtx.classList.contains('busy') && !oCtx.classList.contains('busy');
+        if (!isClientRipening) {
+          if (oCtx.className !== nCtx.className) {
+            oCtx.className = nCtx.className;
+          }
+          if (oCtx.title !== nCtx.title) {
+            oCtx.title = nCtx.title;
+          }
+        }
+        const oVFill = oCtx.querySelector('.ctx-vbar-fill');
+        const nVFill = nCtx.querySelector('.ctx-vbar-fill');
+        if (oVFill && nVFill) {
+          if (oVFill.className !== nVFill.className) oVFill.className = nVFill.className;
+          if (oVFill.style.height !== nVFill.style.height) oVFill.style.height = nVFill.style.height;
+        }
+        const oTime = oCtx.querySelector('.ctx-time-txt');
+        const nTime = nCtx.querySelector('.ctx-time-txt');
+        if (oTime && nTime && oTime.textContent !== nTime.textContent) {
+          oTime.textContent = nTime.textContent;
+        }
+      }
+
+      const oAct = oldRow.querySelector('.row-actions');
+      const nAct = newRow.querySelector('.row-actions');
+      if (oAct && nAct && oAct.innerHTML !== nAct.innerHTML) {
+        oAct.innerHTML = nAct.innerHTML;
+      }
     }
 
     function reconcileBranchChildren(oldBr, newBr) {
@@ -3634,8 +3688,10 @@
           const nRow = newChild.querySelector(':scope > .agent-row');
           const runningChanged = (oldChild.dataset.subRunning || '0') !== (newChild.dataset.subRunning || '0');
           if (oRow && nRow) {
-            if (runningChanged || normalizeRowSig(oRow) !== normalizeRowSig(nRow)) {
+            if (runningChanged) {
               oRow.innerHTML = nRow.innerHTML;
+            } else {
+              patchAgentRowInPlace(oRow, nRow, true);
             }
           }
           if (newChild.dataset.subAge !== undefined) {
@@ -3850,12 +3906,16 @@
           tip = `🟡 SUB 숙성 · 노랑 단계 (${age}s / 30s · ${rem}s 후 증발)`;
         }
         if (dot) {
-          dot.className = `status-dot ${cls}`;
+          if (!dot.classList.contains(cls)) {
+            dot.className = `status-dot ${cls}`;
+          }
           dot.title = tip;
         }
         if (pill) {
-          pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
-          pill.classList.add(cls);
+          if (!pill.classList.contains(cls)) {
+            pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
+            pill.classList.add(cls);
+          }
           if (pill.dataset.baseTitle === undefined) pill.dataset.baseTitle = pill.title || '';
           pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;
         }

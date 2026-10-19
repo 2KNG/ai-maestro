@@ -1148,8 +1148,6 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
         if os.path.exists(t_path):
             try:
                 t_mtime = os.path.getmtime(t_path)
-                if time.time() - t_mtime <= 60:
-                    status = "CASCADE_RUN_STATUS_RUNNING"
                 t_iso = datetime.datetime.fromtimestamp(t_mtime, timezone.utc).isoformat()
                 if not last_mod or t_iso > last_mod:
                     last_mod = t_iso
