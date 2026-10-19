@@ -3605,28 +3605,37 @@
       const oDot = oldRow.querySelector('.status-dot');
       const nDot = newRow.querySelector('.status-dot');
       if (oDot && nDot) {
-        const isClientRipening = isSub && !nDot.classList.contains('busy') && !oDot.classList.contains('busy');
-        if (!isClientRipening) {
-          if (oDot.className !== nDot.className) {
-            oDot.className = nDot.className;
+        if (isSub) {
+          if (nDot.classList.contains('busy')) {
+            if (!oDot.classList.contains('busy')) {
+              oDot.className = nDot.className;
+              oDot.title = nDot.title;
+            }
+          } else {
+            if (oDot.classList.contains('busy')) {
+              oDot.className = 'status-dot idle-fresh';
+            }
+            // Non-running subagent: tickSubRipening is the SOLE owner of ripening classes!
           }
-          if (oDot.title !== nDot.title) {
-            oDot.title = nDot.title;
-          }
+        } else {
+          if (oDot.className !== nDot.className) oDot.className = nDot.className;
+          if (oDot.title !== nDot.title) oDot.title = nDot.title;
         }
       }
 
       const oCtx = oldRow.querySelector('.ctx-pill');
       const nCtx = newRow.querySelector('.ctx-pill');
       if (oCtx && nCtx) {
-        const isClientRipening = isSub && !nCtx.classList.contains('busy') && !oCtx.classList.contains('busy');
-        if (!isClientRipening) {
-          if (oCtx.className !== nCtx.className) {
-            oCtx.className = nCtx.className;
+        if (isSub) {
+          if (nCtx.classList.contains('busy')) {
+            if (!oCtx.classList.contains('busy')) oCtx.className = nCtx.className;
+          } else {
+            if (oCtx.classList.contains('busy')) oCtx.className = 'ctx-pill idle-fresh';
+            // Non-running subagent: tickSubRipening is the SOLE owner of ripening classes!
           }
-          if (oCtx.title !== nCtx.title) {
-            oCtx.title = nCtx.title;
-          }
+        } else {
+          if (oCtx.className !== nCtx.className) oCtx.className = nCtx.className;
+          if (oCtx.title !== nCtx.title) oCtx.title = nCtx.title;
         }
         const oVFill = oCtx.querySelector('.ctx-vbar-fill');
         const nVFill = nCtx.querySelector('.ctx-vbar-fill');
@@ -3636,8 +3645,10 @@
         }
         const oTime = oCtx.querySelector('.ctx-time-txt');
         const nTime = nCtx.querySelector('.ctx-time-txt');
-        if (oTime && nTime && oTime.textContent !== nTime.textContent) {
-          oTime.textContent = nTime.textContent;
+        if (oTime && nTime) {
+          if (nTime.dataset.startTs) oTime.dataset.startTs = nTime.dataset.startTs;
+          if (nTime.dataset.durLabel) oTime.dataset.durLabel = nTime.dataset.durLabel;
+          if (nTime.dataset.clockLabel) oTime.dataset.clockLabel = nTime.dataset.clockLabel;
         }
       }
 
@@ -3871,12 +3882,43 @@
       } catch (_) {}
     }
 
+    const ripenStartMap = new Map();
+
+    function formatSecCompact(sec) {
+      sec = Math.max(1, Math.floor(sec));
+      if (sec >= 3600) {
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+      }
+      if (sec >= 60) {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+      }
+      return sec + 's';
+    }
+
     function tickSubRipening() {
+      const nowSec = Date.now() / 1000;
       let changedTree = false;
+
+      // 1. Monotonic ripening for subagent dots and pills
       document.querySelectorAll('#view-active .tree-node.sub-ripening').forEach(node => {
         if (node.classList.contains('hidden') || node.classList.contains('sub-evaporating') || node.dataset.exiting === '1') return;
         if (node.dataset.subRunning === '1') return;
-        const age = Number(node.dataset.subAge || 0) + 1;
+        const nid = node.dataset.nodeId || '';
+        let startSec = ripenStartMap.get(nid);
+        if (startSec === undefined) {
+          const doneTs = Number(node.dataset.doneTs || 0);
+          if (doneTs > 0 && Math.abs(nowSec - doneTs) <= 60) {
+            startSec = doneTs;
+          } else {
+            startSec = nowSec;
+          }
+          ripenStartMap.set(nid, startSec);
+        }
+        const age = Math.max(0, Math.floor(nowSec - startSec));
         node.dataset.subAge = String(age);
         const dot = node.querySelector(':scope > .agent-row .status-dot');
         const pill = node.querySelector(':scope > .agent-row .ctx-pill:not(.bg-time)');
@@ -3920,6 +3962,23 @@
           pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;
         }
       });
+
+      // 2. Alternate duration (Slot A, 3s) and clock time (Slot B, 3s)
+      const showClock = Math.floor(Date.now() / 3000) % 2 === 1;
+      document.querySelectorAll('.ctx-time-txt').forEach(el => {
+        if (showClock && el.dataset.clockLabel) {
+          if (el.textContent !== el.dataset.clockLabel) el.textContent = el.dataset.clockLabel;
+        } else {
+          if (el.dataset.startTs) {
+            const durSec = Math.max(1, Math.floor(nowSec - Number(el.dataset.startTs)));
+            const durTxt = "⏱ " + formatSecCompact(durSec);
+            if (el.textContent !== durTxt) el.textContent = durTxt;
+          } else if (el.dataset.durLabel) {
+            if (el.textContent !== el.dataset.durLabel) el.textContent = el.dataset.durLabel;
+          }
+        }
+      });
+
       if (changedTree) notifyParentResize();
     }
 

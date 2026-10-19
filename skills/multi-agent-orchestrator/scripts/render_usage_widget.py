@@ -18,7 +18,9 @@ import subprocess
 import sys
 import time
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 
 
 def parse_kst_to_epoch(kst_str: str) -> int | None:
@@ -1785,6 +1787,7 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
         lvl_cls, lvl_ko = "warn", "보통"
     else:
         lvl_cls, lvl_ko = "ok", "여유"
+    start, end, duration = _node_turn_timing(node, is_running)
     t_lbl, t_cls, t_tip = _fmt_row_work_time(node, is_running, status_cls)
     full_tip = f"{t_tip} · 컨텍스트 {lvl_ko}: {_html_esc(used)} ({pct:.1f}%)"
     fill_h = max(18, min(100, int(round(pct))))
@@ -1793,10 +1796,34 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
         f'<span class="ctx-vbar-fill {lvl_cls}" style="height:{fill_h}%"></span>'
         f'</span>'
     )
+
+    time_attrs = []
+    if is_running:
+        if start is not None:
+            time_attrs.append(f'data-start-ts="{int(start)}"')
+            dt_start = datetime.fromtimestamp(start, tz=KST)
+            time_attrs.append(f'data-clock-label="{_html_esc("▶ " + dt_start.strftime("%H:%M"))}"')
+        dur_label = "⏱ " + _fmt_dur_compact(duration or 1)
+        time_attrs.append(f'data-dur-label="{_html_esc(dur_label)}"')
+        disp_txt = dur_label
+    else:
+        dur_label = ("⏱ " + _fmt_dur_compact(duration)) if duration is not None else "✓ 완료"
+        time_attrs.append(f'data-dur-label="{_html_esc(dur_label)}"')
+        if end is not None:
+            dt_end = datetime.fromtimestamp(end, tz=KST)
+            now_dt = datetime.now(tz=KST)
+            clock_fmt = "%H:%M" if dt_end.date() == now_dt.date() else "%m/%d %H:%M"
+            time_attrs.append(f'data-clock-label="{_html_esc("✓ " + dt_end.strftime(clock_fmt))}"')
+        else:
+            time_attrs.append('data-clock-label="✓ 완료"')
+        disp_txt = dur_label
+
+    time_attrs_str = (" " + " ".join(time_attrs)) if time_attrs else ""
+
     return (
         f'<span class="ctx-pill {t_cls}" title="{_html_esc(full_tip)}">'
         f'{ctx_meter}'
-        f'<span class="ctx-time-txt">{_html_esc(t_lbl)}</span>'
+        f'<span class="ctx-time-txt"{time_attrs_str}>{_html_esc(disp_txt)}</span>'
         f'</span>'
     )
 
@@ -2741,7 +2768,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             sub_slot_idx += 1
             c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
             c_html = (
-                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}">'
+                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
                 f'<div class="agent-left">'
                 f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
@@ -2796,7 +2823,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_repo = _repo_from_uris_or_cwd(ch.get("workspaces"))[0] if ch.get("workspaces") else repo
             c_ts = _parse_any_ts(ch.get("last_modified_time")) or 0.0
             c_html = (
-                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}">'
+                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-{ccid8}\')">'
                 f'<div class="agent-left">'
                 f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'

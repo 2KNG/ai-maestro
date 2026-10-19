@@ -907,18 +907,20 @@ def _extract_turn_timing(lines: list[str], *, antigravity: bool = False,
         start = max(explicit_start or 0, gap_start or 0) or first_ts
     if start is None:
         start = _timing_timestamp(fallback_start)
-        # Room creation is usable only for a short, newly created session.
         if end is not None and (start is None or end - start > 7200):
             start = end
     if end is None:
-        end = start
-    return {"turn_start_ts": start, "turn_end_ts": end,
-            "turn_duration_sec": max(1, int(end - start)) if start is not None and end is not None else None}
+        end = _timing_timestamp(fallback_end) or start
+    if start is None:
+        start = end
+    dur = max(1, int(round(end - start))) if (start is not None and end is not None) else None
+    return {"turn_start_ts": start, "turn_end_ts": end, "turn_duration_sec": dur}
 
 
 def _extract_agy_turn_timing(cid, created_time_iso, last_mod_iso) -> dict:
     path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
-    return _extract_turn_timing(_jsonl_tail(path), antigravity=True,
+    lines = _jsonl_tail(path, limit=250000)
+    return _extract_turn_timing(lines, antigravity=True,
                                 fallback_start=created_time_iso, fallback_end=last_mod_iso)
 
 
