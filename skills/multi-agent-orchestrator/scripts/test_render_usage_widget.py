@@ -1,7 +1,9 @@
 """Rendering regressions; no live provider calls or session-state writes."""
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import gzip
+import json
+import os
 from pathlib import Path
 import re
 import unittest
@@ -75,6 +77,98 @@ class RenderingTests(unittest.TestCase):
             self.assertIn(marker, restored)
         self.assertLess(len(bundled.encode()), 55000)
 
+    def test_child_nodes_ordering_and_cron_at_bottom(self):
+        now = datetime.now(timezone.utc)
+        iso_now = now.isoformat()
+        iso_old = (now - timedelta(minutes=10)).isoformat()
+        cid = 'testparent-0001-0000-0000-000000000001'
+        parent = dict(
+            conversation_id=cid,
+            status='IDLE',
+            last_modified_time=iso_old,
+            children=[
+                dict(conversation_id='sub-done-001', role='Completed Subagent', last_modified_time=iso_old, status='CASCADE_RUN_STATUS_DONE'),
+                dict(conversation_id='sub-run-001', role='Running Subagent', last_modified_time=iso_now, status='CASCADE_RUN_STATUS_RUNNING'),
+            ],
+        )
+        fake_bg = [
+            {'id': 'task-cron-1', 'short_id': 'task-cron-1', 'desc': 'Cron: */15 * * * *', 'kind': 'cron', 'cron_expr': '*/15 * * * *', 'created_at': iso_old, 'done': False},
+            {'id': 'task-job-1', 'short_id': 'task-job-1', 'desc': 'pytest run', 'kind': 'job', 'created_at': iso_now, 'done': False},
+        ]
+        with mock.patch.object(widget, '_extract_active_bg_tasks', return_value=fake_bg):
+            active, _, _, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'antigravity': [parent]}}, {}
+            )
+            # 1. Subagents must appear first (Running Subagent -> Completed Subagent)
+            pos_run_sub = active.find('Running Subagent')
+            pos_done_sub = active.find('Completed Subagent')
+            pos_job = active.find('pytest run')
+            pos_cron = active.find('Cron: */15 * * * *')
+
+            self.assertNotEqual(pos_run_sub, -1)
+            self.assertNotEqual(pos_done_sub, -1)
+            self.assertNotEqual(pos_job, -1)
+            self.assertNotEqual(pos_cron, -1)
+
+            # Strict ordering: running subagent < completed subagent < command task < cron
+            self.assertLess(pos_run_sub, pos_done_sub)
+            self.assertLess(pos_done_sub, pos_job)
+            self.assertLess(pos_job, pos_cron)
+
+            # 2. Tree elbow connectors: cron is the last item so it must have └─, earlier items have ├─
+            self.assertIn('└─', active[pos_cron - 350:pos_cron])
+            self.assertIn('├─', active[pos_run_sub - 350:pos_run_sub])
+
+            # 3. Cron indicator: calm idle-fresh status dot, ctx-time-txt with ⏰ 15m주기
+            self.assertIn('status-dot idle-fresh', active[pos_cron - 350:pos_cron])
+            self.assertIn('⏰ 15m주기', active)
+            self.assertIn('<span class="ctx-time-txt">⏰ 15m주기</span>', active)
+
+    def test_cron_alone_does_not_force_parent_running(self):
+        now = datetime.now(timezone.utc)
+        iso_old = (now - timedelta(hours=2)).isoformat()
+        cid = 'testparent-0002-0000-0000-000000000002'
+        parent = dict(
+            conversation_id=cid,
+            status='IDLE',
+            last_modified_time=iso_old,
+            children=[],
+        )
+        fake_bg = [
+            {'id': 'task-cron-2', 'short_id': 'task-cron-2', 'desc': 'Cron: 0 * * * *', 'kind': 'cron', 'cron_expr': '0 * * * *', 'created_at': iso_old, 'done': False},
+        ]
+        with mock.patch.object(widget, '_extract_active_bg_tasks', return_value=fake_bg):
+            active, _, _, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'antigravity': [parent]}}, {}
+            )
+            # data-running="1" must NOT be present on parent node
+            parent_match = re.search(r'data-node-id="node-agy-testpare"[^>]*>', active)
+            self.assertIsNotNone(parent_match)
+            self.assertNotIn('data-running="1"', parent_match.group(0))
+
+    def test_server_restart_cleans_stale_tasks(self):
+        import tempfile
+        lines = [
+            json.dumps({"step_index": 1, "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/15 * * * *"}}], "created_at": "2026-10-16T10:00:00Z"}),
+            json.dumps({"step_index": 2, "content": "background task with task id: test/task-100\nTask Description: Cron: */15 * * * *", "created_at": "2026-10-16T10:00:00Z"}),
+            json.dumps({"step_index": 3, "content": "All your subagents and background tasks have been stopped due to server restart", "created_at": "2026-10-19T02:00:00Z"}),
+            json.dumps({"step_index": 4, "tool_calls": [{"name": "run_command", "args": {"IsDaemon": True}}], "created_at": "2026-10-19T03:00:00Z"}),
+            json.dumps({"step_index": 5, "content": "background task with task id: test/task-200\nTask Description: python server.py --port 8080", "created_at": "2026-10-19T03:00:00Z"}),
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as tf:
+            tf.write("\n".join(lines) + "\n")
+            tpath = tf.name
+        try:
+            with mock.patch("os.path.expanduser", return_value=tpath), mock.patch("os.path.exists", return_value=True):
+                tasks = widget._extract_active_bg_tasks("dummy-cid", datetime.now(timezone.utc).timestamp())
+                task_ids = [t["short_id"] for t in tasks]
+                self.assertNotIn("task-100", task_ids)
+                self.assertIn("task-200", task_ids)
+        finally:
+            if os.path.exists(tpath):
+                os.remove(tpath)
+
 
 if __name__ == '__main__':
     unittest.main()
+

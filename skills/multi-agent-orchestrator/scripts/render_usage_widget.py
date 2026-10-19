@@ -1861,22 +1861,22 @@ def _sub_prefix_html(
 
 
 def _fmt_cron_short(expr: str) -> tuple[str, str]:
-    e = (expr or "").strip()
+    e = (expr or "").rstrip(",").strip()
     if not e:
-        return "주기", "정기 실행"
+        return "⏰ 대기", "정기 실행 대기"
     m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", e)
     if m:
-        return f"*/{m.group(1)}m", f"{m.group(1)}분마다 ({e})"
+        return f"⏰ {m.group(1)}m주기", f"{m.group(1)}분마다 ({e})"
     m_hr = re.match(r"^0\s+\*/(\d+)\s+\*\s+\*\s+\*$", e)
     if m_hr:
-        return f"*/{m_hr.group(1)}h", f"{m_hr.group(1)}시간마다 ({e})"
+        return f"⏰ {m_hr.group(1)}h주기", f"{m_hr.group(1)}시간마다 ({e})"
     if e == "0 * * * *":
-        return "1h주기", f"매시간 정각 ({e})"
+        return "⏰ 1h주기", f"매시간 정각 ({e})"
     m_day = re.match(r"^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$", e)
     if m_day:
         hm = f"{int(m_day.group(2)):02d}:{int(m_day.group(1)):02d}"
-        return hm, f"매일 {hm} ({e})"
-    return e[:6], f"주기: {e}"
+        return f"⏰ {hm}", f"매일 {hm} ({e})"
+    return f"⏰ {e[:8]}", f"주기: {e}"
 
 
 def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, str]:
@@ -1940,7 +1940,13 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
     try:
         with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
-                if "task-" not in line and "IsDaemon" not in line and "CronExpression" not in line:
+                if (
+                    "task-" not in line
+                    and "IsDaemon" not in line
+                    and "CronExpression" not in line
+                    and "server restart" not in line
+                    and "stopped due to" not in line
+                ):
                     continue
                 try:
                     d = json.loads(line)
@@ -1968,6 +1974,11 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
 
                 c = str(d.get("content") or "")
                 created_iso = d.get("created_at") or ""
+
+                if "stopped due to server restart" in c.lower() or "server restart" in c.lower():
+                    for tv in tasks.values():
+                        tv["done"] = True
+
                 m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
                 if m:
                     tid, desc = m.group(1).strip(), m.group(2).strip()
@@ -1977,8 +1988,9 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
                     is_timer = desc.startswith("Timer:")
                     cron_hint = step_cron_hints.get(tnum) or step_cron_hints.get(sidx) or ""
                     if not cron_hint and desc.startswith("Cron:"):
-                        cm2 = re.match(r"^Cron:\s*([^\s—-]+(?:\s+[^\s—-]+){0,4})", desc)
+                        cm2 = re.match(r"^Cron:\s*([^,]+)(?:,|$)", desc)
                         cron_hint = cm2.group(1).strip() if cm2 else "cron"
+                    cron_hint = cron_hint.rstrip(",").strip()
                     is_cron = bool(cron_hint) or desc.startswith("Cron:")
                     is_daemon = (
                         step_daemon_hints.get(tnum, False)
@@ -2505,7 +2517,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         has_running_child = any(_agy_worker_is_active(c, live_agy_ids) for c in children)
         age_sec_ag = _age_sec_from_iso(n.get("last_modified_time") or "")
         age_days_ag = _age_days_from_iso(n.get("last_modified_time") or "")
-        has_active_bg = age_sec_ag <= 43200 and bool(_extract_active_bg_tasks(cid, now_sec))
+        has_active_bg = age_sec_ag <= 43200 and any(
+            t.get("kind") != "cron" for t in _extract_active_bg_tasks(cid, now_sec)
+        )
         repo_name, _ = _repo_from_uris_or_cwd(n.get("workspaces"))
         raw_t = (n.get("title") or "").strip()
         is_internal_worker = (
@@ -2678,8 +2692,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         br_id = f"br-act-{cid8}"
         det_id = f"det-act-{cid8}"
 
-        child_rows_html = [_claude_worker_row(c, live_claude_ids, now_sec) for c in extra_claude_workers
-                           if c["session_id"] not in dismissed and f"node-sub-claude-{c['session_id']}" not in dismissed]
+        subagent_items: list[tuple[int, float, str]] = []
+        for c in extra_claude_workers:
+            sid = c.get("session_id") or c.get("id") or ""
+            if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
+                continue
+            is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
+            c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
+            c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            subagent_items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
+
         sub_slot_idx = 0
         seen_ctids = set()
         for repo_codex in extra_cdx_workers:
@@ -2711,7 +2733,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
             sub_slot_idx += 1
-            child_rows_html.append(
+            c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
+            c_html = (
                 f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
                 f'<div class="agent-left">'
@@ -2731,6 +2754,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span>{c_used} / 475k ({c_pct:.1f}%)</span>'
                 f'</div>{_detail_extras_html("codex", ctid, c_repo, False)}</div></div>'
             )
+            subagent_items.append((0 if c_live else 1, -c_ts, c_html))
 
         ag_children_all = list(extra_ag_workers) + [
             c for c in (ag.get("children") or [])
@@ -2745,7 +2769,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             seen_ag_child_cids.add(ccid)
             ag_children.append(ch)
 
-        ag_children = ag_children[:max(0, 6 - len(child_rows_html))]
+        ag_children = ag_children[:max(0, 6 - len(subagent_items))]
         for ch in ag_children:
             ccid = ch.get("conversation_id", "")
             ccid8 = ccid[:8]
@@ -2762,7 +2786,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             sub_slot_idx += 1
             c_icon, c_pill, _ = _provider_icon_and_pill(ch.get("model", ""), "antigravity")
             c_repo = _repo_from_uris_or_cwd(ch.get("workspaces"))[0] if ch.get("workspaces") else repo
-            child_rows_html.append(
+            c_ts = _parse_any_ts(ch.get("last_modified_time")) or 0.0
+            c_html = (
                 f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-{ccid8}\')">'
                 f'<div class="agent-left">'
@@ -2783,15 +2808,18 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span>{c_used} / 1M ({c_pct:.1f}%)</span>'
                 f'</div>{_detail_extras_html("antigravity", ccid, c_repo, False)}</div></div>'
             )
+            subagent_items.append((0 if c_running else 1, -c_ts, c_html))
+
+        subagent_rows = [item[2] for item in sorted(subagent_items, key=lambda x: (x[0], x[1]))]
 
         bg_tree_jobs, bg_parent_chip, bg_detail_section = _bg_daemon_chip_and_detail(cid, br_id)
         show_bg_daemons = state.get("showBgDaemons", True) is not False
 
-        for bgt in bg_tree_jobs[:8]:
+        def _render_bg_row(bgt: dict) -> str:
             bt_id = bgt["short_id"]
             bt_node_id = f"node-bg-{cid8}-{bt_id}"
             if bt_node_id in dismissed:
-                continue
+                return ""
             bt_desc = bgt["desc"]
             bt_kind = bgt.get("kind") or "job"
             bt_tag, bt_kind_lbl, bt_time_str, bt_timing_ko = _fmt_bg_badge_and_timing(bgt, now_sec)
@@ -2806,11 +2834,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="mp-short">{_html_esc(bt_kind_lbl)}</span>'
                 f'</span>'
             )
+            bt_time_cls = f"ctx-pill bg-time {bt_dot}"
             bt_time_pill = (
-                f'<span class="ctx-pill bg-time" title="{_html_esc(bt_timing_ko)}">'
-                f'{_html_esc(bt_time_str)}</span>'
+                f'<span class="{bt_time_cls}" title="{_html_esc(bt_timing_ko)}">'
+                f'<span class="ctx-time-txt">{_html_esc(bt_time_str)}</span></span>'
             )
-            child_rows_html.append(
+            return (
                 f'<div class="{node_cls}" data-node-id="{bt_node_id}" data-bg-kind="{bt_kind}">'
                 f'<div class="agent-row child bg-task-row" onclick="toggleDetail(\'det-bg-{cid8}-{bt_id}\')">'
                 f'<div class="agent-left">'
@@ -2832,11 +2861,26 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'</div></div></div>'
             )
 
+        cmd_tasks = [t for t in bg_tree_jobs if t.get("kind") != "cron"]
+        cron_tasks = [t for t in bg_tree_jobs if t.get("kind") == "cron"]
+
+        cmd_tasks_sorted = sorted(cmd_tasks, key=lambda x: _age_sec_from_iso(x.get("created_at") or ""))
+        cron_tasks_sorted = sorted(cron_tasks, key=lambda x: _age_sec_from_iso(x.get("created_at") or ""))
+
+        cmd_task_rows = [_render_bg_row(t) for t in cmd_tasks_sorted[:8]]
+        cmd_task_rows = [r for r in cmd_task_rows if r]
+
+        cron_task_rows = [_render_bg_row(t) for t in cron_tasks_sorted[:8]]
+        cron_task_rows = [r for r in cron_task_rows if r]
+
+        child_rows_html = subagent_rows + cmd_task_rows + cron_task_rows
+
         br_cls = "tree-children hidden" if state.get("allCollapsed") is True else "tree-children"
         children_block = f'<div class="{br_cls}" id="{br_id}">{_finalize_child_rows(child_rows_html)}</div>' if child_rows_html else ""
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
-        is_keep_alive = is_busy_ag or root_dot == "idle-fresh" or bool(bg_tree_jobs) or cid == "521b781e-43da-4647-b411-585e65e5f002"
+        has_running_job = any(t.get("kind") == "job" for t in bg_tree_jobs)
+        is_keep_alive = is_busy_ag or root_dot == "idle-fresh" or has_running_job or cid == "521b781e-43da-4647-b411-585e65e5f002"
         run_attr = ' data-running="1"' if is_keep_alive else ""
 
         parent_html = (
@@ -2904,9 +2948,17 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         )
         is_live_running, updated_ts = _codex_root_activity(cdx, live_codex_ids, rollout_paths, now_sec)
         claude_children = attached_claude_workers_by_parent.get(tid, [])
-        child_rows_html = [_claude_worker_row(c, live_claude_ids, now_sec) for c in claude_children
-                           if c["session_id"] not in dismissed and f"node-sub-claude-{c['session_id']}" not in dismissed]
         is_live_running = is_live_running or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in claude_children)
+        subagent_items_cdx: list[tuple[int, float, str]] = []
+        for c in claude_children:
+            sid = c.get("session_id") or c.get("id") or ""
+            if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
+                continue
+            is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
+            c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
+            c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            subagent_items_cdx.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
+
         if not cdx.get("agy_origin") or cdx.get("source") == "vscode":
             child_candidates = [
                 ch for ch in (cdx.get("children") or [])
@@ -2946,13 +2998,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 child_used = fmt_k(child_tokens.get("total_tokens", 0))
                 child_pct = float(child_tokens.get("percent", 0.0) or 0.0)
                 child_repo, _ = _repo_from_uris_or_cwd(None, child_cwd)
-                child_rows_html.append(
+                c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
+                child_dot = "busy" if c_live_child else "idle-fresh"
+                child_ts = float(ch.get("updated_at") or 0.0)
+                row_html = (
                     f'<div class="tree-node" data-node-id="{child_node_id}">'
                     f'<div class="agent-row child" onclick="toggleDetail(\'{child_det_id}\')">'
-                    f'<div class="agent-left">{_sub_prefix_html("busy")}'
+                    f'<div class="agent-left">{_sub_prefix_html(child_dot)}'
                     f'{child_icon}'
                     f'<span class="agent-name">{_html_esc(child_disp)}</span></div>'
-                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, True, "busy")}'
+                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, c_live_child, child_dot)}'
                     f'<span class="row-actions">'
                     f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{child_tid}\', \'{_html_esc(child_disp[:28])}\', \'{_html_esc(child_cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
                     f'</span>'
@@ -2961,6 +3016,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     f'<span>Codex Subagent: {child_tid} · cwd: {_html_esc(child_cwd)}{_fmt_duration(ch)}</span>'
                     f'<span>{child_used} tokens</span></div>{_detail_extras_html("codex", child_tid, child_repo, False)}</div></div>'
                 )
+                subagent_items_cdx.append((0 if c_live_child else 1, -child_ts, row_html))
+
+        child_rows_html = [item[2] for item in sorted(subagent_items_cdx, key=lambda x: (x[0], x[1]))]
         br_id = f"br-cdx-{tid8}"
         age_sec_cdx = max(0.0, now_sec - float(updated_ts or 0.0))
         root_dot, root_dot_tip = _status_dot_from_age(is_live_running, age_sec_cdx)

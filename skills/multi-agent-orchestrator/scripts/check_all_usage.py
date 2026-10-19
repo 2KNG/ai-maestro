@@ -922,6 +922,129 @@ def _extract_agy_turn_timing(cid, created_time_iso, last_mod_iso) -> dict:
                                 fallback_start=created_time_iso, fallback_end=last_mod_iso)
 
 
+def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict]:
+    """Extract and classify active background tasks into daemon, timer, cron, or job.
+
+    Filters out any background tasks / crons created before a server restart
+    ('All your subagents and background tasks have been stopped due to server restart').
+    """
+    if not cid:
+        return []
+    if now_sec is None:
+        now_sec = time.time()
+    tpath = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+    if not os.path.exists(tpath):
+        return []
+    tasks: dict[str, dict] = {}
+    step_daemon_hints: dict[int, bool] = {}
+    step_cron_hints: dict[int, str] = {}
+    try:
+        with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if (
+                    "task-" not in line
+                    and "IsDaemon" not in line
+                    and "CronExpression" not in line
+                    and "server restart" not in line
+                    and "stopped due to" not in line
+                ):
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                sidx = int(d.get("step_index") or 0)
+                for tc in (d.get("tool_calls") or []):
+                    tname = tc.get("name")
+                    raw_args = tc.get("arguments") or tc.get("args") or {}
+                    targs = str(raw_args)
+                    if tname == "run_command" and ('"IsDaemon": "true"' in targs or '"IsDaemon": true' in targs or "'IsDaemon': True" in targs):
+                        step_daemon_hints[sidx] = True
+                        step_daemon_hints[sidx + 1] = True
+                        step_daemon_hints[sidx + 2] = True
+                    elif tname == "schedule" and "CronExpression" in targs:
+                        cexpr = ""
+                        if isinstance(raw_args, dict):
+                            cexpr = str(raw_args.get("CronExpression") or "")
+                        else:
+                            cm = re.search(r'"CronExpression"\s*:\s*"([^"]+)"', targs)
+                            if cm:
+                                cexpr = cm.group(1)
+                        step_cron_hints[sidx] = cexpr or "cron"
+                        step_cron_hints[sidx + 1] = cexpr or "cron"
+
+                c = str(d.get("content") or "")
+                created_iso = d.get("created_at") or ""
+
+                if "stopped due to server restart" in c.lower() or "server restart" in c.lower():
+                    for tv in tasks.values():
+                        tv["done"] = True
+
+                m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
+                if m:
+                    tid, desc = m.group(1).strip(), m.group(2).strip()
+                    short_id = tid.split("/")[-1]
+                    num_m = re.search(r"task-(\d+)", short_id)
+                    tnum = int(num_m.group(1)) if num_m else sidx
+                    is_timer = desc.startswith("Timer:")
+                    cron_hint = step_cron_hints.get(tnum) or step_cron_hints.get(sidx) or ""
+                    if not cron_hint and desc.startswith("Cron:"):
+                        cm2 = re.match(r"^Cron:\s*([^,]+)(?:,|$)", desc)
+                        cron_hint = cm2.group(1).strip() if cm2 else "cron"
+                    cron_hint = cron_hint.rstrip(",").strip()
+                    is_cron = bool(cron_hint) or desc.startswith("Cron:")
+                    is_daemon = (
+                        step_daemon_hints.get(tnum, False)
+                        or step_daemon_hints.get(sidx, False)
+                        or any(k in desc for k in ("http.server", "--port", "nexus", "synapse_signaling", "environment_demo", "./run.sh"))
+                    )
+                    kind = "timer" if is_timer else ("cron" if is_cron else ("daemon" if is_daemon else "job"))
+                    tasks[tid] = {
+                        "id": tid,
+                        "short_id": short_id,
+                        "desc": desc,
+                        "kind": kind,
+                        "cron_expr": "" if cron_hint == "cron" else cron_hint,
+                        "created_at": created_iso,
+                        "done": False,
+                    }
+                for m2 in re.finditer(r'Task "([^"]+/task-\d+)" (?:cancelled|completed|finished)', c):
+                    if m2.group(1) in tasks:
+                        tasks[m2.group(1)]["done"] = True
+                if "cancelled early" in c.lower():
+                    for tv in tasks.values():
+                        if tv["kind"] == "timer":
+                            tv["done"] = True
+                if "<SYSTEM_MESSAGE>" in c and "sender=" in c:
+                    ms = re.search(r"sender=([^\s\]]+/task-\d+)", c)
+                    if ms and ms.group(1) in tasks:
+                        tv = tasks[ms.group(1)]
+                        if tv["kind"] == "timer" or "exited with code" in c or "terminated" in c or "completed" in c or "finished" in c:
+                            tv["done"] = True
+    except Exception:
+        return []
+
+    out = []
+    for tv in tasks.values():
+        if tv["done"]:
+            continue
+        desc = tv["desc"]
+        age_s = max(0, int(now_sec - (_timing_timestamp(tv.get("created_at") or 0) or now_sec))) if tv.get("created_at") else 0
+        if tv["kind"] == "timer":
+            dur_m = re.search(r"Timer:\s*(\d+)s", desc)
+            dur_s = int(dur_m.group(1)) if dur_m else 90
+            if age_s > dur_s + 15:
+                continue
+        elif tv["kind"] == "job":
+            if age_s > 900:
+                continue
+        elif tv["kind"] == "daemon":
+            if age_s > 43200:
+                continue
+        out.append(tv)
+    return out
+
+
 def _fetch_antigravity_agent_tree() -> list[dict]:
     addr, token = discover_ls_credentials()
     if not addr:
@@ -1041,6 +1164,7 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "created_time": created_time,
             "last_modified_time": last_mod,
             **_extract_agy_turn_timing(cid, created_time, last_mod),
+            "background_tasks": extract_active_bg_tasks(cid, time.time()),
             "workspaces": workspaces,
             "agy_origin": True,
             "nesting_depth": depth,
