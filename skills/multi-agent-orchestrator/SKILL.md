@@ -106,6 +106,12 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 - Chat ETA output contains only a single wall-clock value, Korean tokens, and KRW: `⏱ 2분 · 35만 토큰 (5천원)`. Never append subscription percentages or cache-included parenthetical notes.
 - NEVER run or print `5h/7d` quota lookups (`"다시 조회"`, `"미제공"`) just to produce an ETA. Quota checks remain mandatory for **routing** (`--pool auto`, 3-Stage Weekly Protection, 0% Auto-Steering).
 
+## 2.8. Natural Developer Communication Style
+
+- 간결한 현업 개발자 어조: 장황한 서두나 AI 클리셰("결론부터 말씀드리면", "완벽하게 차단", "100% 완료")를 배제하고 핵심 작업 내역과 결과만 명확히 전달한다.
+- 마크다운 서식 절제: 헤더와 목록에 장식용 이모지를 사용하지 않고, 불필요한 볼드(`**`)와 구분선(`---`) 남발을 지양한다.
+- 중국어/한자 및 도구 호출 프리앰블 절대 금지: 모든 응답과 사고 과정은 한국어와 표준 영문 기술 용어로만 작성하며, 중국어/한자([\u4e00-\u9fff], 예: '用到的工具调用如下', '我将调用' 등)나 도구 호출 직전 안내 사족을 절대 출력하지 않는다.
+
 ## 3. Workspace Discipline Rules
 
 When coordinating across multiple agents in `/home/u24c9g5090r64/dev`:

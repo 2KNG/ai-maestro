@@ -1435,12 +1435,13 @@
     html.light .icon-act-btn.open { color: #1d4ed8; }
 
     /* Fixed execution columns follow all density, theme and viewport rules. */
+    .agent-row .status-dot { width: 8px; height: 8px; flex: none; }
     .agent-row .repo-tag {
-      width: 85px; flex: 0 0 85px; box-sizing: border-box;
+      width: 84px; flex: 0 0 84px; box-sizing: border-box;
       display: block; line-height: 16px; text-align: center;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    /* Subagent rows replace the 85px repo-tag column with an indented tree branch (├─ / └─) + SUB tag (0px shift!) */
+    /* Subagent rows replace [status-dot(8px) + gap(5px) + repo-tag(84px) = 97px] with an indented tree branch (├─ / └─) + dot + SUB tag (0px shift!) */
     .agent-row.child {
       background: rgba(99, 102, 241, 0.035);
       border-left: 0 !important;
@@ -1450,7 +1451,7 @@
       border-left: 0 !important;
     }
     .agent-row .sub-prefix {
-      width: 85px; min-width: 85px; flex: 0 0 85px; box-sizing: border-box;
+      width: 97px; min-width: 97px; flex: 0 0 97px; box-sizing: border-box;
       display: inline-flex; align-items: center; gap: 4.5px;
       padding-left: 4px; overflow: hidden; white-space: nowrap;
     }
@@ -1460,6 +1461,7 @@
       width: 14px; text-align: center; line-height: 1; flex: none;
     }
     html.light .agent-row .sub-prefix .tree-elbow { color: #4f46e5; }
+    .agent-row .sub-prefix .status-dot { width: 7.5px; height: 7.5px; flex: none; }
     .agent-row .sub-prefix .sub-tag {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
@@ -3056,7 +3058,7 @@
           pinnedKept++;
           return;
         }
-        const isRunning = node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.idle-fresh, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
+        const isRunning = node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.busy, :scope > .agent-row .status-dot.idle-fresh, :scope > .agent-row .status-dot.running, :scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.idle-fresh, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
         if (isRunning && node.parentElement && node.parentElement.id === 'view-active') {
           return;
         }
@@ -3104,7 +3106,7 @@
 
       let importedCount = 0;
       const runningNodes = [...document.querySelectorAll('#view-active > .tree-node')].filter(node => {
-        return node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
+        return node.dataset.running === '1' || Boolean(node.querySelector(':scope > .agent-row .status-dot.busy, :scope > .agent-row .status-dot.running, :scope > .agent-row .ctx-pill.busy, :scope > .agent-row .ctx-pill.running, :scope > .agent-row .ctx-pill.st-busy'));
       });
       for (const node of runningNodes) {
         const id = node.dataset.nodeId;
@@ -3468,6 +3470,7 @@
         .replace(/<!--__[A-Z_]+__-->/g, '')
         .replace(/data-sub-age="\d+"/g, '')
         .replace(/title="[^"]*후 증발\)"/g, '')
+        .replace(/status-dot age-(?:green|yellow|orange|red)/g, 'status-dot age-any')
         .replace(/ctx-pill age-(?:green|yellow|orange|red)/g, 'ctx-pill age-any')
         .replace(/\s+/g, ' ')
         .trim();
@@ -3790,6 +3793,7 @@
         if (node.dataset.subRunning === '1') return;
         const age = Number(node.dataset.subAge || 0) + 1;
         node.dataset.subAge = String(age);
+        const dot = node.querySelector(':scope > .agent-row .status-dot');
         const pill = node.querySelector(':scope > .agent-row .ctx-pill:not(.bg-time)');
         if (age >= 60) {
           node.dataset.exiting = '1';
@@ -3803,7 +3807,7 @@
           changedTree = true;
           return;
         }
-        if (!pill) return;
+        if (!pill && !dot) return;
         const rem = Math.max(1, 60 - age);
         let cls = 'age-green';
         let tip = `🟢 SUB 완료 · 초록 단계 (${age}s / 15s · ${rem}s 후 증발)`;
@@ -3817,10 +3821,16 @@
           cls = 'age-yellow';
           tip = `🟡 SUB 숙성 · 노랑 단계 (${age}s / 30s · ${rem}s 후 증발)`;
         }
-        pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
-        pill.classList.add(cls);
-        if (pill.dataset.baseTitle === undefined) pill.dataset.baseTitle = pill.title || '';
-        pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;
+        if (dot) {
+          dot.className = `status-dot ${cls}`;
+          dot.title = tip;
+        }
+        if (pill) {
+          pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
+          pill.classList.add(cls);
+          if (pill.dataset.baseTitle === undefined) pill.dataset.baseTitle = pill.title || '';
+          pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;
+        }
       });
       if (changedTree) notifyParentResize();
     }

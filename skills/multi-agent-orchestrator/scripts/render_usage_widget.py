@@ -919,12 +919,13 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       flex: none;
     }
     .agy-arch-mark svg { display: block; }
+    .agent-row .status-dot { width: 8px; height: 8px; flex: none; }
     .agent-row .repo-tag {
-      width: 85px; flex: 0 0 85px; text-align: center; overflow: hidden;
+      width: 84px; flex: 0 0 84px; text-align: center; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box;
     }
     .agent-row .sub-prefix {
-      width: 85px; min-width: 85px; flex: 0 0 85px; box-sizing: border-box;
+      width: 97px; min-width: 97px; flex: 0 0 97px; box-sizing: border-box;
       display: inline-flex; align-items: center; gap: 4.5px;
       padding-left: 4px; overflow: hidden; white-space: nowrap;
     }
@@ -933,6 +934,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       font-size: 11.5px; font-weight: 700; color: #818cf8;
       width: 14px; text-align: center; line-height: 1; flex: none;
     }
+    .agent-row .sub-prefix .status-dot { width: 7.5px; height: 7.5px; flex: none; }
     .agent-row .sub-prefix .sub-tag {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
@@ -1244,6 +1246,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
 
       row.innerHTML = `
         <div class="agent-left">
+          <span class="status-dot ${node.status}" title="${node.status.toUpperCase()}"></span>
           <span class="repo-tag">${(node.repo || 'dev').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]))}</span>
           ${providerIconSvg(node.provider)}
           <span class="agent-name" title="${(node.name || '').replace(/"/g, '&quot;')}">${node.name}</span>
@@ -1830,14 +1833,28 @@ def _sub_status_dot_from_age(is_busy: bool, age_sec: float, slot_idx: int = 0) -
     return "age-red", f"🔴 SUB 소멸 임박 · 빨강 단계 ({eff_age}s / 240s · {rem_sec}s 후 증발)", eff_age
 
 
-def _sub_prefix_html(dot_cls: str, tag_lbl: str = "SUB", dot_tip: str = "") -> str:
-    """Render an indented tree branch (├─ / └─) + SUB/DMN/JOB/CRON/WAIT badge matching the exact 85px width of the parent repo-tag (no status dot)."""
+def _sub_prefix_html(
+    dot_cls_or_is_last: str | bool = "done",
+    tag_lbl_or_dot_cls: str = "SUB",
+    dot_tip: str = "",
+) -> str:
+    """Render an indented tree branch (├─ / └─) + status dot + SUB/DMN/JOB/CRON/WAIT badge matching the exact 97px width of parent status-dot + repo-tag."""
+    if isinstance(dot_cls_or_is_last, bool):
+        is_last = dot_cls_or_is_last
+        dot_cls = tag_lbl_or_dot_cls if tag_lbl_or_dot_cls not in ("SUB", "DMN", "JOB", "CRON", "WAIT") else "done"
+        tag_lbl = "SUB"
+        elbow = "└─" if is_last else "├─"
+    else:
+        dot_cls = dot_cls_or_is_last
+        tag_lbl = tag_lbl_or_dot_cls
+        elbow = "├─"
     is_bg = tag_lbl != "SUB"
     tip = dot_tip or ("하위 백그라운드 태스크 (클릭 시 상세·시작 시각 표시)" if is_bg else "하위 서브에이전트 워커 (완료 후 1분 간격 초록→노랑→주황→빨강 숙성 뒤 자동 증발)")
     t_cls = "sub-tag bg-tag" if is_bg else "sub-tag"
     return (
         f'<span class="sub-prefix" title="{_html_esc(tip)}">'
-        f'<span class="tree-elbow">├─</span>'
+        f'<span class="tree-elbow">{elbow}</span>'
+        f'<span class="status-dot {dot_cls}" title="{_html_esc(tip)}"></span>'
         f'<span class="{t_cls}">{_html_esc(tag_lbl)}</span>'
         f'</span>'
     )
@@ -2826,6 +2843,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'{det_id}\')">'
             f'<div class="agent-left">'
+            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
             f'<span class="repo-tag">{_html_esc(repo)}</span>'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp_title)}</span>'
@@ -2956,6 +2974,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'det-cdx-{tid8}\')">'
             f'<div class="agent-left">'
+            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
             f'<span class="repo-tag">{_html_esc(repo)}</span>'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp)}</span>'
@@ -3062,6 +3081,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}" data-age-days="{age_d}"{pin_attr}>'
                 f'<div class="agent-row" onclick="toggleDetail(\'det-cls-agy-{cid8}\')">'
                 f'<div class="agent-left">'
+                f'<span class="status-dot {cls_dot}" title="{_html_esc(cls_tip)}"></span>'
                 f'<span class="repo-tag">{_html_esc(repo)}</span>'
                 f'{icon_svg}'
                 f'<span class="agent-name">{_html_esc(raw_title)}</span>'
@@ -3114,6 +3134,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}" data-age-days="{age_d}"{pin_attr}>'
                 f'<div class="agent-row" onclick="toggleDetail(\'det-cls-cdx-{tid8}\')">'
                 f'<div class="agent-left">'
+                f'<span class="status-dot {cls_dot}" title="{_html_esc(cls_tip)}"></span>'
                 f'<span class="repo-tag">{_html_esc(repo)}</span>'
                 f'{icon_svg}'
                 f'<span class="agent-name">{_html_esc(disp)}</span>'

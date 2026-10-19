@@ -21,6 +21,7 @@ Follow `~/.gemini/GEMINI.md` on every turn:
 4. Natural Developer Communication Style:
    - 장황한 서두나 AI 클리셰("결론부터 말씀드리면", "완벽하게 완료") 없이 핵심 내용 위주로 간결하게 보고한다.
    - 헤더에 장식용 이모지를 달지 않고, 과도한 볼드(`**`)와 구분선(`---`) 남발을 피한다.
+   - 중국어/한자 및 도구 호출 프리앰블 절대 금지: 모든 응답과 사고 과정은 한국어와 표준 영문 기술 용어로만 작성하며, 중국어/한자([\u4e00-\u9fff], 예: '用到的工具调用如下', '我将调用' 등)나 도구 호출 직전 안내 사족을 절대 출력하지 않는다.
 5. Silent Widget Update: `usage_widget.html`을 백그라운드에서 조용히 갱신하고 채팅창에 `<agent-embed>`를 출력하지 않는다.
 
 ## `<MJSERVER_PORT_AND_SERVICE_GUARD>`

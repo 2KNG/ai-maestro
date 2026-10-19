@@ -124,11 +124,21 @@ def save_handover_note(
     modified_files: list[str] | None = None,
     next_steps: str = "",
 ) -> dict:
-    clean_summary = "\n".join(line.strip() for line in (summary or "").strip().splitlines() if line.strip())
+    def _strip_chinese_preamble(text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"用到的工具调用如下[^\n]*", "", text)
+
+    clean_summary = "\n".join(
+        line.strip()
+        for line in _strip_chinese_preamble(summary).strip().splitlines()
+        if line.strip()
+    )
+    title = _strip_chinese_preamble(title)
     if modified_files:
         clean_summary += f"\nFiles: {', '.join(modified_files[:6])}"
     if next_steps:
-        clean_summary += f"\nNext: {next_steps.strip()[:120]}"
+        clean_summary += f"\nNext: {_strip_chinese_preamble(next_steps).strip()[:120]}"
     if len(clean_summary) > 600:
         clean_summary = clean_summary[:597] + "..."
     if not clean_summary:
