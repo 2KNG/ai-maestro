@@ -51,6 +51,19 @@ CLAUDE_POOLS = ("claude", "opus-5.5-xhigh") + CLAUDE_ULTRA_POOLS + CLAUDE_FAST_P
 CODEX_ASTRA_POOLS = ("codex-astra", "astra", "gpt-6-astra")
 CODEX_POOLS = ("codex",) + CODEX_ASTRA_POOLS
 
+COMPUTER_USE_KEYWORDS = (
+    "pc 조작", "pc조작", "컴퓨터 조작", "computer use", "computer-use",
+    "데스크탑 조작", "마우스 클릭", "화면을 조작", "xdotool", "gui 조작",
+)
+
+
+def is_computer_use_task(spec: str) -> bool:
+    """Return True if spec contains PC control, desktop GUI, or computer-use keywords."""
+    if not spec:
+        return False
+    lowered = spec.lower()
+    return any(kw in lowered for kw in COMPUTER_USE_KEYWORDS)
+
 
 def ls_post(addr: str, token: str, method: str, payload: dict, timeout: int = 10) -> dict:
     headers = {
@@ -841,6 +854,8 @@ def main():
                 parser.error("--model is supported only with auto or a Codex pool")
             if requested_pool == "auto":
                 requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
+        if requested_pool == "auto" and is_computer_use_task(args.spec):
+            requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
         recommendation = None
         if args.max_capability:
             try:

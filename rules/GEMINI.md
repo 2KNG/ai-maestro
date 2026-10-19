@@ -17,6 +17,8 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
   - `gpt-6.1-sol (medium · standard)`: 일반 멀티파일 수정 및 기능 구현
   - `gpt-6-astra (medium · default)`: 보조 모듈 병렬 구현 (Astra는 항상 default tier, medium 상한 — `--max-capability`로만 `high`/`ultra` 해제)
   - `Gemini 3.8 Flash (low · fast)`: 초고속 코드베이스·로그 탐색 및 리서치
+- Domain & Task Specific Routing:
+  - **PC 조작 / 데스크탑 GUI 제어 / Computer-Use 작업**: OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`)의 Computer Use 스킬이 가장 안정적이므로, PC 화면 조작·마우스/키보드 제어·데스크탑 앱 자동화 작업은 GPT(`--pool codex`)로 우선 라우팅한다 (`--pool auto` 시에도 관련 키워드 감지 시 자동 `codex` 배정).
 - Speed Tier Policy:
   - Claude Opus 5.5 Fast (`claude-fast`)는 표준 `claude-opus-5-5` 대비 2배 쿼터를 소모한다 (`⏱ 45초 · 16만 토큰 (4천원)`).
   - `fast` / `priority` / `ultrafast` 티어는 라이브 인터랙티브 핑퐁이나 사용자의 명시적 고속 요청 시에만 적용한다.

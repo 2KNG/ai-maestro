@@ -54,8 +54,10 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 | Hardest reasoning / architecture → Local Claude Code Ultra (Opus 5.5 `ultra` → `--effort max` + `ultrathink`, standard, 3x quota) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool claude-ultra --cwd <dir> --wait --spec "..."` (aliases `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`; no `--max-capability` needed) |
 | Max-capability by domain (12-profile benchmark) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --max-capability --domain coding\|reasoning\|frontend_ui\|speed --cwd <dir> --wait --spec "..."` |
 | Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
+| PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
 | Low / read-only lookup | `invoke_subagent(Model='flash')` only |
 
+- **PC 조작 / 데스크탑 GUI 제어 / Computer-Use 작업**: OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`)의 Computer Use 스킬이 가장 안정적이므로, PC 화면 조작·마우스/키보드 제어·데스크탑 앱 자동화 작업은 GPT(`--pool codex`)로 우선 라우팅한다 (`--pool auto` 사용 시에도 키워드 감지 시 자동 `codex`로 라우팅).
 - Run Claude-pool and Codex-pool workers in parallel when useful; balance by `ai-usage` remaining %.
 - **Every response** must silently run `/home/u24c9g5090r64/.local/bin/ai-usage-widget /home/u24c9g5090r64/.gemini/antigravity/brain/<conversation-id>/usage_widget.html` in the background. Do NOT embed `<agent-embed>` in chat unless the user explicitly says `"위젯 띄워줘"` / `"위젯 인라인으로 보여줘"`.
 

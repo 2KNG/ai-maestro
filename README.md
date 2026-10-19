@@ -85,6 +85,7 @@ LLM 토큰 소모 없이 로컬 프로세스, SQLite, JSONL 로그를 파싱하�
 | 핵심 아키텍처 및 심층 추론 | Opus 5.5 (`high`; `xhigh` via `--max-capability`, standard) |
 | 최고난도 추론 / 복합 설계 (명시적 선택) | Opus 5.5 Ultra (`claude-ultra` 또는 `--effort ultra` → `--effort max` + `ultrathink`, standard, 3x quota) |
 | 백엔드 / 시스템 / 테스트 검증 | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
+| PC 조작 / 데스크탑 GUI 제어 / Computer-Use | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
 | 병렬 서브모듈 구현 | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | 빠른 코드베이스 및 로그 탐색 | Gemini 3.8 Flash (`low`, `fast`) |
 

@@ -200,6 +200,35 @@ class WorkerDispatchTests(unittest.TestCase):
                     self.assertEqual(codex.call_args.args[2:4], (effort, "default"))
                     claude.assert_not_called()
 
+    def test_is_computer_use_task(self):
+        positive = [
+            "pc 조작 필요", "간단한 pc조작 작업", "컴퓨터 조작해줘", "using Computer Use API",
+            "computer-use automated click", "데스크탑 조작 테스트", "마우스 클릭 자동화",
+            "화면을 조작하여 버튼 누르기", "xdotool key enter", "GUI 조작 수행",
+        ]
+        for spec in positive:
+            with self.subTest(spec=spec):
+                self.assertTrue(workers.is_computer_use_task(spec))
+
+        negative = ["일반 버그 수정", "단위 테스트 실행", "리팩토링", "", None]
+        for spec in negative:
+            with self.subTest(spec=spec):
+                self.assertFalse(workers.is_computer_use_task(spec))
+
+    def test_auto_routing_computer_use_to_codex(self):
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--spec", "화면을 조작해서 브라우저 열어줘", "--pool", "auto", "--wait"]), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             mock.patch.object(workers, "start_claude_worker", return_value={"ok": True}) as claude, \
+             mock.patch.object(workers, "start_agy_worker") as agy, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            agy.assert_not_called()
+            claude.assert_not_called()
+            codex.assert_called_once()
+            self.assertEqual(codex.call_args.kwargs.get("pool"), "codex")
+
 
 if __name__ == "__main__":
     unittest.main()

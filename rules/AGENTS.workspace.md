@@ -11,6 +11,7 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
    - `gpt-6.1-sol (high/medium · standard)`: 백엔드/테스트 루프 (`priority`는 `--interactive`/`--urgent` 필요).
    - `gpt-6-astra (medium · default)`: 보조 모듈 병렬 구현.
    - `Gemini 3.8 Flash (low · fast)`: 초고속 코드/로그 탐색.
+   - PC 조작 / 데스크탑 GUI 제어 / Computer-Use: OpenAI Codex(`gpt-6.1-sol` / `--pool codex`) 우선 라우팅.
    - `fast`/`priority`/`ultrafast`는 대화형 인터랙티브 전용. 백그라운드/cron은 standard/default 티어 사용.
 3. Single-Value ETA Standard:
    - 단일 수치 형식 예: `⏱ 3분 · 13만 토큰 (3천원)`. 범위(`~`) 표기나 금지어 배제.

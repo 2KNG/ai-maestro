@@ -1893,28 +1893,35 @@ def _sub_prefix_html(
 def _fmt_cron_short(expr: str) -> tuple[str, str]:
     e = (expr or "").strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
     if not e:
-        return "⏰ 대기", "정기 실행 대기"
+        return "⏱ ↻", "정기 실행 대기"
+    if e in ("@hourly", "0 * * * *"):
+        return "⏱ 1h ↻", f"매시간 정각 ({e})"
+    if e in ("@daily", "0 0 * * *"):
+        return "⏱ 1d ↻", f"매일 ({e})"
     m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", e)
     if m:
-        return f"⏰ {m.group(1)}m주기", f"{m.group(1)}분마다 ({e})"
+        return f"⏱ {m.group(1)}m ↻", f"{m.group(1)}분마다 ({e})"
     parts = e.split()
     if len(parts) == 5:
+        if parts[0] == "0" and parts[1] == "0" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
+            return "⏱ 1d ↻", f"매일 ({e})"
         if parts[0].isdigit() and parts[1] == "*" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
             ko_tip = f"매시간 정각 ({e})" if parts[0] == "0" else f"매시 {parts[0]}분 ({e})"
-            return "⏰ 1h주기", ko_tip
+            return "⏱ 1h ↻", ko_tip
         if parts[0].isdigit() and parts[1].startswith("*/"):
-            return f"⏰ {parts[1][2:]}h주기", f"주기: {e}"
+            return f"⏱ {parts[1][2:]}h ↻", f"주기: {e}"
     m_hr = re.match(r"^0\s+\*/(\d+)\s+\*\s+\*\s+\*$", e)
     if m_hr:
-        return f"⏰ {m_hr.group(1)}h주기", f"{m_hr.group(1)}시간마다 ({e})"
-    if e == "0 * * * *":
-        return "⏰ 1h주기", f"매시간 정각 ({e})"
+        return f"⏱ {m_hr.group(1)}h ↻", f"{m_hr.group(1)}시간마다 ({e})"
     m_day = re.match(r"^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$", e)
     if m_day:
-        hm = f"{int(m_day.group(2)):02d}:{int(m_day.group(1)):02d}"
-        return f"⏰ {hm}", f"매일 {hm} ({e})"
-    return f"⏰ {e[:8]}", f"주기: {e}"
-
+        h = int(m_day.group(2))
+        m_min = int(m_day.group(1))
+        if h == 0 and m_min == 0:
+            return "⏱ 1d ↻", f"매일 ({e})"
+        hm = f"{h:02d}:{m_min:02d}"
+        return f"⏱ {hm} ↻", f"매일 {hm} ({e})"
+    return f"⏱ {e[:8]} ↻", f"주기: {e}"
 
 def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, str]:
     """Return (left_tag, kind_label, time_col_str, detail_timing_ko) with zero LLM token overhead."""
