@@ -231,6 +231,90 @@ class TelemetryLoggerTests(unittest.TestCase):
         self.assertEqual(sec, 120.0)  # median of [100, 110, 120, 130, 140]
         self.assertEqual(net_tok, 165000)
 
+    def test_trim_outliers_logic(self):
+        """_trim_outliers should preserve small sample sets and trim extreme values when len >= 5."""
+        # < 5 samples: no trimming
+        small = [10.0, 20.0, 30.0, 1000.0]
+        self.assertEqual(maestro_memory._trim_outliers(small), [10.0, 20.0, 30.0, 1000.0])
+
+        # >= 5 samples: extreme values trimmed
+        with_outliers = [1.0, 100.0, 102.0, 105.0, 101.0, 103.0, 10000.0]
+        trimmed = maestro_memory._trim_outliers(with_outliers)
+        self.assertNotIn(1.0, trimmed)
+        self.assertNotIn(10000.0, trimmed)
+        self.assertEqual(trimmed, [100.0, 101.0, 102.0, 103.0, 105.0])
+
+    def test_exclusion_rule_statistical_outliers(self):
+        """Single-turn records with extreme sec (<3s, >900s) or tokens (<500, >2M) must be excluded."""
+        # Duration < 3.0s
+        res_quick = maestro_memory.record_worker_telemetry(
+            pool="codex", model="gpt-6.1-sol", effort="high", tier="default",
+            actual_sec=2.5, actual_net_tokens=5000, ok=True
+        )
+        self.assertEqual(res_quick["is_valid"], 0)
+        self.assertIn("statistical_outlier", res_quick["excluded_reason"])
+
+        # Duration > 900.0s
+        res_slow = maestro_memory.record_worker_telemetry(
+            pool="codex", model="gpt-6.1-sol", effort="high", tier="default",
+            actual_sec=920.0, actual_net_tokens=5000, ok=True
+        )
+        self.assertEqual(res_slow["is_valid"], 0)
+        self.assertIn("statistical_outlier", res_slow["excluded_reason"])
+
+        # Net tokens < 500
+        res_few_tok = maestro_memory.record_worker_telemetry(
+            pool="codex", model="gpt-6.1-sol", effort="high", tier="default",
+            actual_sec=50.0, actual_net_tokens=300, ok=True
+        )
+        self.assertEqual(res_few_tok["is_valid"], 0)
+        self.assertIn("statistical_outlier", res_few_tok["excluded_reason"])
+
+        # Net tokens > 2,000,000
+        res_huge_tok = maestro_memory.record_worker_telemetry(
+            pool="codex", model="gpt-6.1-sol", effort="high", tier="default",
+            actual_sec=150.0, actual_net_tokens=2500000, ok=True
+        )
+        self.assertEqual(res_huge_tok["is_valid"], 0)
+        self.assertIn("statistical_outlier", res_huge_tok["excluded_reason"])
+
+    def test_calibration_summary_with_outlier_trimming(self):
+        """get_telemetry_calibration_summary should automatically trim outliers for sample sets >= 5."""
+        # 5 normal samples + 2 extreme outliers (1 very fast/low token, 1 high token)
+        # Each has sec >= 3, tokens >= 500 to pass single-turn filter
+        sec_values = [10.0, 100.0, 102.0, 105.0, 101.0, 103.0, 890.0]
+        tok_values = [600, 50000, 51000, 52000, 50500, 51500, 1800000]
+        for s, tok in zip(sec_values, tok_values):
+            maestro_memory.record_worker_telemetry(
+                pool="codex", model="gpt-6.1-sol", effort="high", tier="default",
+                actual_sec=s, actual_net_tokens=tok, actual_gross_tokens=tok * 2,
+                context_tokens=tok // 2, ok=True
+            )
+
+        summary = maestro_memory.get_telemetry_calibration_summary()
+        c = summary["calibrations"][0]
+        self.assertEqual(c["valid_samples"], 7)
+        # After trimming 10.0 and 890.0: remaining are [100.0, 101.0, 102.0, 103.0, 105.0]
+        self.assertEqual(c["median_actual_sec"], 102.0)
+        self.assertEqual(c["avg_actual_sec"], 102.2)
+
+        # After trimming 600 and 1800000: remaining are [50000, 50500, 51000, 51500, 52000]
+        self.assertEqual(c["median_actual_net_tokens"], 51000)
+        self.assertEqual(c["avg_actual_net_tokens"], 51000)
+
+    def test_calibrate_eta_from_telemetry_alias(self):
+        """calibrate_eta_from_telemetry should function as an alias to run_daily_calibration."""
+        for s in [100.0, 110.0, 120.0, 130.0, 140.0]:
+            maestro_memory.record_worker_telemetry(
+                pool="claude", model="claude-opus-5-5", effort="high", tier="default",
+                actual_sec=s, actual_net_tokens=165000, actual_gross_tokens=300000,
+                context_tokens=30000, ok=True
+            )
+        res = maestro_memory.calibrate_eta_from_telemetry(min_samples=5, run_backfill=False)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["calibrated_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

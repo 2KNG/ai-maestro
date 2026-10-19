@@ -15,6 +15,7 @@ Design guarantees (from Pre-Mortem Audit):
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -614,6 +615,43 @@ NETWORK_ERROR_KEYWORDS = (
 )
 
 
+def _trim_outliers(values: list[float | int]) -> list[float]:
+    """Exclude extreme outliers using IQR (Q1 - 1.5*IQR ~ Q3 + 1.5*IQR) and 10%-90% trimming when len >= 5."""
+    cleaned = [float(v) for v in values if v is not None]
+    if len(cleaned) < 5:
+        return cleaned
+
+    s = sorted(cleaned)
+    n = len(s)
+
+    try:
+        qs = statistics.quantiles(s, n=4)
+        q1, q3 = qs[0], qs[2]
+    except Exception:
+        q1 = s[int(n * 0.25)]
+        q3 = s[int(n * 0.75)]
+
+    iqr = q3 - q1
+    iqr_low = q1 - 1.5 * iqr
+    iqr_high = q3 + 1.5 * iqr
+
+    p10_idx = int(n * 0.10)
+    p90_idx = min(n - 1, int(math.ceil(n * 0.90)) - 1)
+    p10 = s[p10_idx]
+    p90 = s[p90_idx]
+
+    low_bound = max(iqr_low, p10)
+    high_bound = min(iqr_high, p90)
+
+    trimmed = [v for v in s if low_bound <= v <= high_bound]
+    if not trimmed:
+        trimmed = [v for v in s if iqr_low <= v <= iqr_high]
+    return trimmed if trimmed else s
+
+
+trim_outliers = _trim_outliers
+
+
 def get_model_context_window(model: str) -> int:
     """Return maximum model context window capacity in tokens."""
     m = (model or "").lower().strip()
@@ -910,6 +948,20 @@ def record_worker_telemetry(
         is_valid = 0
         excluded_reasons.append("zero tokens recorded")
 
+    # Extreme single-turn statistical outlier exclusion (actual_sec < 3.0 or > 900.0 or actual_net_tokens < 500 or > 2000000)
+    if actual_sec < 3.0 or actual_sec > 900.0 or actual_net_tokens < 500 or actual_net_tokens > 2000000:
+        is_valid = 0
+        outlier_details = []
+        if actual_sec < 3.0:
+            outlier_details.append(f"duration too short ({actual_sec:.1f}s < 3.0s)")
+        elif actual_sec > 900.0:
+            outlier_details.append(f"duration too long ({actual_sec:.1f}s > 900.0s)")
+        if actual_net_tokens < 500:
+            outlier_details.append(f"net tokens too few ({actual_net_tokens} < 500)")
+        elif actual_net_tokens > 2000000:
+            outlier_details.append(f"net tokens too large ({actual_net_tokens} > 2000000)")
+        excluded_reasons.append(f"statistical_outlier: {'; '.join(outlier_details)}")
+
     excluded_reason = "; ".join(excluded_reasons)
     ts_str = timestamp or datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1167,7 +1219,7 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, r
 
 
 def get_telemetry_calibration_summary() -> dict:
-    """Aggregate worker telemetry comparison grouped by (model, effort, tier)."""
+    """Aggregate worker telemetry comparison grouped by (model, effort, tier) with outlier trimming."""
     conn = _connect()
     try:
         tot_row = conn.execute(
@@ -1188,13 +1240,8 @@ def get_telemetry_calibration_summary() -> dict:
                    COUNT(*) as total_samples,
                    SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) as valid_samples,
                    SUM(CASE WHEN is_valid = 0 THEN 1 ELSE 0 END) as excluded_samples,
-                   AVG(CASE WHEN is_valid = 1 THEN actual_sec ELSE NULL END) as avg_actual_sec,
-                   AVG(CASE WHEN is_valid = 1 THEN actual_net_tokens ELSE NULL END) as avg_net_tokens,
-                   AVG(CASE WHEN is_valid = 1 THEN actual_gross_tokens ELSE NULL END) as avg_gross_tokens,
                    MAX(est_sec) as est_sec,
-                   MAX(est_tokens) as est_tokens,
-                   AVG(CASE WHEN is_valid = 1 THEN context_tokens ELSE NULL END) as avg_context_tokens,
-                   AVG(CASE WHEN is_valid = 1 THEN context_pct ELSE NULL END) as avg_context_pct
+                   MAX(est_tokens) as est_tokens
             FROM worker_telemetry
             GROUP BY model, effort, tier
             ORDER BY valid_samples DESC, model, effort
@@ -1207,36 +1254,59 @@ def get_telemetry_calibration_summary() -> dict:
             valid_count = r[4] or 0
             excl_count = r[5] or 0
 
+            avg_actual_sec = None
             med_sec = None
+            avg_net_tok = None
             med_net_tok = None
-            if valid_count > 0:
-                secs = [
-                    x[0] for x in conn.execute(
-                        "SELECT actual_sec FROM worker_telemetry WHERE model=? AND effort=? AND tier=? AND is_valid=1",
-                        (m, e, t),
-                    ).fetchall() if x[0] is not None
-                ]
-                if secs:
-                    med_sec = round(statistics.median(secs), 1)
+            avg_gross_tok = None
+            avg_ctx = 0
+            avg_ctx_p = 0.0
 
-                toks = [
-                    x[0] for x in conn.execute(
-                        "SELECT actual_net_tokens FROM worker_telemetry WHERE model=? AND effort=? AND tier=? AND is_valid=1",
-                        (m, e, t),
-                    ).fetchall() if x[0] is not None
-                ]
-                if toks:
-                    med_net_tok = int(round(statistics.median(toks)))
+            if valid_count > 0:
+                rec_rows = conn.execute(
+                    """
+                    SELECT actual_sec, actual_net_tokens, actual_gross_tokens, context_tokens, context_pct
+                    FROM worker_telemetry
+                    WHERE model = ? AND effort = ? AND tier = ? AND is_valid = 1
+                    """,
+                    (m, e, t),
+                ).fetchall()
+
+                raw_secs = [x[0] for x in rec_rows if x[0] is not None]
+                raw_net_toks = [x[1] for x in rec_rows if x[1] is not None]
+                raw_gross_toks = [x[2] for x in rec_rows if x[2] is not None]
+                raw_ctx_toks = [x[3] for x in rec_rows if x[3] is not None]
+                raw_ctx_pcts = [x[4] for x in rec_rows if x[4] is not None]
+
+                trimmed_secs = _trim_outliers(raw_secs)
+                trimmed_net_toks = _trim_outliers(raw_net_toks)
+                trimmed_gross_toks = _trim_outliers(raw_gross_toks)
+                trimmed_ctx_toks = _trim_outliers(raw_ctx_toks)
+                trimmed_ctx_pcts = _trim_outliers(raw_ctx_pcts)
+
+                if trimmed_secs:
+                    avg_actual_sec = round(statistics.mean(trimmed_secs), 1)
+                    med_sec = round(statistics.median(trimmed_secs), 1)
+
+                if trimmed_net_toks:
+                    avg_net_tok = int(round(statistics.mean(trimmed_net_toks)))
+                    med_net_tok = int(round(statistics.median(trimmed_net_toks)))
+
+                if trimmed_gross_toks:
+                    avg_gross_tok = int(round(statistics.mean(trimmed_gross_toks)))
+
+                if trimmed_ctx_toks:
+                    avg_ctx = int(round(statistics.mean(trimmed_ctx_toks)))
+
+                if trimmed_ctx_pcts:
+                    avg_ctx_p = round(statistics.mean(trimmed_ctx_pcts), 1)
 
             est_s, est_tok, _ = lookup_baseline_eta(m, e, t)
-            e_sec = r[9] if r[9] is not None else est_s
-            e_tok = r[10] if r[10] is not None else est_tok
+            e_sec = r[6] if (len(r) > 6 and r[6] is not None) else est_s
+            e_tok = r[7] if (len(r) > 7 and r[7] is not None) else est_tok
 
             ratio_s = round(med_sec / e_sec, 2) if (med_sec is not None and e_sec and e_sec > 0) else None
             ratio_t = round(med_net_tok / e_tok, 2) if (med_net_tok is not None and e_tok and e_tok > 0) else None
-
-            avg_ctx = int(round(r[11])) if (len(r) > 11 and r[11] is not None) else 0
-            avg_ctx_p = round(r[12], 1) if (len(r) > 12 and r[12] is not None) else 0.0
 
             calibrations.append({
                 "model": m,
@@ -1245,14 +1315,14 @@ def get_telemetry_calibration_summary() -> dict:
                 "valid_samples": valid_count,
                 "excluded_samples": excl_count,
                 "est_sec": e_sec,
-                "avg_actual_sec": round(r[6], 1) if r[6] is not None else None,
+                "avg_actual_sec": avg_actual_sec,
                 "median_actual_sec": med_sec,
                 "ratio_sec": ratio_s,
                 "est_net_tokens": e_tok,
-                "avg_actual_net_tokens": int(round(r[7])) if r[7] is not None else None,
+                "avg_actual_net_tokens": avg_net_tok,
                 "median_actual_net_tokens": med_net_tok,
                 "ratio_net_tokens": ratio_t,
-                "avg_gross_tokens": int(round(r[8])) if r[8] is not None else None,
+                "avg_gross_tokens": avg_gross_tok,
                 "avg_context_tokens": avg_ctx,
                 "avg_context_pct": avg_ctx_p,
             })
@@ -1330,4 +1400,10 @@ def run_daily_calibration(min_samples: int = 5, run_backfill: bool = True) -> di
         "calibrations": calibrated_list,
         "snapshot_path": CALIBRATION_SNAPSHOT_PATH,
     }
+
+
+def calibrate_eta_from_telemetry(min_samples: int = 5, run_backfill: bool = True) -> dict:
+    """Calibrate baseline ETA table from telemetry with statistical outlier exclusion. Alias for run_daily_calibration."""
+    return run_daily_calibration(min_samples=min_samples, run_backfill=run_backfill)
+
 
