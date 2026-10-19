@@ -594,33 +594,15 @@
     .agent-row:hover { background: var(--surface-2); }
     .agent-row.parent {
       background: rgba(128, 145, 175, 0.07);
-      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.45);
+      box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.72);
     }
     .agent-row.parent:hover {
       background: var(--surface-2);
-      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.75);
+      box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.95);
     }
     .agent-row.child {
       background: rgba(128, 145, 175, 0.025);
       box-shadow: none !important;
-    }
-
-    /* Active / running root session: bright blue accent bracket [ */
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent {
-      box-shadow: inset 2px 0 0 #3b82f6;
-    }
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent:hover {
-      box-shadow: inset 2px 0 0 #60a5fa;
-    }
-
-    /* Pinned / imported root session: vivid purple accent bracket [ */
-    .tree-node.pinned:not(.sub-node) > .agent-row.parent,
-    .tree-node.imported:not(.sub-node) > .agent-row.parent {
-      box-shadow: inset 2px 0 0 #a855f7;
-    }
-    .tree-node.pinned:not(.sub-node) > .agent-row.parent:hover,
-    .tree-node.imported:not(.sub-node) > .agent-row.parent:hover {
-      box-shadow: inset 2px 0 0 #c084fc;
     }
 
     .agent-left {
@@ -1021,10 +1003,6 @@
       -webkit-user-select: all;
     }
     .cmd-box-input:focus { outline: 1px solid #a855f7; }
-    .tree-node.imported > .agent-row {
-      box-shadow: inset 2px 0 0 #a855f7;
-      background: rgba(168, 85, 247, 0.08);
-    }
     .tree-node.flash > .agent-row { animation: importFlash 1.4s ease-out; }
     @keyframes importFlash { from { background: rgba(168, 85, 247, 0.38); } }
     .pin-tag {
@@ -2546,6 +2524,29 @@
       return `<span class="win-model-icons dual">${parts.join('')}</span>`;
     }
 
+    const POOL_TOKEN_CAPACITIES = {
+      agy_gemini_5h: 193000000,
+      agy_gemini_7d: 621000000,
+      agy_claude_5h: 2120000,
+      agy_claude_7d: 3940000,
+      claude_5h: 35700000,
+      claude_7d: 97830000,
+      codex_7d: 31240000
+    };
+
+    function formatTokenKorean(tokens) {
+      if (!tokens || isNaN(tokens) || tokens <= 0) return '0';
+      if (tokens >= 100000000) {
+        const uk = Math.floor(tokens / 100000000);
+        const remMan = Math.round((tokens % 100000000) / 10000);
+        return remMan > 0 ? `${uk}억 ${remMan.toLocaleString()}만` : `${uk}억`;
+      } else if (tokens >= 10000) {
+        const man = Math.round(tokens / 10000);
+        return `${man.toLocaleString()}만`;
+      }
+      return tokens.toLocaleString();
+    }
+
     let lastQuotasSig = '';
     function renderQuotas(force = false) {
       const grid = document.getElementById('quota-grid');
@@ -2598,7 +2599,13 @@
           const pathD = clockPath(prog);
           const dispPct = fmtPct(w.remaining);
           const remCountdown = compactRemaining(w.resetsAt, w.resetText);
-          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)`;
+          const totalTok = w.totalTokens || POOL_TOKEN_CAPACITIES[w.poolKey] || null;
+          let tokenLine = '';
+          if (totalTok && w.remaining !== null && w.remaining !== undefined) {
+            const remTokens = Math.round(totalTok * (w.remaining / 100.0));
+            tokenLine = `\n토큰 용량: 잔여 약 ${formatTokenKorean(remTokens)} / 총 ${formatTokenKorean(totalTok)} 토큰`;
+          }
+          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)${tokenLine}`;
           const mIcons = Array.isArray(w.modelIcons) && w.modelIcons.length ? w.modelIcons : [w.modelIcon || accIco];
           const pKind = w.periodKind || (String(w.shortPeriod || '').includes('5h') ? '5h' : '7d');
           const shortP = w.shortPeriod || pKind;
@@ -2611,7 +2618,7 @@
           const winEl = document.createElement('div');
           winEl.className = `usage-window ${st.id}`;
           winEl.innerHTML = `
-            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}">
+            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}" title="${tip.replace(/"/g, '&quot;')}">
               ${compactPoolHtml}
               <div class="usage-donut ${st.id}">
                 <svg viewBox="0 0 64 64" aria-hidden="true">
@@ -3180,9 +3187,12 @@
         const id = node.dataset.nodeId;
         if (!id) continue;
         dismissedSet.delete(id);
-        importedSet.add(id);
+        const isExternal = node.dataset.scope !== 'current' || id.startsWith('node-cdx-') || id.startsWith('node-claude-');
+        if (isExternal) {
+          importedSet.add(id);
+          importedCount++;
+        }
         node.dataset.scope = 'current';
-        importedCount++;
         const impBtn = node.querySelector(':scope > .agent-row .import-btn');
         if (impBtn && !importedCascades[id]) {
           const onclickAttr = impBtn.getAttribute('onclick') || '';

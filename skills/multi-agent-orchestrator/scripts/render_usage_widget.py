@@ -637,41 +637,19 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .agent-row.depth-0 {
       background: rgba(128, 145, 175, 0.08);
       margin-top: 0;
-      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.45);
+      box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.72);
       transition: background 0.12s, box-shadow 0.15s;
     }
     .agent-row.parent:hover,
     .agent-row.depth-0:hover {
       background: var(--surface-2);
-      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.75);
+      box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.95);
     }
     .agent-row.child,
     .agent-row.depth-1,
     .agent-row.depth-2 {
       background: rgba(128, 145, 175, 0.025);
       box-shadow: none !important;
-    }
-
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent,
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.depth-0 {
-      box-shadow: inset 2px 0 0 #3b82f6;
-    }
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent:hover,
-    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.depth-0:hover {
-      box-shadow: inset 2px 0 0 #60a5fa;
-    }
-
-    .tree-node.pinned:not(.sub-node) > .agent-row.parent,
-    .tree-node.pinned:not(.sub-node) > .agent-row.depth-0,
-    .tree-node.imported:not(.sub-node) > .agent-row.parent,
-    .tree-node.imported:not(.sub-node) > .agent-row.depth-0 {
-      box-shadow: inset 2px 0 0 #a855f7;
-    }
-    .tree-node.pinned:not(.sub-node) > .agent-row.parent:hover,
-    .tree-node.pinned:not(.sub-node) > .agent-row.depth-0:hover,
-    .tree-node.imported:not(.sub-node) > .agent-row.parent:hover,
-    .tree-node.imported:not(.sub-node) > .agent-row.depth-0:hover {
-      box-shadow: inset 2px 0 0 #c084fc;
     }
 
     .agent-left {
@@ -1017,7 +995,12 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .ctx-vbar .ctx-vbar-fill.crit { background: #ef7a85; }
     .ctx-repeat-ico { width: 11px; height: 11px; flex: none; color: #54c9a0; opacity: 0.95; }
     html.light .ctx-repeat-ico { color: #059669; }
-    .ctx-pill.has-repeat-ico { justify-content: flex-start !important; }
+    .ctx-pill.has-repeat-ico {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 4px !important;
+      justify-content: flex-start !important;
+    }
     .agent-row .ctx-pill {
       background: transparent !important; border: none !important; padding: 0 2px !important;
     }
@@ -1188,6 +1171,29 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       return `${m}분 후`;
     }
 
+    const POOL_TOKEN_CAPACITIES = {
+      agy_gemini_5h: 193000000,
+      agy_gemini_7d: 621000000,
+      agy_claude_5h: 2120000,
+      agy_claude_7d: 3940000,
+      claude_5h: 35700000,
+      claude_7d: 97830000,
+      codex_7d: 31240000
+    };
+
+    function formatTokenKorean(tokens) {
+      if (!tokens || isNaN(tokens) || tokens <= 0) return '0';
+      if (tokens >= 100000000) {
+        const uk = Math.floor(tokens / 100000000);
+        const remMan = Math.round((tokens % 100000000) / 10000);
+        return remMan > 0 ? `${uk}억 ${remMan.toLocaleString()}만` : `${uk}억`;
+      } else if (tokens >= 10000) {
+        const man = Math.round(tokens / 10000);
+        return `${man.toLocaleString()}만`;
+      }
+      return tokens.toLocaleString();
+    }
+
     function renderQuotas() {
       const grid = document.getElementById('quota-grid');
       grid.innerHTML = '';
@@ -1218,12 +1224,18 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
           const pathD = clockPath(prog);
           const dispPct = w.remaining === 100 ? '100%' : w.remaining === 0 ? '0%' : `${w.remaining.toFixed(1)}%`;
           const remCountdown = compactRemaining(w.resetsAt, w.resetText);
-          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중 (미사용)' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)`;
+          const totalTok = w.totalTokens || POOL_TOKEN_CAPACITIES[w.poolKey] || null;
+          let tokenLine = '';
+          if (totalTok && w.remaining !== null && w.remaining !== undefined) {
+            const remTokens = Math.round(totalTok * (w.remaining / 100.0));
+            tokenLine = `\n토큰 용량: 잔여 약 ${formatTokenKorean(remTokens)} / 총 ${formatTokenKorean(totalTok)} 토큰`;
+          }
+          const tip = `${acc.name} · ${w.label}\n바깥 링: 남음 ${dispPct} (${st.label})\n안쪽 시계원: ${prog === null ? '리셋 대기중 (미사용)' : `기간 ${Math.round(prog * 100)}% 경과`}\n리셋: ${remCountdown} (${w.resetText} KST)${tokenLine}`;
 
           const winEl = document.createElement('div');
           winEl.className = `usage-window ${st.id}`;
           winEl.innerHTML = `
-            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}">
+            <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}" title="${tip.replace(/"/g, '&quot;')}">
               <div class="usage-donut ${st.id}">
                 <svg viewBox="0 0 64 64" aria-hidden="true">
                   <circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>
@@ -1429,6 +1441,37 @@ def remaining_pct(rem, used=None) -> float:
     return min(math.floor(r * 10) / 10, 99.9)
 
 
+POOL_TOKEN_CAPACITIES = {
+    # Antigravity Gemini Pool (Gemini 4 Argon / 3.8 Flash)
+    "agy_gemini_5h": 193_000_000,
+    "agy_gemini_7d": 621_000_000,
+    # Antigravity Claude & GPT-OSS Pool (Opus 5.5 / Sonnet 5.5)
+    "agy_claude_5h": 2_120_000,
+    "agy_claude_7d": 3_940_000,
+    # Claude Code Team 5x (Claude Code / claude_local)
+    "claude_5h": 35_700_000,
+    "claude_7d": 97_830_000,
+    # OpenAI Codex ProMax (Codex / gpt-6.1-sol): 5h unlimited / omitted
+    "codex_7d": 31_240_000,
+}
+
+
+def format_token_korean(tokens: int) -> str:
+    """Format token count cleanly into Korean 만 / 억 units (e.g. 193_000_000 -> 1억 9,300만, 2_120_000 -> 212만)."""
+    if not tokens or tokens <= 0:
+        return "0"
+    if tokens >= 100_000_000:
+        uk = tokens // 100_000_000
+        rem_man = round((tokens % 100_000_000) / 10_000)
+        if rem_man > 0:
+            return f"{uk}억 {rem_man:,}만"
+        return f"{uk}억"
+    elif tokens >= 10_000:
+        man = round(tokens / 10_000)
+        return f"{man:,}만"
+    return f"{tokens:,}"
+
+
 def build_accounts(data: dict) -> list[dict]:
     ag_pools = data.get("antigravity", {}).get("pools", {})
     gem_pool = ag_pools.get("Gemini Pool (Argon / Flash)", {})
@@ -1448,7 +1491,8 @@ def build_accounts(data: dict) -> list[dict]:
     cl_fable = cl_wk.get("weekly_scoped")
 
     def win(label, short, src, minutes, model_icons, period_kind, pool_key, default_rem=100.0):
-        return {
+        total_tokens = POOL_TOKEN_CAPACITIES.get(pool_key)
+        item = {
             "label": label,
             "shortPeriod": short,
             "periodKind": period_kind,
@@ -1460,6 +1504,9 @@ def build_accounts(data: dict) -> list[dict]:
             "resetsAt": parse_kst_to_epoch(src.get("reset_time_kst", "")),
             "resetText": short_reset_label(src.get("reset_time_kst", "")),
         }
+        if total_tokens:
+            item["totalTokens"] = total_tokens
+        return item
 
     agy_windows = [win("Gemini Pool · 5시간 세션", "5h", gem_5h, 300, ["#ico-gemini"], "5h", "agy_gemini_5h")]
     if isinstance(gem_wk, dict):
@@ -1956,35 +2003,35 @@ def _sub_prefix_html(
 def _fmt_cron_short(expr: str) -> tuple[str, str]:
     e = (expr or "").strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
     if not e:
-        return "⏱ 반복", "정기 실행 대기"
+        return "반복", "정기 실행 대기"
     if e in ("@hourly", "0 * * * *"):
-        return "⏱ 1h", f"매시간 정각 ({e})"
+        return "1h", f"매시간 정각 ({e})"
     if e in ("@daily", "0 0 * * *"):
-        return "⏱ 1d", f"매일 ({e})"
+        return "1d", f"매일 ({e})"
     m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", e)
     if m:
-        return f"⏱ {m.group(1)}m", f"{m.group(1)}분마다 ({e})"
+        return f"{m.group(1)}m", f"{m.group(1)}분마다 ({e})"
     parts = e.split()
     if len(parts) == 5:
         if parts[0] == "0" and parts[1] == "0" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
-            return "⏱ 1d", f"매일 ({e})"
+            return "1d", f"매일 ({e})"
         if parts[0].isdigit() and parts[1] == "*" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
             ko_tip = f"매시간 정각 ({e})" if parts[0] == "0" else f"매시 {parts[0]}분 ({e})"
-            return "⏱ 1h", ko_tip
+            return "1h", ko_tip
         if parts[0].isdigit() and parts[1].startswith("*/"):
-            return f"⏱ {parts[1][2:]}h", f"주기: {e}"
+            return f"{parts[1][2:]}h", f"주기: {e}"
     m_hr = re.match(r"^0\s+\*/(\d+)\s+\*\s+\*\s+\*$", e)
     if m_hr:
-        return f"⏱ {m_hr.group(1)}h", f"{m_hr.group(1)}시간마다 ({e})"
+        return f"{m_hr.group(1)}h", f"{m_hr.group(1)}시간마다 ({e})"
     m_day = re.match(r"^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$", e)
     if m_day:
         h = int(m_day.group(2))
         m_min = int(m_day.group(1))
         if h == 0 and m_min == 0:
-            return "⏱ 1d", f"매일 ({e})"
+            return "1d", f"매일 ({e})"
         hm = f"{h:02d}:{m_min:02d}"
-        return f"⏱ {hm}", f"매일 {hm} ({e})"
-    return f"⏱ {e[:8]}", f"주기: {e}"
+        return f"{hm}", f"매일 {hm} ({e})"
+    return f"{e[:8]}", f"주기: {e}"
 
 def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, str]:
     """Return (left_tag, kind_label, time_col_str, detail_timing_ko) with zero LLM token overhead."""
@@ -2982,18 +3029,25 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 return ""
             bt_desc = bgt["desc"]
             bt_kind = bgt.get("kind") or "job"
+            if bt_kind == "cron":
+                clean_desc = re.sub(r"^Cron:\s*[^,]+,\s*Prompt:\s*", "", bt_desc, flags=re.IGNORECASE).strip()
+                if clean_desc:
+                    bt_desc = clean_desc.strip('"\'')
             bt_tag, bt_kind_lbl, bt_time_str, bt_timing_ko = _fmt_bg_badge_and_timing(bgt, now_sec)
             is_dmn_or_tmr = bt_kind in ("daemon", "timer")
             node_cls = "tree-node bg-daemon-node" if is_dmn_or_tmr else "tree-node"
             if is_dmn_or_tmr and not show_bg_daemons:
                 node_cls += " hidden"
             bt_dot = "busy" if bt_kind == "job" else "idle-fresh"
-            bt_pill = (
-                f'<span class="model-pill bg-task" title="{_html_esc(bt_timing_ko)} · #{_html_esc(bt_id)}: {_html_esc(bt_desc)}">'
-                f'<span class="mp-full">{_html_esc(bt_kind_lbl)}</span>'
-                f'<span class="mp-short">{_html_esc(bt_kind_lbl)}</span>'
-                f'</span>'
-            )
+            if bt_kind == "cron":
+                bt_pill = ""
+            else:
+                bt_pill = (
+                    f'<span class="model-pill bg-task" title="{_html_esc(bt_timing_ko)} · #{_html_esc(bt_id)}: {_html_esc(bt_desc)}">'
+                    f'<span class="mp-full">{_html_esc(bt_kind_lbl)}</span>'
+                    f'<span class="mp-short">{_html_esc(bt_kind_lbl)}</span>'
+                    f'</span>'
+                )
             if bt_kind == "cron":
                 repeat_svg = (
                     '<svg class="ctx-repeat-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" '
@@ -3478,9 +3532,23 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
                 f'{_render_model_icons_html(m_icons, 10)}</span>'
                 if show_compact_pool else ""
             )
+            token_line = ""
+            total_tok = w.get("totalTokens") or POOL_TOKEN_CAPACITIES.get(w.get("poolKey"))
+            if total_tok and rem is not None:
+                rem_tok = int(round(total_tok * (rem / 100.0)))
+                token_line = f"\n토큰 용량: 잔여 약 {format_token_korean(rem_tok)} / 총 {format_token_korean(total_tok)} 토큰"
+
+            tip = (
+                f'{acc.get("name","")} · {w.get("label","")}\n'
+                f'바깥 링: 남음 {disp_pct} ({st_label})\n'
+                f'안쪽 시계원: {"리셋 대기중 (미사용)" if prog is None else f"기간 {int(round(prog * 100))}% 경과"}\n'
+                f'리셋: {rem_cd} ({w.get("resetText","")} KST)'
+                f'{token_line}'
+            )
+
             win_html.append(
                 f'<div class="usage-window {st_id}">'
-                f'<button type="button" class="usage-gauge-button">'
+                f'<button type="button" class="usage-gauge-button" data-tip="{_html_esc(tip)}" title="{_html_esc(tip)}">'
                 f'{compact_pool_html}'
                 f'<div class="usage-donut {st_id}">'
                 f'<svg viewBox="0 0 64 64" aria-hidden="true">'

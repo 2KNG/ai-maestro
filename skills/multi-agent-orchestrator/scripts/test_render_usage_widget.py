@@ -120,10 +120,10 @@ class RenderingTests(unittest.TestCase):
             self.assertIn('└─', active[pos_cron - 350:pos_cron])
             self.assertIn('├─', active[pos_run_sub - 350:pos_run_sub])
 
-            # 3. Cron indicator: calm idle-fresh status dot, SVG repeat icon, ctx-time-txt with ⏱ 15m
+            # 3. Cron indicator: calm idle-fresh status dot, SVG repeat icon, ctx-time-txt with 15m
             self.assertIn('status-dot idle-fresh', active[pos_cron - 350:pos_cron])
             self.assertIn('ctx-repeat-ico', active[pos_cron:pos_cron + 1000])
-            self.assertIn('<span class="ctx-time-txt">⏱ 15m</span>', active[pos_cron:pos_cron + 1000])
+            self.assertIn('<span class="ctx-time-txt">15m</span>', active[pos_cron:pos_cron + 1000])
 
     def test_cron_alone_does_not_force_parent_running(self):
         now = datetime.now(timezone.utc)
@@ -238,27 +238,27 @@ class RenderingTests(unittest.TestCase):
 
     def test_cron_quote_and_hourly_formatting(self):
         badge, tooltip = widget._fmt_cron_short('"7 * * * *"')
-        self.assertEqual(badge, '⏱ 1h')
+        self.assertEqual(badge, '1h')
         self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('7 * * * *')
-        self.assertEqual(badge, '⏱ 1h')
+        self.assertEqual(badge, '1h')
         self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('"0 */2 * * *"')
-        self.assertEqual(badge, '⏱ 2h')
+        self.assertEqual(badge, '2h')
         self.assertEqual(tooltip, '주기: 0 */2 * * *')
 
         badge, tooltip = widget._fmt_cron_short('"0 * * * *"')
-        self.assertEqual(badge, '⏱ 1h')
+        self.assertEqual(badge, '1h')
         self.assertEqual(tooltip, '매시간 정각 (0 * * * *)')
 
         badge, tooltip = widget._fmt_cron_short('0 0 * * *')
-        self.assertEqual(badge, '⏱ 1d')
+        self.assertEqual(badge, '1d')
         self.assertEqual(tooltip, '매일 (0 0 * * *)')
 
         badge, tooltip = widget._fmt_cron_short('')
-        self.assertEqual(badge, '⏱ 반복')
+        self.assertEqual(badge, '반복')
         self.assertEqual(tooltip, '정기 실행 대기')
 
     def test_stale_subagent_over_180s_not_active(self):
@@ -273,6 +273,70 @@ class RenderingTests(unittest.TestCase):
         with mock.patch("os.path.exists", return_value=False):
             is_active = widget._agy_worker_is_active(stale_sub, set())
             self.assertFalse(is_active)
+
+    def test_cron_clean_desc_and_no_redundant_model_pill(self):
+        now = datetime.now(timezone.utc)
+        iso_now = now.isoformat()
+        cid = 'testparent-cron-0001'
+        parent = dict(
+            conversation_id=cid,
+            status='ACTIVE',
+            last_modified_time=iso_now,
+            title='Cockpit Project',
+        )
+        cron_task = {
+            'id': f'{cid}/task-12',
+            'short_id': 'task-12',
+            'desc': 'Cron: 7 * * * *, Prompt: [Hourly Audit] 1시간 주기 콕핏 점검',
+            'kind': 'cron',
+            'cron_expr': '7 * * * *',
+            'created_at': iso_now,
+            'done': False,
+        }
+        with mock.patch.object(widget, '_extract_active_bg_tasks', return_value=[cron_task]):
+            active, _, _, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'antigravity': [parent]}}, {}
+            )
+            # 1. Raw Cron/Prompt prefix must be cleanly stripped
+            self.assertIn('[Hourly Audit] 1시간 주기 콕핏 점검', active)
+            self.assertNotIn('Cron: 7 * * * *, Prompt:', active)
+            # 2. Right-side Cron model-pill must be omitted to prevent triple-repetition
+            pos_cron_row = active.find('node-bg-testpare-task-12')
+            self.assertNotEqual(pos_cron_row, -1)
+            row_chunk = active[pos_cron_row:pos_cron_row + 1200]
+            self.assertNotIn('<span class="mp-full">Cron</span>', row_chunk)
+            # 3. Repeat pill has 1h without ⏱ emoji
+            self.assertIn('<span class="ctx-time-txt">1h</span>', row_chunk)
+
+    def test_token_capacity_and_korean_formatting(self):
+        self.assertEqual(widget.format_token_korean(193_000_000), "1억 9,300만")
+        self.assertEqual(widget.format_token_korean(621_000_000), "6억 2,100만")
+        self.assertEqual(widget.format_token_korean(2_120_000), "212만")
+        self.assertEqual(widget.format_token_korean(31_240_000), "3,124만")
+
+        accs = widget.build_accounts({
+            "antigravity": {"pools": {
+                "Gemini Pool (Argon / Flash)": {"five_hour": {"remaining_percent": 90.0}},
+            }},
+            "codex_local": {
+                "five_hour": {"remaining_percent": 100.0},
+                "weekly": {"remaining_percent": 50.0},
+            }
+        })
+        gem = next(a for a in accs if a["provider"] == "antigravity")
+        gem_5h = gem["windows"][0]
+        self.assertEqual(gem_5h.get("totalTokens"), 193_000_000)
+
+        cdx = next(a for a in accs if a["provider"] == "codex")
+        cdx_5h = next(w for w in cdx["windows"] if w["periodKind"] == "5h")
+        self.assertNotIn("totalTokens", cdx_5h)
+        cdx_7d = next(w for w in cdx["windows"] if w["periodKind"] == "7d")
+        self.assertEqual(cdx_7d.get("totalTokens"), 31_240_000)
+
+        html = widget.build_static_quota_grid_html(accs)
+        self.assertIn("토큰 용량: 잔여 약", html)
+        self.assertIn("1억 9,300만 토큰", html)
+        self.assertIn("3,124만 토큰", html)
 
 
 if __name__ == '__main__':
