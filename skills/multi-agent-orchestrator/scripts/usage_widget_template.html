@@ -3685,9 +3685,17 @@
       });
 
       newChildren.forEach(newChild => {
-        const id = newChild.dataset.nodeId;
-        const oldChild = id ? oldChildren.get(id) : null;
+        const nid = newChild.getAttribute('data-node-id') || newChild.dataset.nodeId;
+        const isRunning = newChild.getAttribute('data-sub-running') === '1' || newChild.dataset.subRunning === '1';
+        if (isRunning && nid) {
+          evaporatedSubIds.delete(nid);
+        }
+        const oldChild = nid ? oldChildren.get(nid) : null;
         if (!oldChild) {
+          if (!isRunning && nid && evaporatedSubIds.has(nid)) {
+            // SKIP appending it so it NEVER resurrects on subsequent 4s polls!
+            return;
+          }
           newChild.classList.add('node-enter');
           oldBr.appendChild(newChild);
         } else {
@@ -3717,6 +3725,9 @@
             }
           }
           if (newChild.dataset.subRunning !== undefined) oldChild.dataset.subRunning = newChild.dataset.subRunning;
+          if (newChild.getAttribute('data-idle-age') !== null) {
+            oldChild.setAttribute('data-idle-age', newChild.getAttribute('data-idle-age'));
+          }
         }
       });
     }
@@ -3883,6 +3894,8 @@
     }
 
     const ripenStartMap = new Map();
+    const evaporatedSubIds = new Set();
+    const RIPEN_REMOVE_SEC = 60;
 
     function formatSecCompact(sec) {
       sec = Math.max(1, Math.floor(sec));
@@ -3900,21 +3913,28 @@
     }
 
     function tickSubRipening() {
-      const nowSec = Date.now() / 1000;
+      const now = Date.now();
+      const nowSec = now / 1000;
       let changedTree = false;
 
       // 1. Monotonic ripening for subagent dots and pills
       document.querySelectorAll('#view-active .tree-node.sub-ripening').forEach(node => {
         if (node.classList.contains('hidden') || node.classList.contains('sub-evaporating') || node.dataset.exiting === '1') return;
-        if (node.dataset.subRunning === '1') return;
-        const nid = node.dataset.nodeId || '';
+        if (node.getAttribute('data-sub-running') === '1' || node.dataset.subRunning === '1') return;
+        const nid = node.getAttribute('data-node-id') || node.dataset.nodeId || '';
         let startSec = ripenStartMap.get(nid);
         if (startSec === undefined) {
-          const doneTs = Number(node.dataset.doneTs || 0);
-          if (doneTs > 0 && Math.abs(nowSec - doneTs) <= 60) {
-            startSec = doneTs;
+          const rawIdleAge = node.getAttribute('data-idle-age');
+          if (rawIdleAge !== null && rawIdleAge !== '') {
+            const initialAge = parseFloat(rawIdleAge || '0');
+            startSec = nowSec - initialAge;
           } else {
-            startSec = nowSec;
+            const doneTs = Number(node.dataset.doneTs || 0);
+            if (doneTs > 0 && Math.abs(nowSec - doneTs) <= RIPEN_REMOVE_SEC) {
+              startSec = doneTs;
+            } else {
+              startSec = nowSec;
+            }
           }
           ripenStartMap.set(nid, startSec);
         }
@@ -3922,7 +3942,8 @@
         node.dataset.subAge = String(age);
         const dot = node.querySelector(':scope > .agent-row .status-dot');
         const pill = node.querySelector(':scope > .agent-row .ctx-pill:not(.bg-time)');
-        if (age >= 60) {
+        if (age >= RIPEN_REMOVE_SEC) {
+          if (nid) evaporatedSubIds.add(nid);
           node.dataset.exiting = '1';
           node.classList.add('sub-evaporating', 'node-exit');
           setTimeout(() => {

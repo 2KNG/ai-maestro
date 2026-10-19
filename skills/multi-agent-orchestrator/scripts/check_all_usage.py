@@ -940,6 +940,7 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
     step_cron_hints: dict[int, str] = {}
+    step_worker_spawn_hints: dict[int, bool] = {}
     try:
         with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -960,10 +961,22 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
                     tname = tc.get("name")
                     raw_args = tc.get("arguments") or tc.get("args") or {}
                     targs = str(raw_args)
-                    if tname == "run_command" and ('"IsDaemon": "true"' in targs or '"IsDaemon": true' in targs or "'IsDaemon': True" in targs):
-                        step_daemon_hints[sidx] = True
-                        step_daemon_hints[sidx + 1] = True
-                        step_daemon_hints[sidx + 2] = True
+                    if tname == "run_command":
+                        if ('"IsDaemon": "true"' in targs or '"IsDaemon": true' in targs or "'IsDaemon': True" in targs):
+                            step_daemon_hints[sidx] = True
+                            step_daemon_hints[sidx + 1] = True
+                            step_daemon_hints[sidx + 2] = True
+                        cmd_line = ""
+                        if isinstance(raw_args, dict):
+                            cmd_line = str(raw_args.get("CommandLine") or "")
+                        else:
+                            cm_cmd = re.search(r'"CommandLine"\s*:\s*"([^"]+)"', targs)
+                            if cm_cmd:
+                                cmd_line = cm_cmd.group(1)
+                        if any(k in cmd_line for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start")):
+                            step_worker_spawn_hints[sidx] = True
+                            step_worker_spawn_hints[sidx + 1] = True
+                            step_worker_spawn_hints[sidx + 2] = True
                     elif tname == "schedule" and "CronExpression" in targs:
                         cexpr = ""
                         if isinstance(raw_args, dict):
@@ -972,6 +985,7 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
                             cm = re.search(r'"CronExpression"\s*:\s*"([^"]+)"', targs)
                             if cm:
                                 cexpr = cm.group(1)
+                        cexpr = cexpr.strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
                         step_cron_hints[sidx] = cexpr or "cron"
                         step_cron_hints[sidx + 1] = cexpr or "cron"
 
@@ -988,12 +1002,18 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
                     short_id = tid.split("/")[-1]
                     num_m = re.search(r"task-(\d+)", short_id)
                     tnum = int(num_m.group(1)) if num_m else sidx
+                    if (
+                        step_worker_spawn_hints.get(tnum, False)
+                        or step_worker_spawn_hints.get(sidx, False)
+                        or any(k in desc for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start"))
+                    ):
+                        continue
                     is_timer = desc.startswith("Timer:")
                     cron_hint = step_cron_hints.get(tnum) or step_cron_hints.get(sidx) or ""
                     if not cron_hint and desc.startswith("Cron:"):
                         cm2 = re.match(r"^Cron:\s*([^,]+)(?:,|$)", desc)
                         cron_hint = cm2.group(1).strip() if cm2 else "cron"
-                    cron_hint = cron_hint.rstrip(",").strip()
+                    cron_hint = cron_hint.strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
                     is_cron = bool(cron_hint) or desc.startswith("Cron:")
                     is_daemon = (
                         step_daemon_hints.get(tnum, False)
@@ -1147,15 +1167,24 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
         created_time = summary.get("createdTime", "")
         last_mod = summary.get("lastModifiedTime", "")
         t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+        t_age_sec = None
         if os.path.exists(t_path):
             try:
                 t_mtime = os.path.getmtime(t_path)
+                t_age_sec = max(0.0, time.time() - t_mtime)
                 t_iso = datetime.datetime.fromtimestamp(t_mtime, timezone.utc).isoformat()
                 if not last_mod or t_iso > last_mod:
                     last_mod = t_iso
             except OSError:
                 pass
         workspaces = [w.get("workspaceFolderAbsoluteUri", "") for w in summary.get("workspaces", [])]
+
+        is_subagent = bool(parent_id or depth > 0 or spec)
+        is_running_agy = (str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"))
+        if is_subagent and t_age_sec is not None and t_age_sec > 180:
+            is_running_agy = False
+            if str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"):
+                status = "CASCADE_RUN_STATUS_DONE"
 
         gm_info = fetch_generator_metadata(cid, last_mod, status)
         model_id = gm_info.get("model_id") or reg_info.get("plan_model") or spec.get("model")
@@ -1172,6 +1201,8 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "model": model,
             "model_id": model_id,
             "status": status,
+            "is_running": is_running_agy,
+            "is_subagent": is_subagent,
             "created_time": created_time,
             "last_modified_time": last_mod,
             **_extract_agy_turn_timing(cid, created_time, last_mod),

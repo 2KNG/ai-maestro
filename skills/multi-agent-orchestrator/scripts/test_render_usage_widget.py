@@ -81,13 +81,14 @@ class RenderingTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         iso_now = now.isoformat()
         iso_old = (now - timedelta(minutes=10)).isoformat()
+        iso_done = (now - timedelta(seconds=20)).isoformat()
         cid = 'testparent-0001-0000-0000-000000000001'
         parent = dict(
             conversation_id=cid,
             status='IDLE',
             last_modified_time=iso_old,
             children=[
-                dict(conversation_id='sub-done-001', role='Completed Subagent', last_modified_time=iso_old, status='CASCADE_RUN_STATUS_DONE'),
+                dict(conversation_id='sub-done-001', role='Completed Subagent', last_modified_time=iso_done, status='CASCADE_RUN_STATUS_DONE'),
                 dict(conversation_id='sub-run-001', role='Running Subagent', last_modified_time=iso_now, status='CASCADE_RUN_STATUS_RUNNING'),
             ],
         )
@@ -167,6 +168,103 @@ class RenderingTests(unittest.TestCase):
         finally:
             if os.path.exists(tpath):
                 os.remove(tpath)
+
+    def test_completed_subagent_filtered_after_65s(self):
+        now = datetime.now(timezone.utc)
+        iso_fresh = (now - timedelta(seconds=30)).isoformat()
+        iso_expired = (now - timedelta(seconds=70)).isoformat()
+        cid = 'testparent-0003-0000-0000-000000000003'
+        parent = dict(
+            conversation_id=cid,
+            status='IDLE',
+            last_modified_time=iso_fresh,
+            children=[
+                dict(conversation_id='sub-fresh-001', role='Fresh Subagent', last_modified_time=iso_fresh, status='CASCADE_RUN_STATUS_DONE'),
+                dict(conversation_id='sub-expired-001', role='Expired Subagent', last_modified_time=iso_expired, status='CASCADE_RUN_STATUS_DONE'),
+            ],
+        )
+        active, _, _, _ = widget.build_active_and_closed_trees_html(
+            {'agent_trees': {'antigravity': [parent]}}, {}
+        )
+        self.assertIn('Fresh Subagent', active)
+        self.assertNotIn('Expired Subagent', active)
+        self.assertIn('data-idle-age="30"', active)
+        self.assertIn('class="tree-node sub-node sub-ripening"', active)
+
+    def test_filter_worker_start_jobs(self):
+        import tempfile
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        lines = [
+            json.dumps({
+                "step_index": 1,
+                "tool_calls": [{
+                    "name": "run_command",
+                    "args": {"CommandLine": "/home/mjserver/.local/bin/maestro worker-start --pool auto --spec 'fix bug'"}
+                }],
+                "created_at": now_iso
+            }),
+            json.dumps({
+                "step_index": 2,
+                "content": "background task with task id: test/task-301\nTask Description: Run command: /home/mjserver/.local/bin/maestro worker-start --pool auto",
+                "created_at": now_iso
+            }),
+            json.dumps({
+                "step_index": 3,
+                "tool_calls": [{
+                    "name": "run_command",
+                    "args": {"CommandLine": "npm run test"}
+                }],
+                "created_at": now_iso
+            }),
+            json.dumps({
+                "step_index": 4,
+                "content": "background task with task id: test/task-302\nTask Description: Run command: npm run test",
+                "created_at": now_iso
+            }),
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as tf:
+            tf.write("\n".join(lines) + "\n")
+            tpath = tf.name
+        try:
+            with mock.patch("os.path.expanduser", return_value=tpath), mock.patch("os.path.exists", return_value=True):
+                tasks = widget._extract_active_bg_tasks("dummy-cid", now.timestamp())
+                task_ids = [t["short_id"] for t in tasks]
+                self.assertNotIn("task-301", task_ids)
+                self.assertIn("task-302", task_ids)
+        finally:
+            if os.path.exists(tpath):
+                os.remove(tpath)
+
+    def test_cron_quote_and_hourly_formatting(self):
+        badge, tooltip = widget._fmt_cron_short('"7 * * * *"')
+        self.assertEqual(badge, '⏰ 1h주기')
+        self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
+
+        badge, tooltip = widget._fmt_cron_short('7 * * * *')
+        self.assertEqual(badge, '⏰ 1h주기')
+        self.assertEqual(tooltip, '매시 7분 (7 * * * *)')
+
+        badge, tooltip = widget._fmt_cron_short('"0 */2 * * *"')
+        self.assertEqual(badge, '⏰ 2h주기')
+        self.assertEqual(tooltip, '주기: 0 */2 * * *')
+
+        badge, tooltip = widget._fmt_cron_short('"0 * * * *"')
+        self.assertEqual(badge, '⏰ 1h주기')
+        self.assertEqual(tooltip, '매시간 정각 (0 * * * *)')
+
+    def test_stale_subagent_over_180s_not_active(self):
+        now = datetime.now(timezone.utc).timestamp()
+        stale_sub = {
+            "conversation_id": "stale-sub-123",
+            "role": "Subagent",
+            "is_subagent": True,
+            "status": "CASCADE_RUN_STATUS_RUNNING",
+            "last_modified_time": datetime.fromtimestamp(now - 200, timezone.utc).isoformat(),
+        }
+        with mock.patch("os.path.exists", return_value=False):
+            is_active = widget._agy_worker_is_active(stale_sub, set())
+            self.assertFalse(is_active)
 
 
 if __name__ == '__main__':

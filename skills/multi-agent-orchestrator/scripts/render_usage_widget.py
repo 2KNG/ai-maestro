@@ -58,6 +58,9 @@ def fmt_k(tokens: int | float) -> str:
     return str(tokens)
 
 
+SUB_IDLE_RETENTION_SEC = 65
+
+
 def _fmt_duration(node: dict) -> str:
     """Use the same latest-turn duration as the collapsed row."""
     _, _, duration = _node_turn_timing(node)
@@ -1888,12 +1891,19 @@ def _sub_prefix_html(
 
 
 def _fmt_cron_short(expr: str) -> tuple[str, str]:
-    e = (expr or "").rstrip(",").strip()
+    e = (expr or "").strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
     if not e:
         return "⏰ 대기", "정기 실행 대기"
     m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", e)
     if m:
         return f"⏰ {m.group(1)}m주기", f"{m.group(1)}분마다 ({e})"
+    parts = e.split()
+    if len(parts) == 5:
+        if parts[0].isdigit() and parts[1] == "*" and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
+            ko_tip = f"매시간 정각 ({e})" if parts[0] == "0" else f"매시 {parts[0]}분 ({e})"
+            return "⏰ 1h주기", ko_tip
+        if parts[0].isdigit() and parts[1].startswith("*/"):
+            return f"⏰ {parts[1][2:]}h주기", f"주기: {e}"
     m_hr = re.match(r"^0\s+\*/(\d+)\s+\*\s+\*\s+\*$", e)
     if m_hr:
         return f"⏰ {m_hr.group(1)}h주기", f"{m_hr.group(1)}시간마다 ({e})"
@@ -1964,6 +1974,7 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
     step_cron_hints: dict[int, str] = {}
+    step_worker_spawn_hints: dict[int, bool] = {}
     try:
         with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -1984,10 +1995,22 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
                     tname = tc.get("name")
                     raw_args = tc.get("arguments") or tc.get("args") or {}
                     targs = str(raw_args)
-                    if tname == "run_command" and ('"IsDaemon": "true"' in targs or '"IsDaemon": true' in targs or "'IsDaemon': True" in targs):
-                        step_daemon_hints[sidx] = True
-                        step_daemon_hints[sidx + 1] = True
-                        step_daemon_hints[sidx + 2] = True
+                    if tname == "run_command":
+                        if ('"IsDaemon": "true"' in targs or '"IsDaemon": true' in targs or "'IsDaemon': True" in targs):
+                            step_daemon_hints[sidx] = True
+                            step_daemon_hints[sidx + 1] = True
+                            step_daemon_hints[sidx + 2] = True
+                        cmd_line = ""
+                        if isinstance(raw_args, dict):
+                            cmd_line = str(raw_args.get("CommandLine") or "")
+                        else:
+                            cm_cmd = re.search(r'"CommandLine"\s*:\s*"([^"]+)"', targs)
+                            if cm_cmd:
+                                cmd_line = cm_cmd.group(1)
+                        if any(k in cmd_line for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start")):
+                            step_worker_spawn_hints[sidx] = True
+                            step_worker_spawn_hints[sidx + 1] = True
+                            step_worker_spawn_hints[sidx + 2] = True
                     elif tname == "schedule" and "CronExpression" in targs:
                         cexpr = ""
                         if isinstance(raw_args, dict):
@@ -1996,6 +2019,7 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
                             cm = re.search(r'"CronExpression"\s*:\s*"([^"]+)"', targs)
                             if cm:
                                 cexpr = cm.group(1)
+                        cexpr = cexpr.strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
                         step_cron_hints[sidx] = cexpr or "cron"
                         step_cron_hints[sidx + 1] = cexpr or "cron"
 
@@ -2012,12 +2036,18 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
                     short_id = tid.split("/")[-1]
                     num_m = re.search(r"task-(\d+)", short_id)
                     tnum = int(num_m.group(1)) if num_m else sidx
+                    if (
+                        step_worker_spawn_hints.get(tnum, False)
+                        or step_worker_spawn_hints.get(sidx, False)
+                        or any(k in desc for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start"))
+                    ):
+                        continue
                     is_timer = desc.startswith("Timer:")
                     cron_hint = step_cron_hints.get(tnum) or step_cron_hints.get(sidx) or ""
                     if not cron_hint and desc.startswith("Cron:"):
                         cm2 = re.match(r"^Cron:\s*([^,]+)(?:,|$)", desc)
                         cron_hint = cm2.group(1).strip() if cm2 else "cron"
-                    cron_hint = cron_hint.rstrip(",").strip()
+                    cron_hint = cron_hint.strip().strip('"\'\\').rstrip(",").strip().strip('"\'\\')
                     is_cron = bool(cron_hint) or desc.startswith("Cron:")
                     is_daemon = (
                         step_daemon_hints.get(tnum, False)
@@ -2271,8 +2301,9 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     c_node_id = f"node-sub-claude-{sid}"
     pct = float(tokens.get("percent") or 0.0)
 
+    c_ts = int(_parse_any_ts(node.get("updated_at")) or 0)
     return (
-        f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}">'
+        f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}" data-idle-age="{int(age)}" data-done-ts="{c_ts}">'
         f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-claude-{sid}\')">'
         f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
         f'{c_icon}'
@@ -2442,8 +2473,29 @@ def _codex_worker_is_active(node: dict, live_ids: set[str], paths: dict[str, str
 
 
 def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
+    cid = node.get("conversation_id", "")
+    is_sub = bool(
+        node.get("is_subagent")
+        or node.get("parent_conversation_id")
+        or (node.get("nesting_depth", 0) > 0)
+        or (node.get("role") and "Subagent" in str(node.get("role", "")))
+    )
+    if is_sub:
+        age_sec = None
+        if cid:
+            t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+            if os.path.exists(t_path):
+                try:
+                    age_sec = max(0.0, time.time() - os.path.getmtime(t_path))
+                except OSError:
+                    pass
+        if age_sec is None and node.get("last_modified_time"):
+            age_sec = _age_sec_from_iso(node.get("last_modified_time") or "")
+        if age_sec is not None and age_sec > 180:
+            return False
+
     return (str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING")
-            or node.get("is_running") is True or node.get("conversation_id") in live_ids)
+            or node.get("is_running") is True or cid in live_ids)
 
 
 def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], now_sec: float) -> tuple[bool, float]:
@@ -2486,7 +2538,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     cdx_list = _merge_registry_workers(cdx_list, "codex")
     claude_list = _merge_registry_workers(trees_raw.get("claude", []), "claude")
     claude_list = [c for c in claude_list if c.get("session_id") in live_claude_ids
-                   or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= 1200]
+                   or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC]
     rollout_paths = _codex_rollout_paths(cdx_list)
     running_codex = [
         c for c in cdx_list
@@ -2570,7 +2622,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_imported = (node_id in imported or cid in imported)
         is_dismissed = not is_pinned and (node_id in dismissed or cid in dismissed or f"closed-agy-{cid8}" in dismissed)
         if is_internal_worker and not is_pinned and not is_imported:
-            if "Reply with a single word" not in raw_t and (_agy_worker_is_active(n, live_agy_ids) or age_sec_ag <= 1200):
+            if "Reply with a single word" not in raw_t and (_agy_worker_is_active(n, live_agy_ids) or age_sec_ag <= SUB_IDLE_RETENTION_SEC):
                 internal_ag_workers.append(n)
             closed_ag.append(n)
         elif (is_running or is_pinned or is_imported or age_days_ag <= 7) and not is_dismissed:
@@ -2595,7 +2647,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_imported = (node_id in imported or tid in imported)
         is_dismissed = not is_pinned and (node_id in dismissed or tid in dismissed or f"closed-cdx-{tid8}" in dismissed)
         if is_internal_cdx and not is_pinned and not is_imported:
-            if is_live_running or age_sec_cdx <= 1200:
+            if is_live_running or age_sec_cdx <= SUB_IDLE_RETENTION_SEC:
                 internal_cdx_workers.append(c)
             if not c.get("registry_only"):
                 closed_cdx.append(c)
@@ -2768,7 +2820,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             sub_slot_idx += 1
             c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
             c_html = (
-                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-done-ts="{int(c_ts)}">'
+                f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
                 f'<div class="agent-left">'
                 f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
@@ -2789,9 +2841,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             )
             subagent_items.append((0 if c_live else 1, -c_ts, c_html))
 
-        ag_children_all = list(extra_ag_workers) + [
-            c for c in (ag.get("children") or [])
-            if _agy_worker_is_active(c, live_agy_ids) or _age_sec_from_iso(c.get("last_modified_time") or "") <= 1200
+        ag_children_all = [
+            c for c in (list(extra_ag_workers) + (ag.get("children") or []))
+            if _agy_worker_is_active(c, live_agy_ids) or _age_sec_from_iso(c.get("last_modified_time") or "") <= SUB_IDLE_RETENTION_SEC
         ]
         seen_ag_child_cids = set()
         ag_children = []
@@ -2803,7 +2855,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             ag_children.append(ch)
 
         running_ag = [c for c in ag_children if _agy_worker_is_active(c, live_agy_ids)]
-        completed_ag = [c for c in ag_children if not _agy_worker_is_active(c, live_agy_ids)]
+        completed_ag = [
+            c for c in ag_children
+            if not _agy_worker_is_active(c, live_agy_ids) and _age_sec_from_iso(c.get("last_modified_time") or "") <= SUB_IDLE_RETENTION_SEC
+        ]
         ag_children = running_ag + completed_ag[:max(0, 6 - len(subagent_items) - len(running_ag))]
         for ch in ag_children:
             ccid = ch.get("conversation_id", "")
@@ -2823,7 +2878,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_repo = _repo_from_uris_or_cwd(ch.get("workspaces"))[0] if ch.get("workspaces") else repo
             c_ts = _parse_any_ts(ch.get("last_modified_time")) or 0.0
             c_html = (
-                f'<div class="tree-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}" data-done-ts="{int(c_ts)}">'
+                f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-{ccid8}\')">'
                 f'<div class="agent-left">'
                 f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
