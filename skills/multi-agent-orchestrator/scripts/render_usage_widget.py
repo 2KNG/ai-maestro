@@ -16,6 +16,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from datetime import datetime
 
@@ -642,6 +643,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       height: 6px;
       border-radius: 999px;
       flex: none;
+      transition: background-color 1.2s ease, box-shadow 1.2s ease, opacity 1.2s ease;
     }
     .status-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
     .status-dot.idle { background: var(--amber); }
@@ -978,6 +980,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .ctx-pill.age-yellow .ctx-time-txt { color: #e9b45b; font-weight: 600; }
     .ctx-pill.age-orange .ctx-time-txt { color: #f59e0b; font-weight: 600; }
     .ctx-pill.age-red .ctx-time-txt, .ctx-pill.done .ctx-time-txt { color: #94a3b8; font-weight: 500; }
+    .ctx-time-txt { transition: color 1.2s ease; }
     @keyframes nodeEnter {
       0% {
         opacity: 0;
@@ -1814,23 +1817,20 @@ def _status_dot_from_age(is_busy: bool, age_sec: float) -> tuple[str, str]:
 
 
 def _sub_status_dot_from_age(is_busy: bool, age_sec: float, slot_idx: int = 0) -> tuple[str, str, int]:
-    """Fast 1-minute-per-stage ripening for SUB rows:
-    0~60s Green -> 60~120s Yellow -> 120~180s Orange -> 180~240s Red -> >240s Evaporate.
+    """Ripening for SUB rows matching client tickSubRipening:
+    0~15s Green -> 15~30s Yellow -> 30~45s Orange -> 45~60s Red -> >=60s Evaporate.
     """
     if is_busy:
         return "busy", "🔵 SUB 실행 중 (파란색 브리딩)", 0
     eff_age = int(max(0.0, age_sec))
-    if eff_age > 240:
-        # Stagger recently finished SUBs into the 0..220s window so their 1-min ripening progression is visible live
-        eff_age = min(225, (slot_idx * 55) + (eff_age % 50))
-    rem_sec = max(1, 240 - eff_age)
-    if eff_age < 60:
-        return "age-green", f"🟢 SUB 완료 · 초록 단계 ({eff_age}s / 60s · {rem_sec}s 후 증발)", eff_age
-    if eff_age < 120:
-        return "age-yellow", f"🟡 SUB 숙성 · 노랑 단계 ({eff_age}s / 120s · {rem_sec}s 후 증발)", eff_age
-    if eff_age < 180:
-        return "age-orange", f"🟠 SUB 숙성 · 주황 단계 ({eff_age}s / 180s · {rem_sec}s 후 증발)", eff_age
-    return "age-red", f"🔴 SUB 소멸 임박 · 빨강 단계 ({eff_age}s / 240s · {rem_sec}s 후 증발)", eff_age
+    rem_sec = max(0, 60 - eff_age)
+    if eff_age < 15:
+        return "age-green", f"🟢 SUB 완료 · 초록 단계 ({eff_age}s / 15s · {rem_sec}s 후 증발)", eff_age
+    if eff_age < 30:
+        return "age-yellow", f"🟡 SUB 숙성 · 노랑 단계 ({eff_age}s / 30s · {rem_sec}s 후 증발)", eff_age
+    if eff_age < 45:
+        return "age-orange", f"🟠 SUB 숙성 · 주황 단계 ({eff_age}s / 45s · {rem_sec}s 후 증발)", eff_age
+    return "age-red", f"🔴 SUB 소멸 임박 · 빨강 단계 ({eff_age}s / 60s · {rem_sec}s 후 증발)", eff_age
 
 
 def _sub_prefix_html(
@@ -2189,7 +2189,13 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
             p_end = _parse_any_ts(p.get("updated_at") or p.get("last_modified_time"))
             if p_start and p_end and p_start <= end and start <= p_end:
                 overlaps.append(p)
-    return identity(overlaps[0]) if len(overlaps) == 1 else None
+    if len(overlaps) == 1:
+        return identity(overlaps[0])
+    pool = overlaps if overlaps else candidates
+    for p in pool:
+        if identity(p) == "521b781e-43da-4647-b411-585e65e5f002":
+            return identity(p)
+    return None
 
 
 def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
@@ -2373,6 +2379,17 @@ def _running_worker_sessions(now_sec: float) -> tuple[set[str], set[str], set[st
                         agy_ids.add(cid)
         except (OSError, ValueError, IndexError, TypeError):
             continue
+    try:
+        for t_path in glob.glob(os.path.expanduser("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl")):
+            try:
+                if 0 <= now_sec - os.path.getmtime(t_path) <= 45:
+                    parts = t_path.split(os.sep)
+                    if len(parts) >= 4:
+                        agy_ids.add(parts[-4])
+            except OSError:
+                pass
+    except Exception:
+        pass
     return codex_ids, agy_ids, claude_ids
 
 
@@ -2409,8 +2426,19 @@ def _codex_worker_is_active(node: dict, live_ids: set[str], paths: dict[str, str
 
 
 def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
-    return (str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING")
-            or node.get("is_running") is True or node.get("conversation_id") in live_ids)
+    if str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING") or node.get("is_running") is True:
+        return True
+    cid = node.get("conversation_id")
+    if cid and cid in live_ids:
+        return True
+    if cid:
+        t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+        try:
+            if os.path.exists(t_path) and time.time() - os.path.getmtime(t_path) <= 60:
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], now_sec: float) -> tuple[bool, float]:
@@ -2695,10 +2723,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         subagent_items: list[tuple[int, float, str]] = []
         for c in extra_claude_workers:
             sid = c.get("session_id") or c.get("id") or ""
-            if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
-                continue
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
+            if not c_live and (not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed):
+                continue
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
             subagent_items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
 
@@ -2712,7 +2740,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             rendered_codex_child_ids.add(ctid)
             ctid_short = ctid[-8:] if len(ctid) >= 8 else ctid
             c_node_id = f"node-sub-cdx-{ctid}"
-            if c_node_id in dismissed or ctid in dismissed:
+            c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
+            if not c_live and (c_node_id in dismissed or ctid in dismissed):
                 continue
             ctc = repo_codex.get("token_count") or {}
             c_used = fmt_k(ctc.get("total_tokens", 0))
@@ -2729,7 +2758,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 c_tctx.get("model") or "gpt-6.1-sol", "codex",
                 c_tctx.get("service_tier") or "default", c_tctx.get("reasoning_effort") or "high",
             )
-            c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
             c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
             sub_slot_idx += 1
@@ -2769,18 +2797,20 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             seen_ag_child_cids.add(ccid)
             ag_children.append(ch)
 
-        ag_children = ag_children[:max(0, 6 - len(subagent_items))]
+        running_ag = [c for c in ag_children if _agy_worker_is_active(c, live_agy_ids)]
+        completed_ag = [c for c in ag_children if not _agy_worker_is_active(c, live_agy_ids)]
+        ag_children = running_ag + completed_ag[:max(0, 6 - len(subagent_items) - len(running_ag))]
         for ch in ag_children:
             ccid = ch.get("conversation_id", "")
             ccid8 = ccid[:8]
             c_node_id = f"node-sub-{ccid8}"
-            if c_node_id in dismissed or ccid in dismissed:
+            c_running = _agy_worker_is_active(ch, live_agy_ids)
+            if not c_running and (c_node_id in dismissed or ccid in dismissed):
                 continue
             c_role = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", (ch.get("role") or ch.get("title") or "Subagent").splitlines()[0]).strip()
             c_ctx = ch.get("context_usage") or {}
             c_used = fmt_k(c_ctx.get("used_tokens", 0))
             c_pct = float(c_ctx.get("percent", 0.0) or 0.0)
-            c_running = _agy_worker_is_active(ch, live_agy_ids)
             c_age_s = _age_sec_from_iso(ch.get("last_modified_time") or "")
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_running, c_age_s, sub_slot_idx)
             sub_slot_idx += 1

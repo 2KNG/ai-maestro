@@ -897,7 +897,7 @@ def _extract_turn_timing(lines: list[str], *, antigravity: bool = False,
         payload = event.get("payload") or {}
         kind = event.get("type") if antigravity else (
             payload.get("type") if isinstance(payload, dict) else None)
-        if kind in (("USER_INPUT",) if antigravity else ("user_message", "task_started")):
+        if kind in (("USER_INPUT", "SYSTEM_MESSAGE") if antigravity else ("user_message", "task_started")):
             explicit_start = ts
         last_ts = ts
     end = (last_step_ts or _timing_timestamp(fallback_end) or last_ts) if antigravity else last_ts
@@ -1144,6 +1144,17 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
         status = summary.get("status", "CASCADE_RUN_STATUS_UNKNOWN")
         created_time = summary.get("createdTime", "")
         last_mod = summary.get("lastModifiedTime", "")
+        t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+        if os.path.exists(t_path):
+            try:
+                t_mtime = os.path.getmtime(t_path)
+                if time.time() - t_mtime <= 60:
+                    status = "CASCADE_RUN_STATUS_RUNNING"
+                t_iso = datetime.datetime.fromtimestamp(t_mtime, timezone.utc).isoformat()
+                if not last_mod or t_iso > last_mod:
+                    last_mod = t_iso
+            except OSError:
+                pass
         workspaces = [w.get("workspaceFolderAbsoluteUri", "") for w in summary.get("workspaces", [])]
 
         gm_info = fetch_generator_metadata(cid, last_mod, status)

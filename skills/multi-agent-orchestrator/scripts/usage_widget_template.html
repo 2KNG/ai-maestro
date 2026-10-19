@@ -632,6 +632,7 @@
       height: 6px;
       border-radius: 999px;
       flex: none;
+      transition: background-color 1.2s ease, box-shadow 1.2s ease, opacity 1.2s ease;
     }
     .status-dot.busy {
       background: #3b82f6;
@@ -2012,6 +2013,7 @@
       white-space: nowrap;
       font-size: 9px;
       letter-spacing: -0.02em;
+      transition: color 1.2s ease;
     }
   </style>
 </head>
@@ -3578,6 +3580,20 @@
       return true;
     }
 
+    function normalizeRowSig(row) {
+      if (!row) return '';
+      const clone = row.cloneNode(true);
+      clone.querySelectorAll('.status-dot').forEach(d => {
+        d.className = 'status-dot';
+        d.removeAttribute('title');
+      });
+      clone.querySelectorAll('.ctx-pill').forEach(p => {
+        p.className = 'ctx-pill';
+        p.removeAttribute('title');
+      });
+      return clone.innerHTML;
+    }
+
     function reconcileBranchChildren(oldBr, newBr) {
       const oldChildren = new Map();
       oldBr.querySelectorAll(':scope > .tree-node').forEach(n => {
@@ -3616,10 +3632,23 @@
           }
           const oRow = oldChild.querySelector(':scope > .agent-row');
           const nRow = newChild.querySelector(':scope > .agent-row');
-          if (oRow && nRow && oRow.innerHTML !== nRow.innerHTML) {
-            oRow.innerHTML = nRow.innerHTML;
+          const runningChanged = (oldChild.dataset.subRunning || '0') !== (newChild.dataset.subRunning || '0');
+          if (oRow && nRow) {
+            if (runningChanged || normalizeRowSig(oRow) !== normalizeRowSig(nRow)) {
+              oRow.innerHTML = nRow.innerHTML;
+            }
           }
-          if (newChild.dataset.subAge !== undefined) oldChild.dataset.subAge = newChild.dataset.subAge;
+          if (newChild.dataset.subAge !== undefined) {
+            if (newChild.dataset.subRunning === '1') {
+              oldChild.dataset.subAge = '0';
+            } else {
+              const sAge = Number(newChild.dataset.subAge || 0);
+              const cAge = Number(oldChild.dataset.subAge || 0);
+              if (Math.abs(sAge - cAge) > 4) {
+                oldChild.dataset.subAge = String(sAge);
+              }
+            }
+          }
           if (newChild.dataset.subRunning !== undefined) oldChild.dataset.subRunning = newChild.dataset.subRunning;
         }
       });
@@ -3799,7 +3828,6 @@
           node.dataset.exiting = '1';
           node.classList.add('sub-evaporating', 'node-exit');
           setTimeout(() => {
-            if (node.dataset.nodeId) dismissedSet.add(node.dataset.nodeId);
             node.remove();
             applyTreeFilters();
             notifyParentResize();

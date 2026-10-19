@@ -13,11 +13,13 @@ Design guarantees (from Pre-Mortem Audit):
 4. Desktop notifications fire at most once per (session_id, completed_ts) and only for tasks >= min_elapsed_sec (default 60s).
 """
 import datetime
+import glob
 import json
 import os
 import re
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import tempfile
 import time
@@ -89,6 +91,34 @@ def _connect() -> sqlite3.Connection:
             PRIMARY KEY (session_id, completed_at)
         )
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_id TEXT,
+            pool TEXT NOT NULL,
+            model TEXT NOT NULL,
+            effort TEXT NOT NULL,
+            tier TEXT NOT NULL,
+            est_sec REAL,
+            actual_sec REAL,
+            est_tokens INTEGER,
+            actual_net_tokens INTEGER,
+            actual_gross_tokens INTEGER,
+            ok INTEGER NOT NULL DEFAULT 1,
+            is_valid INTEGER NOT NULL DEFAULT 1,
+            excluded_reason TEXT DEFAULT '',
+            title TEXT DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telemetry_model_effort ON worker_telemetry(model, effort, tier, is_valid)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telemetry_session ON worker_telemetry(session_id)"
     )
     return conn
 
@@ -531,3 +561,559 @@ def extract_session_log_tail(provider: str, session_id: str, max_lines: int = 25
         "session_id": full_cid,
         "lines": lines_out[-max_lines:] if lines_out else ["(실행 단계 로그 대기 중)"],
     }
+
+
+# =====================================================================
+# Mod 7: Worker ETA vs Actual Telemetry Logger (worker_telemetry)
+# =====================================================================
+
+BASELINE_ETA_TABLE: dict[tuple[str, str, str], tuple[float, int, int]] = {
+    ("gemini-3.8-flash", "low", "default"): (40.0, 20000, 500),
+    ("claude-sonnet-5-5", "high", "default"): (60.0, 40000, 1000),
+    ("claude-opus-5-fast", "high", "fast"): (45.0, 160000, 4000),
+    ("claude-opus-5-5", "high", "default"): (120.0, 150000, 5000),
+    ("claude-opus-5-5", "xhigh", "default"): (150.0, 220000, 6000),
+    ("claude-opus-5-5", "ultra", "default"): (180.0, 1200000, 15000),
+    ("gpt-6-astra", "medium", "default"): (120.0, 200000, 3000),
+    ("gpt-6.1-sol", "medium", "default"): (60.0, 150000, 2000),
+    ("gpt-6.1-sol", "medium", "priority"): (50.0, 150000, 2000),
+    ("gpt-6.1-sol", "high", "default"): (90.0, 350000, 5000),
+    ("gpt-6.1-sol", "high", "priority"): (75.0, 350000, 5000),
+    ("gpt-6.1-sol", "high", "ultrafast"): (60.0, 350000, 5000),
+    ("gpt-6.1-sol", "ultra", "default"): (150.0, 1500000, 20000),
+}
+
+NETWORK_ERROR_KEYWORDS = (
+    "timed out",
+    "timeout after",
+    "connection reset",
+    "econnreset",
+    "enetunreach",
+    "network unreachable",
+    "disconnected",
+    "server restart",
+    "api error",
+    "502",
+    "503",
+    "504",
+)
+
+
+def normalize_telemetry_model(model: str, tier: str = "default") -> str:
+    m = (model or "").lower().strip()
+    if "flash" in m:
+        return "gemini-3.8-flash"
+    if "argon" in m:
+        return "gemini-4-argon"
+    if "sonnet" in m:
+        return "claude-sonnet-5-5"
+    if "opus" in m:
+        if tier == "fast" or "fast" in m:
+            return "claude-opus-5-fast"
+        return "claude-opus-5-5"
+    if "astra" in m:
+        return "gpt-6-astra"
+    if "sol" in m or "gpt-6.1" in m:
+        return "gpt-6.1-sol"
+    return m
+
+
+def lookup_baseline_eta(model: str, effort: str = "high", tier: str = "default") -> tuple[float, int, int]:
+    m_norm = normalize_telemetry_model(model, tier)
+    e_norm = (effort or "high").lower().strip()
+    if e_norm in ("max", "ultra"):
+        e_norm = "ultra"
+    t_norm = (tier or "default").lower().strip()
+    if t_norm in ("standard", ""):
+        t_norm = "default"
+
+    key = (m_norm, e_norm, t_norm)
+    if key in BASELINE_ETA_TABLE:
+        return BASELINE_ETA_TABLE[key]
+
+    if (m_norm, e_norm, "default") in BASELINE_ETA_TABLE:
+        return BASELINE_ETA_TABLE[(m_norm, e_norm, "default")]
+
+    # Generic fallbacks
+    if "astra" in m_norm:
+        return (120.0, 200000, 3000)
+    if "sol" in m_norm:
+        return (90.0, 350000, 5000)
+    if "flash" in m_norm:
+        return (40.0, 20000, 500)
+    return (120.0, 150000, 5000)
+
+
+def _parse_codex_rollout_tokens(rollout_path: str) -> tuple[int, int, str]:
+    """Extract (net_tokens, gross_tokens, detected_tier) from a Codex rollout jsonl."""
+    if not rollout_path or not os.path.exists(rollout_path):
+        return 0, 0, ""
+    net_tokens = 0
+    gross_tokens = 0
+    detected_tier = ""
+    last_total = None
+    try:
+        with open(rollout_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                t = d.get("type")
+                p = d.get("payload")
+                if not isinstance(p, dict):
+                    continue
+                if t == "turn_context":
+                    detected_tier = p.get("service_tier") or detected_tier
+                elif t == "token_usage_record":
+                    u = p.get("usage", {})
+                    if isinstance(u, dict):
+                        in_tok = u.get("input_tokens", 0) or 0
+                        cached = u.get("cached_input_tokens", 0) or 0
+                        out_tok = u.get("output_tokens", 0) or 0
+                        reasoning = u.get("reasoning_output_tokens", 0) or 0
+                        net_tokens += max(0, in_tok - cached) + out_tok + reasoning
+                        gross_tokens += u.get("total_tokens", 0) or (in_tok + out_tok)
+                elif t == "event_msg":
+                    info = p.get("info", {})
+                    if isinstance(info, dict) and "total_token_usage" in info:
+                        last_total = info["total_token_usage"]
+        if last_total and gross_tokens == 0:
+            in_tok = last_total.get("input_tokens", 0) or 0
+            cached = last_total.get("cached_input_tokens", 0) or 0
+            out_tok = last_total.get("output_tokens", 0) or 0
+            reasoning = last_total.get("reasoning_output_tokens", 0) or 0
+            net_tokens = max(0, in_tok - cached) + out_tok + reasoning
+            gross_tokens = last_total.get("total_tokens", 0) or (in_tok + out_tok)
+    except Exception:
+        pass
+    return net_tokens, gross_tokens, detected_tier
+
+
+def _parse_claude_session_tokens(session_id: str) -> tuple[int, int, float, list[str]]:
+    """Extract (net_tokens, gross_tokens, elapsed_sec, models) from Claude jsonl."""
+    if not session_id:
+        return 0, 0, 0.0, []
+    pattern = os.path.expanduser(f"~/.claude/projects/**/{session_id}.jsonl")
+    matched = glob.glob(pattern, recursive=True)
+    if not matched:
+        return 0, 0, 0.0, []
+    target_file = matched[0]
+    records = []
+    timestamps = []
+    models = []
+    try:
+        with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                ts = d.get("timestamp")
+                if ts:
+                    try:
+                        timestamps.append(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                    except Exception:
+                        pass
+                msg = d.get("message")
+                if isinstance(msg, dict):
+                    u = msg.get("usage")
+                    if isinstance(u, dict):
+                        records.append(u)
+                    m = msg.get("model")
+                    if m and m not in models:
+                        models.append(m)
+    except Exception:
+        pass
+
+    net_tokens = sum(
+        (r.get("input_tokens", 0) or 0) + (r.get("output_tokens", 0) or 0) + (r.get("cache_creation_input_tokens", 0) or 0)
+        for r in records
+    )
+    gross_tokens = net_tokens + sum((r.get("cache_read_input_tokens", 0) or 0) for r in records)
+    timestamps.sort()
+    elapsed_sec = (timestamps[-1] - timestamps[0]) if len(timestamps) >= 2 else 0.0
+    return net_tokens, gross_tokens, elapsed_sec, models
+
+
+def record_worker_telemetry(
+    pool: str,
+    model: str,
+    effort: str,
+    tier: str,
+    actual_sec: float,
+    session_id: str = "",
+    title: str = "",
+    ok: bool = True,
+    output: str = "",
+    stderr: str = "",
+    error: str = "",
+    actual_net_tokens: int | None = None,
+    actual_gross_tokens: int | None = None,
+    timestamp: str | None = None,
+) -> dict:
+    """Record worker execution telemetry with automated error & anomaly sample exclusion."""
+    norm_tier = (tier or "default").lower().strip()
+    if norm_tier in ("standard", ""):
+        norm_tier = "default"
+    norm_model = normalize_telemetry_model(model, norm_tier)
+    norm_effort = (effort or "high").lower().strip()
+    if norm_effort in ("max", "ultra"):
+        norm_effort = "ultra"
+
+    # Query tokens from Codex or Claude databases if not supplied
+    if (actual_net_tokens is None or actual_gross_tokens is None) and session_id:
+        codex_db = os.path.expanduser("~/.codex/state_5.sqlite")
+        if os.path.exists(codex_db) and ("codex" in pool.lower() or "gpt" in norm_model.lower()):
+            try:
+                conn_cdx = sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=2.0)
+                try:
+                    row = conn_cdx.execute(
+                        "SELECT tokens_used, rollout_path FROM threads WHERE id = ?", (session_id,)
+                    ).fetchone()
+                    if row:
+                        gross = row[0] or 0
+                        rp = row[1]
+                        if rp and os.path.exists(rp):
+                            net_p, gross_p, tier_p = _parse_codex_rollout_tokens(rp)
+                            if net_p > 0 and actual_net_tokens is None:
+                                actual_net_tokens = net_p
+                            if gross_p > 0 and actual_gross_tokens is None:
+                                actual_gross_tokens = gross_p
+                            if tier_p and norm_tier == "default":
+                                norm_tier = tier_p
+                        if actual_gross_tokens is None or actual_gross_tokens == 0:
+                            actual_gross_tokens = gross
+                        if actual_net_tokens is None or actual_net_tokens == 0:
+                            actual_net_tokens = int(round(gross * 0.15)) if gross > 0 else 0
+                finally:
+                    conn_cdx.close()
+            except Exception:
+                pass
+        elif "claude" in pool.lower() or "claude" in norm_model.lower() or "opus" in norm_model.lower():
+            net_c, gross_c, dur_c, _ = _parse_claude_session_tokens(session_id)
+            if net_c > 0 and actual_net_tokens is None:
+                actual_net_tokens = net_c
+            if gross_c > 0 and actual_gross_tokens is None:
+                actual_gross_tokens = gross_c
+            if actual_sec <= 0 and dur_c > 0:
+                actual_sec = dur_c
+
+    actual_net_tokens = int(actual_net_tokens or 0)
+    actual_gross_tokens = int(actual_gross_tokens or 0)
+    actual_sec = float(actual_sec or 0.0)
+
+    est_sec, est_tokens, _ = lookup_baseline_eta(norm_model, norm_effort, norm_tier)
+
+    # Automated Anomaly & Error Detection
+    is_valid = 1
+    excluded_reasons = []
+
+    if not ok or error:
+        is_valid = 0
+        excluded_reasons.append(f"error: {error or 'task failed'}")
+
+    full_err_text = f"{output} {stderr} {error}".lower()
+    for kw in NETWORK_ERROR_KEYWORDS:
+        if kw in full_err_text:
+            is_valid = 0
+            excluded_reasons.append(f"network/server error: '{kw}'")
+            break
+
+    if actual_sec <= 1.0:
+        is_valid = 0
+        excluded_reasons.append(f"duration too short ({actual_sec:.1f}s <= 1.0s)")
+    elif actual_sec > 1800.0:
+        is_valid = 0
+        excluded_reasons.append(f"duration too long ({actual_sec:.1f}s > 1800s)")
+
+    if actual_net_tokens <= 0 and actual_gross_tokens <= 0:
+        is_valid = 0
+        excluded_reasons.append("zero tokens recorded")
+
+    excluded_reason = "; ".join(excluded_reasons)
+    ts_str = timestamp or datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO worker_telemetry (
+                    timestamp, session_id, pool, model, effort, tier,
+                    est_sec, actual_sec, est_tokens, actual_net_tokens, actual_gross_tokens,
+                    ok, is_valid, excluded_reason, title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts_str,
+                    session_id or "",
+                    pool or "unknown",
+                    norm_model,
+                    norm_effort,
+                    norm_tier,
+                    est_sec,
+                    actual_sec,
+                    est_tokens,
+                    actual_net_tokens,
+                    actual_gross_tokens,
+                    1 if ok else 0,
+                    is_valid,
+                    excluded_reason,
+                    title[:120] if title else "",
+                ),
+            )
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "model": norm_model,
+        "effort": norm_effort,
+        "tier": norm_tier,
+        "est_sec": est_sec,
+        "actual_sec": actual_sec,
+        "est_tokens": est_tokens,
+        "actual_net_tokens": actual_net_tokens,
+        "actual_gross_tokens": actual_gross_tokens,
+        "is_valid": is_valid,
+        "excluded_reason": excluded_reason,
+    }
+
+
+def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -> dict:
+    """Scan past valid completed Codex threads and Claude sessions to populate initial baseline."""
+    conn = _connect()
+    existing = set(
+        x[0] for x in conn.execute(
+            "SELECT session_id FROM worker_telemetry WHERE session_id IS NOT NULL AND session_id != ''"
+        ).fetchall()
+    )
+
+    codex_scanned = 0
+    claude_scanned = 0
+    inserted = 0
+    valid_count = 0
+    excluded_count = 0
+
+    # 1. Backfill Codex threads
+    codex_db = os.path.expanduser("~/.codex/state_5.sqlite")
+    if os.path.exists(codex_db):
+        try:
+            conn_cdx = sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=5.0)
+            conn_cdx.row_factory = sqlite3.Row
+            rows = conn_cdx.execute(
+                """
+                SELECT id, model, reasoning_effort, source, created_at, updated_at,
+                       created_at_ms, updated_at_ms, tokens_used, rollout_path, title
+                FROM threads
+                WHERE tokens_used > 0
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (max_codex,),
+            ).fetchall()
+            conn_cdx.close()
+
+            for r in rows:
+                tid = r["id"]
+                if tid in existing:
+                    continue
+                codex_scanned += 1
+                c_ms = r["created_at_ms"]
+                u_ms = r["updated_at_ms"]
+                dur = (u_ms - c_ms) / 1000.0 if (c_ms and u_ms) else float((r["updated_at"] or 0) - (r["created_at"] or 0))
+
+                net_p, gross_p, tier_p = _parse_codex_rollout_tokens(r["rollout_path"])
+                gross_tokens = gross_p or r["tokens_used"] or 0
+                net_tokens = net_p or int(round(gross_tokens * 0.15))
+                m = r["model"] or ("gpt-6-astra" if "astra" in (r["title"] or "").lower() else "gpt-6.1-sol")
+                eff = r["reasoning_effort"] or "high"
+                t = tier_p or "default"
+                pool = "codex-astra" if "astra" in m.lower() else "codex"
+
+                ts_dt = datetime.datetime.fromtimestamp(r["created_at"] or time.time(), tz=KST)
+                ts_str = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                res = record_worker_telemetry(
+                    pool=pool,
+                    model=m,
+                    effort=eff,
+                    tier=t,
+                    actual_sec=dur,
+                    session_id=tid,
+                    title=r["title"] or "",
+                    ok=True,
+                    actual_net_tokens=net_tokens,
+                    actual_gross_tokens=gross_tokens,
+                    timestamp=ts_str,
+                )
+                if res.get("ok"):
+                    existing.add(tid)
+                    inserted += 1
+                    if res.get("is_valid"):
+                        valid_count += 1
+                    else:
+                        excluded_count += 1
+        except Exception:
+            pass
+
+    # 2. Backfill Claude sessions
+    claude_files = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+    claude_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    for cf in claude_files[:max_claude]:
+        sid = Path(cf).stem
+        if sid in existing:
+            continue
+        claude_scanned += 1
+        records = []
+        timestamps = []
+        models = []
+        try:
+            with open(cf, "r", encoding="utf-8", errors="ignore") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        continue
+                    ts = d.get("timestamp")
+                    if ts:
+                        try:
+                            timestamps.append(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                        except Exception:
+                            pass
+                    msg = d.get("message")
+                    if isinstance(msg, dict):
+                        u = msg.get("usage")
+                        if isinstance(u, dict):
+                            records.append(u)
+                        m = msg.get("model")
+                        if m and m not in models:
+                            models.append(m)
+        except Exception:
+            continue
+
+        if not records or not timestamps:
+            continue
+
+        timestamps.sort()
+        dur = max(timestamps) - min(timestamps)
+        max_gap = max((timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)), default=0.0)
+
+        net = sum(
+            (r.get("input_tokens", 0) or 0) + (r.get("output_tokens", 0) or 0) + (r.get("cache_creation_input_tokens", 0) or 0)
+            for r in records
+        )
+        gross = net + sum((r.get("cache_read_input_tokens", 0) or 0) for r in records)
+
+        m_chosen = models[0] if models else "claude-opus-5-5"
+        eff = "high"
+        tier = "default"
+        pool = "claude"
+
+        # Multi-turn interactive session gap detection
+        extra_err = ""
+        if max_gap > 1800.0:
+            extra_err = f"gap > 30m ({max_gap:.0f}s)"
+
+        ts_dt = datetime.datetime.fromtimestamp(timestamps[0], tz=KST)
+        ts_str = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        res = record_worker_telemetry(
+            pool=pool,
+            model=m_chosen,
+            effort=eff,
+            tier=tier,
+            actual_sec=dur,
+            session_id=sid,
+            title="Claude Session",
+            ok=(extra_err == ""),
+            error=extra_err,
+            actual_net_tokens=net,
+            actual_gross_tokens=gross,
+            timestamp=ts_str,
+        )
+        if res.get("ok"):
+            existing.add(sid)
+            inserted += 1
+            if res.get("is_valid"):
+                valid_count += 1
+            else:
+                excluded_count += 1
+
+    return {
+        "ok": True,
+        "codex_scanned": codex_scanned,
+        "claude_scanned": claude_scanned,
+        "inserted": inserted,
+        "valid": valid_count,
+        "excluded": excluded_count,
+    }
+
+
+def get_telemetry_calibration_summary() -> list[dict]:
+    """Aggregate worker telemetry comparison grouped by (model, effort, tier)."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT model, effort, tier,
+                   COUNT(*) as total_samples,
+                   SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) as valid_samples,
+                   SUM(CASE WHEN is_valid = 0 THEN 1 ELSE 0 END) as excluded_samples,
+                   AVG(CASE WHEN is_valid = 1 THEN actual_sec ELSE NULL END) as avg_actual_sec,
+                   AVG(CASE WHEN is_valid = 1 THEN actual_net_tokens ELSE NULL END) as avg_net_tokens,
+                   AVG(CASE WHEN is_valid = 1 THEN actual_gross_tokens ELSE NULL END) as avg_gross_tokens,
+                   MAX(est_sec) as est_sec,
+                   MAX(est_tokens) as est_tokens
+            FROM worker_telemetry
+            GROUP BY model, effort, tier
+            ORDER BY valid_samples DESC, model, effort
+            """
+        ).fetchall()
+
+        summary = []
+        for r in rows:
+            m, e, t = r[0], r[1], r[2]
+            valid_count = r[4] or 0
+            excl_count = r[5] or 0
+
+            med_sec = None
+            if valid_count > 0:
+                secs = [
+                    x[0] for x in conn.execute(
+                        "SELECT actual_sec FROM worker_telemetry WHERE model=? AND effort=? AND tier=? AND is_valid=1",
+                        (m, e, t),
+                    ).fetchall() if x[0] is not None
+                ]
+                if secs:
+                    med_sec = round(statistics.median(secs), 1)
+
+            est_s, est_tok, _ = lookup_baseline_eta(m, e, t)
+            summary.append({
+                "model": m,
+                "effort": e,
+                "tier": t,
+                "sample_count": valid_count,
+                "excluded_count": excl_count,
+                "est_sec": r[9] if r[9] is not None else est_s,
+                "avg_actual_sec": round(r[6], 1) if r[6] is not None else None,
+                "median_actual_sec": med_sec,
+                "est_tokens": r[10] if r[10] is not None else est_tok,
+                "avg_net_tokens": int(round(r[7])) if r[7] is not None else None,
+                "avg_gross_tokens": int(round(r[8])) if r[8] is not None else None,
+            })
+        return summary
+    except Exception:
+        return []
+
