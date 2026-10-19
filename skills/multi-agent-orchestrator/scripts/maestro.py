@@ -813,6 +813,10 @@ def main():
     p_telemetry.add_argument("--reset-backfill", action="store_true", help="Clear existing telemetry table and re-backfill all historical data")
     p_telemetry.add_argument("--json", action="store_true", help="Output raw JSON summary")
 
+    p_cal = sub.add_parser("telemetry-calibrate")
+    p_cal.add_argument("--min-samples", type=int, default=5, help="Minimum sample threshold to calibrate ETA baseline (default: 5)")
+    p_cal.add_argument("--json", action="store_true", help="Output raw JSON calibration snapshot")
+
     args = parser.parse_args()
 
     if args.cmd == "status":
@@ -998,7 +1002,7 @@ def main():
             return
 
         print(f"### Worker ETA vs Actual Telemetry Calibration (총 {summary.get('total_records', 0)}건, 유효 {summary.get('valid_records', 0)}건, 제외 {summary.get('excluded_records', 0)}건)\n")
-        headers = ["Model", "Effort", "Tier", "Samples", "Est Sec", "Act Sec (med)", "Sec Ratio", "Est Net Tok", "Act Net Tok (med)", "Tok Ratio"]
+        headers = ["Model", "Effort", "Tier", "Samples", "Est Sec", "Act Sec (med)", "Sec Ratio", "Est Net Tok", "Act Net Tok (med)", "Tok Ratio", "Avg Ctx (Ctx %)"]
         rows = []
         for c in calibrations:
             model_disp = str(c.get("model", "-"))
@@ -1017,7 +1021,10 @@ def main():
             act_tok_disp = f"{med_t // 1000}k" if med_t is not None else "-"
             ratio_t = c.get("ratio_net_tokens")
             tok_ratio_disp = f"{ratio_t:.2f}x" if ratio_t is not None else "-"
-            rows.append([model_disp, eff_disp, tier_disp, samples_disp, est_sec_disp, act_sec_disp, sec_ratio_disp, est_tok_disp, act_tok_disp, tok_ratio_disp])
+            ctx_tok = c.get("avg_context_tokens", 0)
+            ctx_pct = c.get("avg_context_pct", 0.0)
+            ctx_disp = f"{ctx_tok // 1000}k ({ctx_pct:.1f}%)" if ctx_tok else "-"
+            rows.append([model_disp, eff_disp, tier_disp, samples_disp, est_sec_disp, act_sec_disp, sec_ratio_disp, est_tok_disp, act_tok_disp, tok_ratio_disp, ctx_disp])
 
         col_widths = [len(h) for h in headers]
         for row in rows:
@@ -1028,6 +1035,35 @@ def main():
         sep_line = "| " + " | ".join("-" * col_widths[i] for i in range(len(headers))) + " |"
         print(header_line)
         print(sep_line)
+        for row in rows:
+            print("| " + " | ".join(val.ljust(col_widths[i]) for i, val in enumerate(row)) + " |")
+        return
+
+    if args.cmd == "telemetry-calibrate":
+        import maestro_memory
+        res = maestro_memory.run_daily_calibration(min_samples=args.min_samples)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return
+        print(f"[telemetry] Calibration complete: {res.get('calibrated_count')} buckets updated (snapshot: {res.get('snapshot_path')})\n")
+        calibrated = res.get("calibrations", [])
+        if not calibrated:
+            print("캘리브레이션 기준 샘플 수(min-samples)를 충족하는 버킷이 없습니다.")
+            return
+        headers = ["Model", "Effort", "Tier", "Samples", "Calibrated Sec", "Calibrated Net Tok", "Avg Ctx (Ctx %)"]
+        rows = []
+        for c in calibrated:
+            rows.append([
+                c["model"], c["effort"], c["tier"], str(c["valid_samples"]),
+                f"{c['sec']:.1f}s", f"{c['net_tokens'] // 1000}k",
+                f"{c['avg_context_tokens'] // 1000}k ({c['avg_context_pct']:.1f}%)" if c['avg_context_tokens'] else "-"
+            ])
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, val in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(val))
+        print("| " + " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)) + " |")
+        print("| " + " | ".join("-" * col_widths[i] for i in range(len(headers))) + " |")
         for row in rows:
             print("| " + " | ".join(val.ljust(col_widths[i]) for i, val in enumerate(row)) + " |")
         return

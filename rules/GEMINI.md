@@ -24,7 +24,7 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
   - CLI `maestro worker-start`는 `--interactive` / `--urgent`가 없으면 background 속도를 기본 적용한다. `--background`는 interactive/urgent 속도를 오버라이드한다.
   - `--tier default|standard|priority|ultrafast`: `priority`는 `--interactive`/`--urgent` 필요, `ultrafast`는 `--urgent` 필요.
   - Astra (`gpt-6-astra`)는 항상 default tier, medium 상한 (`--max-capability`로만 `high`/`ultra` 해제).
-  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, 또는 `--pool claude --effort ultra`)는 표준 `claude-opus-5-5` + `--effort max` + 프롬프트 앞 `ultrathink`로 동작하며 3배 쿼터를 소모한다 (`⏱ 3분 · 120만 토큰 (1만5천원)`).
+  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, 또는 `--pool claude --effort ultra`)는 표준 `claude-opus-5-5` + `--effort max` + 프롬프트 앞 `ultrathink`로 동작하며 3배 쿼터를 소모한다 (`⏱ 2분 45초 · 14만 토큰 (1만2천원)`).
 
 ## 2. Subscription 5h / 7d Total Token Capacities & Single-Value ETA Rule
 - 4대 구독 풀 5h / 7d 100% 총 토큰 한도 (실측 로그 역산 기준 — 순수 실효 토큰 / 캐시 포함 총 처리 토큰):
@@ -36,13 +36,14 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
   - `Gemini 3.8 Flash (low · fast)`: `⏱ 40초 · 2만 토큰 (5백원)`
   - `Sonnet 5.5 (high)`: `⏱ 1분 · 4만 토큰 (1천원)`
   - `Opus 5.5 Fast (claude-fast · interactive only · 2x quota)`: `⏱ 45초 · 16만 토큰 (4천원)`
-  - `Opus 5.5 (high/xhigh)` / `Gemini 4 Argon (high)`: `⏱ 2분 · 15만 토큰 (5천원)`
-  - `Opus 5.5 Ultra (ultra · --effort max + ultrathink · 3x quota)`: `⏱ 3분 · 120만 토큰 (1만5천원)`
-  - `gpt-6-astra (medium · default)`: `⏱ 1분 · 10만 토큰 (1천5백원)`
-  - `gpt-6.1-sol (medium · priority · interactive/urgent)`: `⏱ 1분 20초 · 15만 토큰 (2천원)`
-  - `gpt-6.1-sol (high · priority · interactive/urgent)`: `⏱ 2분 · 35만 토큰 (5천원)`
-  - `gpt-6.1-sol (ultra · priority · interactive/urgent)`: `⏱ 2분 30초 · 150만 토큰 (2만원)`
-- 채팅 ETA 출력 형식: `⏱ 2분 · 35만 토큰 (5천원)`. 구독 잔여율이나 캐시 괄호 설명을 덧붙이지 않는다.
+  - `Opus 5.5 (high · default)`: `⏱ 3분 · 16만 토큰 (5천원)`
+  - `Opus 5.5 Ultra (ultra · --effort max + ultrathink · 3x quota)`: `⏱ 2분 45초 · 14만 토큰 (1만2천원)`
+  - `gpt-6-astra (medium · default)`: `⏱ 3분 30초 · 6만5천 토큰 (1천5백원)`
+  - `gpt-6.1-sol (medium · default)`: `⏱ 40초 · 6만5천 토큰 (1천5백원)`
+  - `gpt-6.1-sol (high · default)`: `⏱ 3분 · 13만 토큰 (3천원)`
+  - `gpt-6.1-sol (high · priority · interactive/urgent)`: `⏱ 2분 10초 · 10만 토큰 (3천원)`
+  - `gpt-6.1-sol (ultra · default)`: `⏱ 2분 · 11만5천 토큰 (4천원)`
+- 채팅 ETA 출력 형식: `⏱ 3분 · 13만 토큰 (3천원)`. 구독 잔여율이나 캐시 괄호 설명을 덧붙이지 않는다.
 
 ## 3. Natural Developer Communication Style
 - 간결한 현업 개발자 어조: 장황한 서두나 AI 클리셰("결론부터 말씀드리면", "완벽하게 차단", "100% 완료")를 배제하고 핵심 작업 내역과 결과만 명확히 전달한다.

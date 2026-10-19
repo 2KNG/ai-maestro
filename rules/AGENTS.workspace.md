@@ -13,7 +13,7 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
    - `Gemini 3.8 Flash (low · fast)`: 초고속 코드/로그 탐색.
    - `fast`/`priority`/`ultrafast`는 대화형 인터랙티브 전용. 백그라운드/cron은 standard/default 티어 사용.
 3. Single-Value ETA Standard:
-   - 단일 수치 형식 예: `⏱ 2분 · 35만 토큰 (5천원)`. 범위(`~`) 표기나 금지어 배제.
+   - 단일 수치 형식 예: `⏱ 3분 · 13만 토큰 (3천원)`. 범위(`~`) 표기나 금지어 배제.
 4. Natural Developer Style & Zero-Chinese:
    - AI 클리셰 없는 간결한 개발자 어조. 장식용 이모지/구분선 지양.
    - 사용자 응답 및 코드·문서 내 중국어/한자([\u4e00-\u9fff]) 및 도구 호출 전 프리앰블 절대 금지.

@@ -107,6 +107,8 @@ def _connect() -> sqlite3.Connection:
             est_tokens INTEGER,
             actual_net_tokens INTEGER,
             actual_gross_tokens INTEGER,
+            context_tokens INTEGER DEFAULT 0,
+            context_pct REAL DEFAULT 0.0,
             ok INTEGER NOT NULL DEFAULT 1,
             is_valid INTEGER NOT NULL DEFAULT 1,
             excluded_reason TEXT DEFAULT '',
@@ -114,6 +116,14 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    try:
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(worker_telemetry)").fetchall()]
+        if "context_tokens" not in existing_cols:
+            conn.execute("ALTER TABLE worker_telemetry ADD COLUMN context_tokens INTEGER DEFAULT 0")
+        if "context_pct" not in existing_cols:
+            conn.execute("ALTER TABLE worker_telemetry ADD COLUMN context_pct REAL DEFAULT 0.0")
+    except Exception:
+        pass
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telemetry_model_effort ON worker_telemetry(model, effort, tier, is_valid)"
     )
@@ -569,20 +579,24 @@ def extract_session_log_tail(provider: str, session_id: str, max_lines: int = 25
 
 BASELINE_ETA_TABLE: dict[tuple[str, str, str], tuple[float, int, int]] = {
     ("gemini-3.8-flash", "low", "default"): (40.0, 20000, 500),
+    ("gemini-3.8-flash", "low", "fast"): (40.0, 20000, 500),
     ("claude-sonnet-5-5", "high", "default"): (60.0, 40000, 1000),
     ("claude-opus-5-fast", "high", "fast"): (45.0, 160000, 4000),
-    ("claude-opus-5-5", "high", "default"): (120.0, 150000, 5000),
-    ("claude-opus-5-5", "xhigh", "default"): (150.0, 220000, 6000),
-    ("claude-opus-5-5", "ultra", "default"): (180.0, 1200000, 15000),
-    ("claude-ultra", "ultra", "default"): (180.0, 1200000, 15000),
-    ("gpt-6-astra", "medium", "default"): (120.0, 200000, 3000),
-    ("gpt-6.1-sol", "medium", "default"): (60.0, 150000, 2000),
-    ("gpt-6.1-sol", "medium", "priority"): (50.0, 150000, 2000),
-    ("gpt-6.1-sol", "high", "default"): (90.0, 350000, 5000),
-    ("gpt-6.1-sol", "high", "priority"): (75.0, 350000, 5000),
-    ("gpt-6.1-sol", "high", "ultrafast"): (60.0, 350000, 5000),
-    ("gpt-6.1-sol", "ultra", "default"): (150.0, 1500000, 20000),
+    ("claude-opus-5-5", "high", "default"): (180.0, 160000, 5000),
+    ("claude-opus-5-5", "xhigh", "default"): (165.0, 150000, 6000),
+    ("claude-opus-5-5", "ultra", "default"): (165.0, 140000, 12000),
+    ("claude-ultra", "ultra", "default"): (165.0, 140000, 12000),
+    ("gpt-6-astra", "medium", "default"): (210.0, 65000, 1500),
+    ("gpt-6.1-sol", "medium", "default"): (40.0, 65000, 1500),
+    ("gpt-6.1-sol", "medium", "priority"): (40.0, 65000, 1500),
+    ("gpt-6.1-sol", "high", "default"): (180.0, 130000, 3000),
+    ("gpt-6.1-sol", "high", "priority"): (130.0, 100000, 3000),
+    ("gpt-6.1-sol", "high", "ultrafast"): (100.0, 100000, 3000),
+    ("gpt-6.1-sol", "ultra", "default"): (120.0, 115000, 4000),
+    ("gpt-6.1-sol", "ultra", "priority"): (120.0, 115000, 4000),
 }
+
+CALIBRATION_SNAPSHOT_PATH = os.path.expanduser("~/.gemini/antigravity/maestro_eta_calibration.json")
 
 NETWORK_ERROR_KEYWORDS = (
     "timed out",
@@ -598,6 +612,18 @@ NETWORK_ERROR_KEYWORDS = (
     "503",
     "504",
 )
+
+
+def get_model_context_window(model: str) -> int:
+    """Return maximum model context window capacity in tokens."""
+    m = (model or "").lower().strip()
+    if "flash" in m or "argon" in m or "gemini" in m:
+        return 1000000
+    if "claude" in m or "opus" in m or "sonnet" in m:
+        return 200000
+    if "sol" in m or "astra" in m or "gpt" in m or "codex" in m:
+        return 258400
+    return 200000
 
 
 def normalize_telemetry_model(model: str, tier: str = "default") -> str:
@@ -635,6 +661,18 @@ def lookup_baseline_eta(model: str, effort: str = "high", tier: str = "default")
     if t_norm in ("standard", ""):
         t_norm = "default"
 
+    # Check daily calibrated snapshot if available
+    if os.path.exists(CALIBRATION_SNAPSHOT_PATH):
+        try:
+            with open(CALIBRATION_SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+                cal_data = json.load(f)
+                override_key = f"{m_norm}:{e_norm}:{t_norm}"
+                if override_key in cal_data.get("baselines", {}):
+                    val = cal_data["baselines"][override_key]
+                    return float(val["sec"]), int(val["net_tokens"]), int(val.get("cost_krw", 3000))
+        except Exception:
+            pass
+
     key = (m_norm, e_norm, t_norm)
     if key in BASELINE_ETA_TABLE:
         return BASELINE_ETA_TABLE[key]
@@ -644,22 +682,23 @@ def lookup_baseline_eta(model: str, effort: str = "high", tier: str = "default")
 
     # Generic fallbacks
     if "astra" in m_norm:
-        return (120.0, 200000, 3000)
+        return (210.0, 65000, 1500)
     if "sol" in m_norm:
-        return (90.0, 350000, 5000)
+        return (180.0, 130000, 3000)
     if "flash" in m_norm:
         return (40.0, 20000, 500)
-    return (120.0, 150000, 5000)
+    return (180.0, 160000, 5000)
 
 
-def _parse_codex_rollout_tokens(rollout_path: str) -> tuple[int, int, str]:
-    """Extract (net_tokens, gross_tokens, detected_tier) from a Codex rollout jsonl."""
+def _parse_codex_rollout_tokens(rollout_path: str) -> tuple[int, int, str, int]:
+    """Extract (net_tokens, gross_tokens, detected_tier, context_tokens) from a Codex rollout jsonl."""
     if not rollout_path or not os.path.exists(rollout_path):
-        return 0, 0, ""
+        return 0, 0, "", 0
     net_tokens = 0
     gross_tokens = 0
     detected_tier = ""
     last_total = None
+    last_turn_ctx = 0
     try:
         with open(rollout_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -685,6 +724,8 @@ def _parse_codex_rollout_tokens(rollout_path: str) -> tuple[int, int, str]:
                         reasoning = u.get("reasoning_output_tokens", 0) or 0
                         net_tokens += max(0, in_tok - cached) + out_tok + reasoning
                         gross_tokens += u.get("total_tokens", 0) or (in_tok + out_tok)
+                        tot = u.get("total_tokens", 0) or (in_tok + out_tok)
+                        last_turn_ctx = in_tok if (tot == in_tok + out_tok) else (in_tok + cached)
                 elif t == "event_msg":
                     info = p.get("info", {})
                     if isinstance(info, dict) and "total_token_usage" in info:
@@ -696,19 +737,24 @@ def _parse_codex_rollout_tokens(rollout_path: str) -> tuple[int, int, str]:
             reasoning = last_total.get("reasoning_output_tokens", 0) or 0
             net_tokens = max(0, in_tok - cached) + out_tok + reasoning
             gross_tokens = last_total.get("total_tokens", 0) or (in_tok + out_tok)
+            tot = last_total.get("total_tokens", 0) or (in_tok + out_tok)
+            last_turn_ctx = in_tok if (tot == in_tok + out_tok) else (in_tok + cached)
     except Exception:
         pass
-    return net_tokens, gross_tokens, detected_tier
+    return net_tokens, gross_tokens, detected_tier, last_turn_ctx
 
 
-def _parse_claude_session_tokens(session_id: str) -> tuple[int, int, float, list[str]]:
-    """Extract (net_tokens, gross_tokens, elapsed_sec, models) from Claude jsonl."""
+_extract_codex_rollout_tokens = _parse_codex_rollout_tokens
+
+
+def _parse_claude_session_tokens(session_id: str) -> tuple[int, int, float, list[str], int]:
+    """Extract (net_tokens, gross_tokens, elapsed_sec, models, context_tokens) from Claude jsonl."""
     if not session_id:
-        return 0, 0, 0.0, []
+        return 0, 0, 0.0, [], 0
     pattern = os.path.expanduser(f"~/.claude/projects/**/{session_id}.jsonl")
     matched = glob.glob(pattern, recursive=True)
     if not matched:
-        return 0, 0, 0.0, []
+        return 0, 0, 0.0, [], 0
     target_file = matched[0]
     records = []
     timestamps = []
@@ -747,7 +793,16 @@ def _parse_claude_session_tokens(session_id: str) -> tuple[int, int, float, list
     gross_tokens = net_tokens + sum((r.get("cache_read_input_tokens", 0) or 0) for r in records)
     timestamps.sort()
     elapsed_sec = (timestamps[-1] - timestamps[0]) if len(timestamps) >= 2 else 0.0
-    return net_tokens, gross_tokens, elapsed_sec, models
+
+    last_ctx = 0
+    if records:
+        last_u = records[-1]
+        last_ctx = (last_u.get("input_tokens", 0) or 0) + (last_u.get("cache_creation_input_tokens", 0) or 0) + (last_u.get("cache_read_input_tokens", 0) or 0)
+
+    return net_tokens, gross_tokens, elapsed_sec, models, last_ctx
+
+
+_extract_claude_session_tokens = _parse_claude_session_tokens
 
 
 def record_worker_telemetry(
@@ -764,6 +819,7 @@ def record_worker_telemetry(
     error: str = "",
     actual_net_tokens: int | None = None,
     actual_gross_tokens: int | None = None,
+    context_tokens: int | None = None,
     timestamp: str | None = None,
 ) -> dict:
     """Record worker execution telemetry with automated error & anomaly sample exclusion."""
@@ -778,7 +834,7 @@ def record_worker_telemetry(
         norm_effort = "ultra"
 
     # Query tokens from Codex or Claude databases if not supplied
-    if (actual_net_tokens is None or actual_gross_tokens is None) and session_id:
+    if (actual_net_tokens is None or actual_gross_tokens is None or context_tokens is None) and session_id:
         codex_db = os.path.expanduser("~/.codex/state_5.sqlite")
         if os.path.exists(codex_db) and ("codex" in pool.lower() or "gpt" in norm_model.lower()):
             try:
@@ -791,13 +847,15 @@ def record_worker_telemetry(
                         gross = row[0] or 0
                         rp = row[1]
                         if rp and os.path.exists(rp):
-                            net_p, gross_p, tier_p = _parse_codex_rollout_tokens(rp)
+                            net_p, gross_p, tier_p, ctx_p = _parse_codex_rollout_tokens(rp)
                             if net_p > 0 and actual_net_tokens is None:
                                 actual_net_tokens = net_p
                             if gross_p > 0 and actual_gross_tokens is None:
                                 actual_gross_tokens = gross_p
                             if tier_p and norm_tier == "default":
                                 norm_tier = tier_p
+                            if ctx_p > 0 and context_tokens is None:
+                                context_tokens = ctx_p
                         if actual_gross_tokens is None or actual_gross_tokens == 0:
                             actual_gross_tokens = gross
                         if actual_net_tokens is None or actual_net_tokens == 0:
@@ -807,17 +865,22 @@ def record_worker_telemetry(
             except Exception:
                 pass
         elif "claude" in pool.lower() or "claude" in norm_model.lower() or "opus" in norm_model.lower():
-            net_c, gross_c, dur_c, _ = _parse_claude_session_tokens(session_id)
+            net_c, gross_c, dur_c, _, ctx_c = _parse_claude_session_tokens(session_id)
             if net_c > 0 and actual_net_tokens is None:
                 actual_net_tokens = net_c
             if gross_c > 0 and actual_gross_tokens is None:
                 actual_gross_tokens = gross_c
             if actual_sec <= 0 and dur_c > 0:
                 actual_sec = dur_c
+            if ctx_c > 0 and context_tokens is None:
+                context_tokens = ctx_c
 
     actual_net_tokens = int(actual_net_tokens or 0)
     actual_gross_tokens = int(actual_gross_tokens or 0)
     actual_sec = float(actual_sec or 0.0)
+    context_tokens = int(context_tokens or 0)
+    model_cap = get_model_context_window(norm_model)
+    context_pct = round((context_tokens / model_cap) * 100, 1) if model_cap > 0 else 0.0
 
     est_sec, est_tokens, _ = lookup_baseline_eta(norm_model, norm_effort, norm_tier)
 
@@ -858,8 +921,9 @@ def record_worker_telemetry(
                 INSERT INTO worker_telemetry (
                     timestamp, session_id, pool, model, effort, tier,
                     est_sec, actual_sec, est_tokens, actual_net_tokens, actual_gross_tokens,
+                    context_tokens, context_pct,
                     ok, is_valid, excluded_reason, title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts_str,
@@ -873,6 +937,8 @@ def record_worker_telemetry(
                     est_tokens,
                     actual_net_tokens,
                     actual_gross_tokens,
+                    context_tokens,
+                    context_pct,
                     1 if ok else 0,
                     is_valid,
                     excluded_reason,
@@ -892,6 +958,8 @@ def record_worker_telemetry(
         "est_tokens": est_tokens,
         "actual_net_tokens": actual_net_tokens,
         "actual_gross_tokens": actual_gross_tokens,
+        "context_tokens": context_tokens,
+        "context_pct": context_pct,
         "is_valid": is_valid,
         "excluded_reason": excluded_reason,
     }
@@ -960,7 +1028,7 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, r
                 u_ms = r["updated_at_ms"]
                 dur = (u_ms - c_ms) / 1000.0 if (c_ms and u_ms) else float((r["updated_at"] or 0) - (r["created_at"] or 0))
 
-                net_p, gross_p, tier_p = _parse_codex_rollout_tokens(r["rollout_path"])
+                net_p, gross_p, tier_p, ctx_p = _parse_codex_rollout_tokens(r["rollout_path"])
                 gross_tokens = gross_p or r["tokens_used"] or 0
                 net_tokens = net_p or int(round(gross_tokens * 0.15))
 
@@ -984,6 +1052,7 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, r
                     ok=True,
                     actual_net_tokens=net_tokens,
                     actual_gross_tokens=gross_tokens,
+                    context_tokens=ctx_p,
                     timestamp=ts_str,
                 )
                 if res.get("ok"):
@@ -1047,6 +1116,8 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, r
             for r in records
         )
         gross = net + sum((r.get("cache_read_input_tokens", 0) or 0) for r in records)
+        last_u = records[-1]
+        last_ctx = (last_u.get("input_tokens", 0) or 0) + (last_u.get("cache_creation_input_tokens", 0) or 0) + (last_u.get("cache_read_input_tokens", 0) or 0)
 
         sp_info = spawned_map.get(sid, {})
         m_chosen = sp_info.get("model") or (models[0] if models else "claude-opus-5-5")
@@ -1074,6 +1145,7 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, r
             error=extra_err,
             actual_net_tokens=net,
             actual_gross_tokens=gross,
+            context_tokens=last_ctx,
             timestamp=ts_str,
         )
         if res.get("ok"):
@@ -1120,7 +1192,9 @@ def get_telemetry_calibration_summary() -> dict:
                    AVG(CASE WHEN is_valid = 1 THEN actual_net_tokens ELSE NULL END) as avg_net_tokens,
                    AVG(CASE WHEN is_valid = 1 THEN actual_gross_tokens ELSE NULL END) as avg_gross_tokens,
                    MAX(est_sec) as est_sec,
-                   MAX(est_tokens) as est_tokens
+                   MAX(est_tokens) as est_tokens,
+                   AVG(CASE WHEN is_valid = 1 THEN context_tokens ELSE NULL END) as avg_context_tokens,
+                   AVG(CASE WHEN is_valid = 1 THEN context_pct ELSE NULL END) as avg_context_pct
             FROM worker_telemetry
             GROUP BY model, effort, tier
             ORDER BY valid_samples DESC, model, effort
@@ -1161,6 +1235,9 @@ def get_telemetry_calibration_summary() -> dict:
             ratio_s = round(med_sec / e_sec, 2) if (med_sec is not None and e_sec and e_sec > 0) else None
             ratio_t = round(med_net_tok / e_tok, 2) if (med_net_tok is not None and e_tok and e_tok > 0) else None
 
+            avg_ctx = int(round(r[11])) if (len(r) > 11 and r[11] is not None) else 0
+            avg_ctx_p = round(r[12], 1) if (len(r) > 12 and r[12] is not None) else 0.0
+
             calibrations.append({
                 "model": m,
                 "effort": e,
@@ -1176,6 +1253,8 @@ def get_telemetry_calibration_summary() -> dict:
                 "median_actual_net_tokens": med_net_tok,
                 "ratio_net_tokens": ratio_t,
                 "avg_gross_tokens": int(round(r[8])) if r[8] is not None else None,
+                "avg_context_tokens": avg_ctx,
+                "avg_context_pct": avg_ctx_p,
             })
 
         return {
@@ -1194,4 +1273,61 @@ def get_telemetry_calibration_summary() -> dict:
             "excluded_records": 0,
             "calibrations": [],
         }
+
+
+def run_daily_calibration(min_samples: int = 5, run_backfill: bool = True) -> dict:
+    """Run backfill and calibrate baseline ETA table, saving snapshot to CALIBRATION_SNAPSHOT_PATH."""
+    bf = backfill_historical_telemetry() if run_backfill else {"inserted": 0, "valid": 0, "excluded": 0}
+    summary = get_telemetry_calibration_summary()
+    calibrations = summary.get("calibrations", [])
+
+    baselines_override = {}
+    calibrated_list = []
+    for c in calibrations:
+        samples = c.get("valid_samples", 0)
+        if samples < min_samples:
+            continue
+        m = c["model"]
+        e = c["effort"]
+        t = c["tier"]
+        med_s = c.get("median_actual_sec")
+        med_tok = c.get("median_actual_net_tokens")
+        if med_s is None or med_tok is None or med_s <= 0 or med_tok <= 0:
+            continue
+
+        _, _, default_krw = lookup_baseline_eta(m, e, t)
+        key_str = f"{m}:{e}:{t}"
+        entry = {
+            "model": m,
+            "effort": e,
+            "tier": t,
+            "sec": med_s,
+            "net_tokens": med_tok,
+            "cost_krw": default_krw,
+            "avg_context_tokens": c.get("avg_context_tokens", 0),
+            "avg_context_pct": c.get("avg_context_pct", 0.0),
+            "valid_samples": samples,
+            "updated_at": datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        baselines_override[key_str] = entry
+        calibrated_list.append(entry)
+
+    snapshot = {
+        "updated_at": datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "total_records": summary.get("total_records", 0),
+        "valid_records": summary.get("valid_records", 0),
+        "baselines": baselines_override,
+    }
+
+    os.makedirs(os.path.dirname(CALIBRATION_SNAPSHOT_PATH), exist_ok=True)
+    with open(CALIBRATION_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+
+    return {
+        "ok": True,
+        "backfill": bf,
+        "calibrated_count": len(calibrated_list),
+        "calibrations": calibrated_list,
+        "snapshot_path": CALIBRATION_SNAPSHOT_PATH,
+    }
 

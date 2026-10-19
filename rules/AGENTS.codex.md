@@ -6,20 +6,20 @@
 
 | Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
 |---|---|
-| Gemini 3.8 Flash (low · fast) / Sonnet 5.5 (high) | `⏱ 40초 · 5만 토큰 (1천원)` |
+| Gemini 3.8 Flash (low · fast) | `⏱ 40초 · 2만 토큰 (5백원)` |
+| Sonnet 5.5 (high) | `⏱ 1분 · 4만 토큰 (1천원)` |
 | Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
-| Opus 5.5 (high/xhigh) / Gemini 4 Argon (high) | `⏱ 2분 · 22만 토큰 (6천원)` |
-| Opus 5.5 Ultra (ultra · `--effort max` + `ultrathink` · standard · 3x quota) | `⏱ 3분 · 120만 토큰 (1만5천원)` |
-| gpt-6-astra (medium · default) / gpt-6.1-sol (low) | `⏱ 1분 · 35만 토큰 (3천원)` |
-| gpt-6.1-sol (medium · priority · interactive/urgent) | `⏱ 1분 20초 · 80만 토큰 (7천원)` |
-| gpt-6.1-sol (high · priority · interactive/urgent) | `⏱ 2분 · 120만 토큰 (1만2천원)` |
-| gpt-6.1-sol (high · ultrafast · urgent only) | `⏱ 1분 15초 · 120만 토큰 (1만2천원)` |
-| gpt-6.1-sol (ultra · priority/ultrafast · interactive/urgent) | `⏱ 2분 30초 · 180만 토큰 (1만8천원)` |
-| gpt-6-astra (ultra · default · `--max-capability`) / 멀티풀 병렬 합산 | `⏱ 4분 · 350만 토큰 (3만원)` |
+| Opus 5.5 (high · default) | `⏱ 3분 · 16만 토큰 (5천원)` |
+| Opus 5.5 Ultra (ultra · `--effort max` + `ultrathink` · 3x quota) | `⏱ 2분 45초 · 14만 토큰 (1만2천원)` |
+| gpt-6-astra (medium · default) | `⏱ 3분 30초 · 6만5천 토큰 (1천5백원)` |
+| gpt-6.1-sol (medium · default) | `⏱ 40초 · 6만5천 토큰 (1천5백원)` |
+| gpt-6.1-sol (high · default) | `⏱ 3분 · 13만 토큰 (3천원)` |
+| gpt-6.1-sol (high · priority · interactive/urgent) | `⏱ 2분 10초 · 10만 토큰 (3천원)` |
+| gpt-6.1-sol (ultra · default) | `⏱ 2분 · 11만5천 토큰 (4천원)` |
 
 - 보정된 계획용 기준값이며 실제 청구액과 다를 수 있습니다. 워커에 지정된 모델, 노력, 티어에 맞는 행을 선택합니다.
 - `~` 범위(`1~3분`), "예상", "평균", "약", "대" 등의 표현을 지양하고 단일 기준값을 제시합니다.
-- 채팅 ETA 출력 형식: `⏱ 2분 · 35만 토큰 (5천원)`.
+- 채팅 ETA 출력 형식: `⏱ 3분 · 13만 토큰 (3천원)`.
 
 ## Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
