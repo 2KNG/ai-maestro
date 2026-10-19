@@ -635,15 +635,15 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .agent-row:hover { background: var(--surface-2); }
     .agent-row.parent,
     .agent-row.depth-0 {
-      background: rgba(128, 145, 175, 0.08);
+      background: linear-gradient(90deg, rgba(168, 85, 247, 0.10) 0%, rgba(59, 130, 246, 0.06) 100%);
       margin-top: 0;
-      box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.72);
+      box-shadow: inset 2px 0 0 #a855f7;
       transition: background 0.12s, box-shadow 0.15s;
     }
     .agent-row.parent:hover,
     .agent-row.depth-0:hover {
-      background: var(--surface-2);
-      box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.95);
+      background: linear-gradient(90deg, rgba(168, 85, 247, 0.16) 0%, rgba(59, 130, 246, 0.10) 100%);
+      box-shadow: inset 2.5px 0 0 #c084fc;
     }
     .agent-row.child,
     .agent-row.depth-1,
