@@ -635,15 +635,15 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .agent-row:hover { background: var(--surface-2); }
     .agent-row.parent,
     .agent-row.depth-0 {
-      background: linear-gradient(90deg, rgba(168, 85, 247, 0.10) 0%, rgba(59, 130, 246, 0.06) 100%);
+      background: linear-gradient(90deg, rgba(59, 130, 246, 0.065) 0%, rgba(99, 102, 241, 0.035) 100%);
       margin-top: 0;
-      box-shadow: inset 2px 0 0 #a855f7;
+      box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.65);
       transition: background 0.12s, box-shadow 0.15s;
     }
     .agent-row.parent:hover,
     .agent-row.depth-0:hover {
-      background: linear-gradient(90deg, rgba(168, 85, 247, 0.16) 0%, rgba(59, 130, 246, 0.10) 100%);
-      box-shadow: inset 2.5px 0 0 #c084fc;
+      background: linear-gradient(90deg, rgba(59, 130, 246, 0.11) 0%, rgba(99, 102, 241, 0.06) 100%);
+      box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.9);
     }
     .agent-row.child,
     .agent-row.depth-1,
@@ -1892,7 +1892,7 @@ def _fmt_row_work_time(node: dict | None, is_running: bool = False, status_cls: 
 
 
 def _context_pill_html(used: str, percent: float, color: str, node: dict | None = None, is_running: bool = False, status_cls: str = "") -> str:
-    """Render a vertical context meter (no token numbers) + running (⏱) or completed (✓) turn duration."""
+    """Render a vertical context meter (no token numbers) + running or completed turn duration."""
     pct = float(percent or 0.0)
     if pct >= 80.0:
         lvl_cls, lvl_ko = "crit", "높음"
@@ -1916,11 +1916,11 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
             time_attrs.append(f'data-start-ts="{int(start)}"')
             dt_start = datetime.fromtimestamp(start, tz=KST)
             time_attrs.append(f'data-clock-label="{_html_esc("▶ " + dt_start.strftime("%H:%M"))}"')
-        dur_label = "⏱ " + _fmt_dur_compact(duration or 1)
+        dur_label = _fmt_dur_compact(duration or 1)
         time_attrs.append(f'data-dur-label="{_html_esc(dur_label)}"')
         disp_txt = dur_label
     else:
-        dur_label = ("⏱ " + _fmt_dur_compact(duration)) if duration is not None else "✓ 완료"
+        dur_label = _fmt_dur_compact(duration) if duration is not None else "✓ 완료"
         time_attrs.append(f'data-dur-label="{_html_esc(dur_label)}"')
         if end is not None:
             dt_end = datetime.fromtimestamp(end, tz=KST)

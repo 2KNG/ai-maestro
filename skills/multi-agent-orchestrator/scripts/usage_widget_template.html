@@ -593,12 +593,12 @@
     }
     .agent-row:hover { background: var(--surface-2); }
     .agent-row.parent {
-      background: linear-gradient(90deg, rgba(168, 85, 247, 0.10) 0%, rgba(59, 130, 246, 0.06) 100%);
-      box-shadow: inset 2px 0 0 #a855f7;
+      background: linear-gradient(90deg, rgba(59, 130, 246, 0.065) 0%, rgba(99, 102, 241, 0.035) 100%);
+      box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.65);
     }
     .agent-row.parent:hover {
-      background: linear-gradient(90deg, rgba(168, 85, 247, 0.16) 0%, rgba(59, 130, 246, 0.10) 100%);
-      box-shadow: inset 2.5px 0 0 #c084fc;
+      background: linear-gradient(90deg, rgba(59, 130, 246, 0.11) 0%, rgba(99, 102, 241, 0.06) 100%);
+      box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.9);
     }
     .agent-row.child {
       background: rgba(128, 145, 175, 0.025);
@@ -4068,7 +4068,7 @@
         } else {
           if (el.dataset.startTs) {
             const durSec = Math.max(1, Math.floor(nowSec - Number(el.dataset.startTs)));
-            const durTxt = "⏱ " + formatSecCompact(durSec);
+            const durTxt = formatSecCompact(durSec);
             if (el.textContent !== durTxt) el.textContent = durTxt;
           } else if (el.dataset.durLabel) {
             if (el.textContent !== el.dataset.durLabel) el.textContent = el.dataset.durLabel;
