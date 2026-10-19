@@ -141,7 +141,7 @@ class RoutingTests(unittest.TestCase):
     def test_codex_tiers_share_one_candidate_and_follow_threshold(self):
         for difficulty, capacity, tiers, urgent, expected in (
             ("high", 50, ["priority", "ultrafast"], True, "ultrafast"),
-            ("high", 50, ["priority", "ultrafast"], False, "priority"),
+            ("high", 50, ["priority", "ultrafast"], False, "default"),
             ("high", 49.99, ["priority", "ultrafast"], True, "priority"),
             ("medium", 90, ["priority", "ultrafast"], True, "priority"),
             ("low", 90, ["priority", "ultrafast"], True, "priority"),

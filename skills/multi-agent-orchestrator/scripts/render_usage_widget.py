@@ -196,7 +196,7 @@ def convert_codex_node(node: dict, depth: int = 0) -> dict:
     tctx = node.get("turn_context", {})
     model_raw = (tctx.get("model") or "gpt-6.1-sol").replace("gpt-", "")
     effort = tctx.get("reasoning_effort") or "ultra"
-    fast = (tctx.get("service_tier") or "priority") in ("priority", "fast")
+    fast = (tctx.get("service_tier") or "default") in ("priority", "fast", "ultrafast")
 
     status_raw = (node.get("status") or "").lower()
     if depth == 0:
@@ -220,7 +220,7 @@ def convert_codex_node(node: dict, depth: int = 0) -> dict:
         "id": tid,
         "provider": "codex",
         "repo": _repo_from_uris_or_cwd(None, node.get("cwd"))[0],
-        "serviceTier": tctx.get("service_tier") or "priority",
+        "serviceTier": tctx.get("service_tier") or "default",
         "agyOrigin": bool(node.get("agy_origin", False)),
         "name": node.get("display_name") or node.get("nickname") or node.get("title") or "Codex Agent",
         "role": node.get("role") or ("Parent Coordinator" if depth == 0 else "Subagent"),
@@ -1594,17 +1594,18 @@ def _pin_btn_html(node_id: str, label: str, is_pinned: bool) -> str:
     )
 
 
-def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", service_tier: str = "priority", effort: str = "ultra") -> tuple[str, str, str]:
+def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", service_tier: str = "default", effort: str = "ultra") -> tuple[str, str, str]:
     """Returns (icon_svg_html, model_pill_html, sub_badge_html) with Speedometer Effort Gauge and 4-A / 3.8-F short codes."""
     if provider == "codex":
         m_full = (model_str or "gpt-6.1-sol").replace("gpt-", "")
         m_short = "6.1-s" if "6.1" in m_full else m_full[:5]
         eff_svg = _effort_gauge_svg(effort or "high")
-        bolt_svg = (
-            '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Codex service_tier: ultrafast</title><use href="#ico-bolt-3"/></svg>'
-            if service_tier == "ultrafast"
-            else '<svg width="11" height="10" style="flex-shrink:0" aria-label="priority"><title>Codex service_tier: priority (Fast)</title><use href="#ico-bolt-1"/></svg>'
-        )
+        if service_tier == "ultrafast":
+            bolt_svg = '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Codex service_tier: ultrafast</title><use href="#ico-bolt-3"/></svg>'
+        elif service_tier in ("priority", "fast"):
+            bolt_svg = '<svg width="11" height="10" style="flex-shrink:0" aria-label="priority"><title>Codex service_tier: priority (Fast)</title><use href="#ico-bolt-1"/></svg>'
+        else:
+            bolt_svg = ""
         return (
             '<svg class="brand-icon" width="15" height="15" style="color:var(--green)"><use href="#ico-codex"/></svg>',
             f'<span class="model-pill codex" title="Codex {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
@@ -1615,7 +1616,7 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
         )
     if provider == "claude":
         m_raw = (model_str or "claude-opus-5-5").lower()
-        is_fast = (service_tier == "fast") and ("fast" in m_raw and "5-5" not in m_raw)
+        is_fast = (service_tier == "fast") or ("fast" in m_raw and "5-5" not in m_raw)
         is_ultra = (effort in ("ultra", "max")) or ("ultra" in m_raw)
         if "opus" in m_raw:
             m_full = "Opus 5.5 Ultra" if is_ultra else ("Opus 5.5 Fast" if is_fast else "Opus 5.5")
@@ -2170,7 +2171,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     pool = node.get("pool") or ""
 
     is_fallback = bool(node.get("fallback_from"))
-    is_fast = (tier == "fast" or pool in ("claude-fast", "fast") or "fast" in model.lower()) and not is_fallback and tier != "default" and "opus-5-5" not in model.lower()
+    is_fast = (tier == "fast" or pool in ("claude-fast", "fast") or ("fast" in model.lower() and "opus-5-5" not in model.lower())) and not is_fallback and tier != "default"
     is_ultra = (effort in ("ultra", "max")) or ("ultra" in model.lower()) or ("ultra" in pool)
     service_tier = "fast" if is_fast else tier
 
@@ -2687,7 +2688,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_tctx = repo_codex.get("turn_context") or {}
             c_icon, c_pill, _ = _provider_icon_and_pill(
                 c_tctx.get("model") or "gpt-6.1-sol", "codex",
-                c_tctx.get("service_tier") or "priority", c_tctx.get("reasoning_effort") or "high",
+                c_tctx.get("service_tier") or "default", c_tctx.get("reasoning_effort") or "high",
             )
             c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
             c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
@@ -2880,7 +2881,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         icon_svg, model_pill, _ = _provider_icon_and_pill(
             tctx.get("model") or "gpt-6.1-sol",
             "codex",
-            tctx.get("service_tier") or "priority",
+            tctx.get("service_tier") or "default",
             tctx.get("reasoning_effort") or "high",
         )
         is_live_running, updated_ts = _codex_root_activity(cdx, live_codex_ids, rollout_paths, now_sec)
@@ -2921,7 +2922,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 child_ctx = ch.get("turn_context") or {}
                 child_icon, child_pill, _ = _provider_icon_and_pill(
                     child_ctx.get("model") or "gpt-6.1-sol", "codex",
-                    child_ctx.get("service_tier") or "priority", child_ctx.get("reasoning_effort") or "high",
+                    child_ctx.get("service_tier") or "default", child_ctx.get("reasoning_effort") or "high",
                 )
                 child_tokens = ch.get("token_count") or {}
                 child_used = fmt_k(child_tokens.get("total_tokens", 0))
@@ -3100,7 +3101,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             icon_svg, model_pill, _ = _provider_icon_and_pill(
                 tctx.get("model", "gpt-6.1-sol"),
                 "codex",
-                tctx.get("service_tier", "priority"),
+                tctx.get("service_tier", "default"),
                 tctx.get("reasoning_effort", "ultra"),
             )
             age_lbl = _age_label_from_days(age_d, item.get("updated_at"))

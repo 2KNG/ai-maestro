@@ -1087,10 +1087,13 @@ def _default_codex_service_tier() -> str:
                 for line in f:
                     m = re.match(r'^\s*service_tier\s*=\s*"([^"]+)"', line)
                     if m:
-                        return m.group(1).strip()
+                        val = m.group(1).strip()
+                        if val in ("default", "priority", "ultrafast"):
+                            return val
     except Exception:
         pass
-    return "priority"
+    return "default"
+
 
 
 def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback_effort: str = "ultra") -> dict:
@@ -1641,7 +1644,7 @@ def _routing_remaining(usage: dict) -> float | None:
     return eff
 
 
-def select_best_pool(data, difficulty='high', urgent: bool = False) -> dict:
+def select_best_pool(data, difficulty='high', urgent: bool = False, interactive: bool = False) -> dict:
     """Rank shared quota pools with 3-Zone Weekly Guardrail (10% conserve / 2% reserve / 0% block)
     and once-a-day zero-token verified benchmark rankings.
     """
@@ -1715,11 +1718,14 @@ def select_best_pool(data, difficulty='high', urgent: bool = False) -> dict:
         if provider == "codex":
             tiers = usage.get("service_tiers", ["priority"])
             tiers = [tier for tier in ("priority", "ultrafast") if tier in tiers]
-            tier = (
-                "ultrafast"
-                if urgent and difficulty == "high" and remaining is not None and remaining >= 50 and "ultrafast" in tiers
-                else ("priority" if "priority" in tiers else next(iter(tiers), None))
-            )
+            if not tiers:
+                tier = None
+            elif urgent and difficulty == "high" and remaining is not None and remaining >= 50 and "ultrafast" in tiers:
+                tier = "ultrafast"
+            elif (interactive or urgent) and "priority" in tiers:
+                tier = "priority"
+            else:
+                tier = "default"
             candidate.update(service_tier=tier, available_service_tiers=tiers, shared_quota=True)
             if not tier:
                 candidate.update(status="unavailable", score=0.0)

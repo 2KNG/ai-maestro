@@ -2246,7 +2246,7 @@
       <span class="mcp-chip">
         <svg width="11" height="11" style="color:var(--green)"><use href="#ico-codex"/></svg>
         <span>Codex · 6.1-sol</span>
-        <span class="bolt-badge" style="height:14px;padding:0 3.5px" title="Codex 기본 service_tier: priority (Fast · 1x lightning, 긴급 시에만 ultrafast 3x)">
+        <span class="bolt-badge" style="display:none;height:14px;padding:0 3.5px" title="Codex 기본 service_tier: default (표준 속도 · 인터랙티브 priority, 긴급 시에만 ultrafast 3x)">
           <svg width="9" height="10"><use href="#ico-bolt-1"/></svg>
         </span>
         <span class="dot" id="dot-codex-pool"></span>
@@ -3274,13 +3274,13 @@
             prompt: prompt,
             cwd: activeCodexCwd,
             effort: 'high',
-            tier: 'priority'
+            tier: 'default'
           })
         });
         const j = await r.json();
         if (j && j.ok) {
           if (inp) inp.value = '';
-          showToast(`✓ ${j.title || '✦ Codex 6.1-sol Fast'} 실행 시작! (PID ${j.pid})`);
+          showToast(`✓ ${j.title || '✦ Codex 6.1-sol'} 실행 시작! (PID ${j.pid})`);
           setTimeout(() => refreshByScope(), 1800);
         } else {
           showToast(`오류: ${(j && j.error) || 'Codex 실행 실패'}`);
