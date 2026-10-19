@@ -2524,6 +2524,7 @@
       return `<span class="win-model-icons dual">${parts.join('')}</span>`;
     }
 
+    /*__POOL_CAPACITIES_JSON_START__*/
     const POOL_TOKEN_CAPACITIES = {
       agy_gemini_5h: 193000000,
       agy_gemini_7d: 621000000,
@@ -2533,6 +2534,7 @@
       claude_7d: 97830000,
       codex_7d: 31240000
     };
+    /*__POOL_CAPACITIES_JSON_END__*/
 
     function formatTokenKorean(tokens) {
       if (!tokens || isNaN(tokens) || tokens <= 0) return '0';

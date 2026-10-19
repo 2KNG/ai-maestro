@@ -65,16 +65,16 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(usage.select_best_pool(snapshot(60, 40, 60, 0))["pool"], "codex")
 
     def test_weekly_guardrail_limits_codex_and_claude_only_near_exhaustion(self):
-        # Normal zone (7d > 10%): the 5h window routes, so a low 7d value alone does not throttle.
-        data = snapshot(60, 40, 20, 15)
+        # Normal zone (7d > 10%): blend 5h and 7d remaining quotas (Codex 0.25*5h + 0.75*7d, Claude 0.45*5h + 0.55*7d).
+        data = snapshot(50, 40, 20, 15)
         data["codex_local"]["five_hour"] = window(95)
         data["claude_local"]["five_hour"] = window(99)
         result = usage.select_best_pool(data)
         self.assertEqual(result["pool"], "claude")
-        self.assertEqual(candidates(result)["codex"]["remaining_percent"], 95)
-        self.assertEqual(candidates(result)["claude"]["remaining_percent"], 99)
+        self.assertEqual(candidates(result)["codex"]["remaining_percent"], 38.75)
+        self.assertEqual(candidates(result)["claude"]["remaining_percent"], 52.8)
         # Weekly Conserve zone (2% < 7d <= 10%): score is min(5h, 7d * 3.5), so antigravity wins.
-        data = snapshot(60, 40, 8, 5)
+        data = snapshot(50, 40, 8, 5)
         data["codex_local"]["five_hour"] = window(95)
         data["claude_local"]["five_hour"] = window(99)
         result = usage.select_best_pool(data)
@@ -271,8 +271,8 @@ class CollectorTests(unittest.TestCase):
                 cache.touch()
                 fresh = usage.get_claude_status()
                 self.assertFalse(fresh["stale"])
-                # Weekly headroom (80%) is above the 10% guardrail, so routing follows the 5h window (90%).
-                self.assertEqual(usage._routing_remaining(fresh), 90)
+                # Weekly headroom (80%) is blended with 5h window (90%): 0.45 * 90 + 0.55 * 80 = 84.5%.
+                self.assertEqual(usage._routing_remaining(fresh), 84.5)
 
 
 class AntigravityCacheTests(unittest.TestCase):

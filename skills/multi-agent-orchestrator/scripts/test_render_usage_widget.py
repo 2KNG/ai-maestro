@@ -314,29 +314,67 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(widget.format_token_korean(2_120_000), "212만")
         self.assertEqual(widget.format_token_korean(31_240_000), "3,124만")
 
-        accs = widget.build_accounts({
-            "antigravity": {"pools": {
-                "Gemini Pool (Argon / Flash)": {"five_hour": {"remaining_percent": 90.0}},
-            }},
-            "codex_local": {
-                "five_hour": {"remaining_percent": 100.0},
-                "weekly": {"remaining_percent": 50.0},
-            }
-        })
-        gem = next(a for a in accs if a["provider"] == "antigravity")
-        gem_5h = gem["windows"][0]
-        self.assertEqual(gem_5h.get("totalTokens"), 193_000_000)
+        with mock.patch.object(widget, "load_calibrated_pool_token_capacities", return_value=dict(widget.POOL_TOKEN_CAPACITIES)):
+            accs = widget.build_accounts({
+                "antigravity": {"pools": {
+                    "Gemini Pool (Argon / Flash)": {"five_hour": {"remaining_percent": 90.0}},
+                }},
+                "codex_local": {
+                    "five_hour": {"remaining_percent": 100.0},
+                    "weekly": {"remaining_percent": 50.0},
+                }
+            })
+            gem = next(a for a in accs if a["provider"] == "antigravity")
+            gem_5h = gem["windows"][0]
+            self.assertEqual(gem_5h.get("totalTokens"), 193_000_000)
 
-        cdx = next(a for a in accs if a["provider"] == "codex")
-        cdx_5h = next(w for w in cdx["windows"] if w["periodKind"] == "5h")
-        self.assertNotIn("totalTokens", cdx_5h)
-        cdx_7d = next(w for w in cdx["windows"] if w["periodKind"] == "7d")
-        self.assertEqual(cdx_7d.get("totalTokens"), 31_240_000)
+            cdx = next(a for a in accs if a["provider"] == "codex")
+            cdx_5h = next(w for w in cdx["windows"] if w["periodKind"] == "5h")
+            self.assertNotIn("totalTokens", cdx_5h)
+            cdx_7d = next(w for w in cdx["windows"] if w["periodKind"] == "7d")
+            self.assertEqual(cdx_7d.get("totalTokens"), 31_240_000)
 
-        html = widget.build_static_quota_grid_html(accs)
-        self.assertIn("토큰 용량: 잔여 약", html)
-        self.assertIn("1억 9,300만 토큰", html)
-        self.assertIn("3,124만 토큰", html)
+            html = widget.build_static_quota_grid_html(accs)
+            self.assertIn("토큰 용량: 잔여 약", html)
+            self.assertIn("1억 9,300만 토큰", html)
+            self.assertIn("3,124만 토큰", html)
+
+    def test_calibrated_pool_capacities_injected_into_template(self):
+        template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
+        fake_caps = {
+            "agy_gemini_5h": 200_000_000,
+            "agy_gemini_7d": 700_000_000,
+            "agy_claude_5h": 3_000_000,
+            "agy_claude_7d": 5_000_000,
+            "claude_5h": 40_000_000,
+            "claude_7d": 100_000_000,
+            "codex_7d": 35_000_000,
+        }
+        with mock.patch.object(widget, "load_calibrated_pool_token_capacities", return_value=fake_caps), \
+             mock.patch.object(widget, "_load_persisted_widget_state", return_value={}):
+            injected = widget.inject_live_data(template, {})
+        m = re.search(r"const\s+POOL_TOKEN_CAPACITIES\s*=\s*(\{.*?\});", injected, re.S)
+        self.assertIsNotNone(m)
+        parsed = json.loads(m.group(1))
+        self.assertEqual(parsed.get("agy_gemini_5h"), 200_000_000)
+        self.assertEqual(parsed.get("codex_7d"), 35_000_000)
+
+    def test_build_static_quota_grid_calibrated_fallback(self):
+        fake_caps = {
+            "test_pool_5h": 50_000_000,
+        }
+        accs = [{
+            "name": "Test Acc",
+            "provider": "codex",
+            "windows": [{
+                "label": "Test Window",
+                "poolKey": "test_pool_5h",
+                "remaining": 50.0,
+            }]
+        }]
+        with mock.patch.object(widget, "load_calibrated_pool_token_capacities", return_value=fake_caps):
+            html = widget.build_static_quota_grid_html(accs)
+        self.assertIn("토큰 용량: 잔여 약 2,500만 / 총 5,000만 토큰", html)
 
 
 if __name__ == '__main__':

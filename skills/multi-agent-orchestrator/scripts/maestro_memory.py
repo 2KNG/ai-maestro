@@ -1393,13 +1393,152 @@ def run_daily_calibration(min_samples: int = 5, run_backfill: bool = True) -> di
     with open(CALIBRATION_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2)
 
+    pool_res = calibrate_pool_token_capacities()
+
     return {
         "ok": True,
         "backfill": bf,
         "calibrated_count": len(calibrated_list),
         "calibrations": calibrated_list,
+        "pool_token_capacities": pool_res.get("pool_token_capacities", {}),
         "snapshot_path": CALIBRATION_SNAPSHOT_PATH,
+        "pool_snapshot_path": TELEMETRY_CALIBRATION_PATH,
     }
+
+
+DEFAULT_POOL_TOKEN_CAPACITIES = {
+    "agy_gemini_5h": 193_000_000,
+    "agy_gemini_7d": 621_000_000,
+    "agy_claude_5h": 2_120_000,
+    "agy_claude_7d": 3_940_000,
+    "claude_5h": 35_700_000,
+    "claude_7d": 97_830_000,
+    "codex_7d": 31_240_000,
+}
+TELEMETRY_CALIBRATION_PATH = os.path.expanduser("~/.gemini/antigravity/telemetry_calibration.json")
+
+
+def _sum_telemetry_tokens(pool_prefix: str, since_sec: float) -> tuple[int, int]:
+    """Sum (net_tokens, gross_tokens) from worker_telemetry since given epoch."""
+    conn = _connect()
+    try:
+        ts_str = datetime.datetime.fromtimestamp(since_sec, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            """
+            SELECT SUM(actual_net_tokens), SUM(actual_gross_tokens)
+            FROM worker_telemetry
+            WHERE pool LIKE ? AND timestamp >= ?
+            """,
+            (f"%{pool_prefix}%", ts_str),
+        ).fetchone()
+        net = int(row[0] or 0)
+        gross = int(row[1] or 0)
+        return net, gross
+    except Exception:
+        return 0, 0
+
+
+def calibrate_pool_token_capacities(usage_report: dict | None = None) -> dict:
+    """Auto-calibrate 5h/7d total token capacities from logged telemetry and live usage.
+
+    Computes empirical 100% token capacity = logged_tokens / (used_pct / 100.0) whenever
+    used_pct >= 5.0%. Blends with baseline via EMA (0.7 * prev + 0.3 * empirical),
+    clamped within [0.5x, 2.0x] of baseline to reject noisy outliers.
+    Saves snapshot to TELEMETRY_CALIBRATION_PATH.
+    """
+    if usage_report is None:
+        try:
+            import check_all_usage as cau
+            usage_report = cau.collect_usage(include_agent_trees=False)
+        except Exception:
+            usage_report = {}
+
+    prev_capacities = dict(DEFAULT_POOL_TOKEN_CAPACITIES)
+    if os.path.exists(TELEMETRY_CALIBRATION_PATH):
+        try:
+            with open(TELEMETRY_CALIBRATION_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            for k, v in (saved.get("pool_token_capacities") or {}).items():
+                if isinstance(v, (int, float)) and v > 0:
+                    prev_capacities[k] = int(round(v))
+        except Exception:
+            pass
+
+    now_sec = time.time()
+    five_h_sec = now_sec - 18000
+    seven_d_sec = now_sec - 604800
+
+    codex = usage_report.get("codex_local") or {}
+    claude = usage_report.get("claude_local") or {}
+    agy_pools = (usage_report.get("antigravity") or {}).get("pools") or {}
+    gem_pool = agy_pools.get("Gemini Pool (Argon / Flash)") or {}
+    cl_pool = agy_pools.get("Claude & GPT-OSS Pool (Antigravity)") or {}
+
+    pool_windows = {
+        "codex_7d": ("codex", seven_d_sec, (codex.get("weekly") or {}).get("used_percent")),
+        "claude_5h": ("claude", five_h_sec, (claude.get("five_hour") or {}).get("used_percent")),
+        "claude_7d": ("claude", seven_d_sec, (claude.get("weekly") or {}).get("used_percent")),
+        "agy_gemini_5h": ("gemini", five_h_sec, (gem_pool.get("five_hour") or {}).get("used_percent")),
+        "agy_gemini_7d": ("gemini", seven_d_sec, (gem_pool.get("weekly") or {}).get("used_percent")),
+        "agy_claude_5h": ("agy-claude", five_h_sec, (cl_pool.get("five_hour") or {}).get("used_percent")),
+        "agy_claude_7d": ("agy-claude", seven_d_sec, (cl_pool.get("weekly") or {}).get("used_percent")),
+    }
+
+    calibrated = dict(prev_capacities)
+    empirical_records = {}
+
+    for key, (pool_pfx, since_epoch, used_pct_raw) in pool_windows.items():
+        base = DEFAULT_POOL_TOKEN_CAPACITIES.get(key, 10_000_000)
+        try:
+            used_pct = float(used_pct_raw) if used_pct_raw is not None else None
+        except (ValueError, TypeError):
+            used_pct = None
+
+        if used_pct is None or used_pct < 5.0 or used_pct > 100.0:
+            empirical_records[key] = {
+                "status": "skipped",
+                "reason": f"used_pct ({used_pct}) < 5.0% or unavailable",
+                "current_capacity": calibrated[key],
+            }
+            continue
+
+        net_tokens, gross_tokens = _sum_telemetry_tokens(pool_pfx, since_epoch)
+        tokens_for_calc = net_tokens if net_tokens > 0 else int(round(gross_tokens * 0.15))
+        if tokens_for_calc <= 0:
+            empirical_records[key] = {
+                "status": "skipped",
+                "reason": "no logged tokens in current cycle",
+                "current_capacity": calibrated[key],
+            }
+            continue
+
+        empirical_total = int(round(tokens_for_calc / (used_pct / 100.0)))
+        prev_val = prev_capacities.get(key, base)
+        blended = int(round(0.7 * prev_val + 0.3 * empirical_total))
+        clamped = max(int(round(base * 0.5)), min(int(round(base * 2.0)), blended))
+
+        calibrated[key] = clamped
+        empirical_records[key] = {
+            "status": "calibrated",
+            "used_pct": used_pct,
+            "logged_tokens": tokens_for_calc,
+            "empirical_total": empirical_total,
+            "prev_capacity": prev_val,
+            "calibrated_capacity": clamped,
+            "baseline": base,
+        }
+
+    out_payload = {
+        "updated_at": datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "pool_token_capacities": calibrated,
+        "empirical_details": empirical_records,
+    }
+
+    os.makedirs(os.path.dirname(TELEMETRY_CALIBRATION_PATH), exist_ok=True)
+    with open(TELEMETRY_CALIBRATION_PATH, "w", encoding="utf-8") as f:
+        json.dump(out_payload, f, ensure_ascii=False, indent=2)
+
+    return out_payload
 
 
 def calibrate_eta_from_telemetry(min_samples: int = 5, run_backfill: bool = True) -> dict:

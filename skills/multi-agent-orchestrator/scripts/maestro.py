@@ -56,6 +56,12 @@ COMPUTER_USE_KEYWORDS = (
     "데스크탑 조작", "마우스 클릭", "화면을 조작", "xdotool", "gui 조작",
 )
 
+MOTION_UI_CODING_KEYWORDS = (
+    "모션", "모션그래픽", "애니메이션", "animation", "motion",
+    "ui", "ux", "frontend", "프론트엔드", "webgl", "canvas",
+    "three.js", "svg", "인터랙션", "interaction", "css", "tailwind",
+)
+
 
 def is_computer_use_task(spec: str) -> bool:
     """Return True if spec contains PC control, desktop GUI, or computer-use keywords."""
@@ -63,6 +69,14 @@ def is_computer_use_task(spec: str) -> bool:
         return False
     lowered = spec.lower()
     return any(kw in lowered for kw in COMPUTER_USE_KEYWORDS)
+
+
+def is_motion_or_ui_task(spec: str) -> bool:
+    """Return True if spec contains motion graphics, animation, or frontend UI keywords."""
+    if not spec:
+        return False
+    lowered = spec.lower()
+    return any(kw in lowered for kw in MOTION_UI_CODING_KEYWORDS)
 
 
 def ls_post(addr: str, token: str, method: str, payload: dict, timeout: int = 10) -> dict:
@@ -104,7 +118,7 @@ def _map_canonical_to_cli_pool(winner: str, difficulty: str = "high") -> str:
     if winner == "antigravity_claude":
         return "agy-claude" if difficulty == "high" else "agy-sonnet"
     if winner == "codex":
-        return "codex"
+        return "codex-astra" if difficulty == "medium" else "codex"
     if winner == "claude":
         return "claude"
     return "agy-argon" if difficulty == "high" else "agy-flash"
@@ -138,6 +152,27 @@ def choose_auto_pool(difficulty: str = "high", exclude_canonical: set[str] | Non
     best = cau.select_best_pool(data, difficulty)
     excl = exclude_canonical or set()
     winner = best.get("pool")
+
+    # Hierarchy: gpt-6-astra > Opus 5.5 > gpt-6.1-sol
+    # For medium difficulty general coding, prefer codex-astra unless Claude 7d > Codex 7d by 12%+
+    if difficulty == "medium" and "codex" not in excl and "claude" not in excl:
+        c_map = {c.get("pool"): c for c in (best.get("candidates") or [])}
+        codex_c = c_map.get("codex")
+        claude_c = c_map.get("claude")
+        if (
+            codex_c
+            and codex_c.get("status") == "available"
+            and float(codex_c.get("remaining_percent") or 0.0) > 0.0
+            and claude_c
+            and claude_c.get("status") == "available"
+        ):
+            codex_7d = float(codex_c.get("weekly_remaining") or 0.0)
+            claude_7d = float(claude_c.get("weekly_remaining") or 0.0)
+            if claude_7d > codex_7d + 12.0:
+                winner = "claude"
+            else:
+                winner = "codex"
+
     if winner in excl:
         candidates = [
             (c.get("pool"), float(c.get("score") or c.get("remaining_percent") or 0.0))
@@ -380,7 +415,8 @@ def start_agy_worker(pool: str, spec: str, cwd: str, wait: bool, timeout: int) -
 
 
 def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
-                        wait: bool, timeout: int, *, max_capability: bool = False,
+                        wait: bool, timeout: int, *, tier: str | None = None,
+                        max_capability: bool = False,
                         interactive: bool = False, urgent: bool = False,
                         background: bool = False) -> dict:
     """Run local Claude; retry only Fast model/effort availability failures."""
@@ -402,8 +438,28 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         selected_effort = "high"
     if timeout == 180:
         timeout = {"low": 120, "medium": 180, "high": 300, "xhigh": 420, "ultra": 600}.get(selected_effort, 180)
-    # An explicit Fast pool remains an opt-in, including background invocations, unless ultra is requested.
-    fast = (pool in CLAUDE_FAST_POOLS or ((interactive or urgent) and not background and not max_capability)) and selected_effort != "ultra"
+
+    # Opus Fast speed tier determination:
+    if selected_effort == "ultra":
+        fast = False
+        effective_tier = "default"
+    else:
+        explicit_fast_pool = pool in CLAUDE_FAST_POOLS
+        explicit_fast_tier = tier in ("fast", "priority", "ultrafast")
+        auto_fast = (interactive or urgent) and not background and not max_capability
+        fast = explicit_fast_pool or explicit_fast_tier or auto_fast
+
+        if tier == "ultrafast" or (urgent and fast):
+            effective_tier = "ultrafast"
+        elif fast:
+            effective_tier = "fast"
+        elif tier in ("default", "standard"):
+            effective_tier = "default"
+        elif tier:
+            effective_tier = tier
+        else:
+            effective_tier = "default"
+
     model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
     if selected_effort == "ultra":
         prompt = "ultrathink\n\n" + prompt
@@ -411,6 +467,8 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
 
     worker_env = dict(os.environ)
     worker_env["MAESTRO_WORKER_ACTIVE"] = "1"
+    if fast:
+        worker_env["CLAUDE_CODE_FAST_MODE"] = "1"
 
     def command():
         return [os.path.expanduser("~/.local/bin/claude"), "-p",
@@ -420,7 +478,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
 
     result = {"pool": pool, "title": title, "cwd": abs_cwd,
               "session_id": session_id, "handover_injected": bool(handover),
-              "tier": "fast" if fast else "default"}
+              "tier": effective_tier}
 
     def register(status, **extra):
         record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
@@ -479,7 +537,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
                 pool=pool,
                 model=model,
                 effort=selected_effort,
-                tier="fast" if "fast" in pool.lower() or "fast" in model.lower() else "default",
+                tier=effective_tier,
                 actual_sec=result["elapsed_sec"],
                 session_id=session_id,
                 title=title,
@@ -500,7 +558,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
                 pool=pool,
                 model=model,
                 effort=selected_effort,
-                tier="fast" if "fast" in pool.lower() or "fast" in model.lower() else "default",
+                tier=effective_tier,
                 actual_sec=elapsed_fail,
                 session_id=session_id,
                 title=title,
@@ -786,8 +844,8 @@ def main():
     p_start.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max", "ultra"],
                          help="Default: Codex/Claude high, Astra medium; max-capability unlocks top efforts")
     p_start.add_argument("--model", help="Codex model override (e.g. gpt-6-astra); auto selects the Codex pool")
-    p_start.add_argument("--tier", choices=["default", "standard", "priority", "ultrafast"],
-                         help="Default/standard for background; priority for interactive; ultrafast requires urgent")
+    p_start.add_argument("--tier", choices=["default", "standard", "fast", "priority", "ultrafast"],
+                         help="Default/standard for background; fast/priority for interactive; ultrafast requires urgent")
     p_start.add_argument("--interactive", action="store_true", help="Live user ping-pong: priority or Claude Fast")
     p_start.add_argument("--background", action="store_true", help="Scheduled/remote/autonomous work: standard speed (overrides interactive/urgent)")
     p_start.add_argument("--max-capability", action="store_true", help="Choose the highest benchmark capability; unlock top reasoning efforts")
@@ -854,8 +912,12 @@ def main():
                 parser.error("--model is supported only with auto or a Codex pool")
             if requested_pool == "auto":
                 requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
-        if requested_pool == "auto" and is_computer_use_task(args.spec):
-            requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
+        if requested_pool == "auto":
+            if is_computer_use_task(args.spec):
+                requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
+            elif is_motion_or_ui_task(args.spec):
+                # Motion graphics & frontend UI excels on Claude Opus 5.5
+                requested_pool = "claude"
         recommendation = None
         if args.max_capability:
             try:
@@ -905,7 +967,7 @@ def main():
                 if target_pool in CLAUDE_ULTRA_POOLS:
                     target_pool, effort = "claude", "ultra"
                 result = start_claude_worker(target_pool, args.spec, args.cwd, effort, args.wait,
-                                            args.timeout, **speed_flags)
+                                            args.timeout, tier=args.tier, **speed_flags)
             else:
                 result = start_agy_worker(target_pool, args.spec, args.cwd, args.wait, args.timeout)
             if selected:

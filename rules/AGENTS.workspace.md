@@ -5,12 +5,14 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
    - `<thought>` 3~4줄 이내 작성 후 첫 툴로 즉시 위임 (`invoke_subagent(Model='flash')` 또는 `maestro worker-start`).
    - 메인 에이전트 단독 도구 연속 실행 2회 초과 금지 (Hard Solo-Tool Cap).
 2. Explicit Worker Role Roster & Speed Tiers:
+   - Practical Hierarchy: 1순위 주력 `gpt-6-astra (medium · default)` > 2순위 주력 `Opus 5.5 (high/medium · claude)` > 3순위 특수 목적 `gpt-6.1-sol (high · standard, computer-use/test loop)`.
    - `Opus 5.5 Fast (claude-fast · 2x quota)`: 명시적 fast 요청 전용.
-   - `Opus 5.5 (xhigh/high · claude / agy-claude)`: 아키텍처 및 심층 추론.
+   - `Opus 5.5 (xhigh/high · claude / agy-claude)`: 아키텍처 및 심층 추론, 프론트엔드 UI/UX 및 모션그래픽.
    - `Opus 5.5 Ultra (ultra · 3x quota)`: 최고난도 추론 전용 (`--effort ultra`).
    - `gpt-6.1-sol (high/medium · standard)`: 백엔드/테스트 루프 (`priority`는 `--interactive`/`--urgent` 필요).
-   - `gpt-6-astra (medium · default)`: 보조 모듈 병렬 구현.
+   - `gpt-6-astra (medium · default)`: 전반적인 일반 코딩 및 모션그래픽 구현 (`--pool auto --difficulty medium` 자동 선택).
    - `Gemini 3.8 Flash (low · fast)`: 초고속 코드/로그 탐색.
+   - 모션그래픽 / UI·UX: Claude Opus 5.5 (`--pool claude`) 우선 라우팅 (`is_motion_or_ui_task()` 자동 감지).
    - PC 조작 / 데스크탑 GUI 제어 / Computer-Use: OpenAI Codex(`gpt-6.1-sol` / `--pool codex`) 우선 라우팅.
    - `fast`/`priority`/`ultrafast`는 대화형 인터랙티브 전용. 백그라운드/cron은 standard/default 티어 사용.
 3. Single-Value ETA Standard:

@@ -63,6 +63,10 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 
 ## 2.6. Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
+- **Practical Model Priority Hierarchy (실전 모델 우선순위 위계)**:
+  - **1순위 주력**: `gpt-6-astra (medium · default)`: 전반적인 일반 코딩 및 모션그래픽·멀티파일 구현 최우선 (`--pool auto --difficulty medium` 자동 선택)
+  - **2순위 주력**: `Opus 5.5 (high/medium · claude)`: 복합 아키텍처 설계, 심층 추론, 프론트엔드 UI/UX 및 모션 그래픽 (`--pool auto` motion/ui 키워드 자동 배정)
+  - **3순위 특수 목적**: `gpt-6.1-sol (high · standard)`: PC 조작(Computer Use), 로우레벨 시스템 제어 및 정밀 유닛테스트 검증 루프 전용
 - Whenever delegating one or many workers (`maestro worker-start`, `invoke_subagent`, child workers), ALWAYS state the exact **model + effort + speed tier** assigned to each concrete subtask **BEFORE launch**, with its ETA row.
 - After launch / completion, report every actual `--pool auto` assignment or fallback / failover change (`requested → actual` model · effort · tier + reason, e.g. 0% quota steering).
 - **Speed Tier Policy (속도 티어 정책)**:
@@ -82,10 +86,12 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 |---|---|
 | Responsive UI / quick patch (live interactive only) | Opus 5.5 Fast (`claude-fast`, 2x quota) |
 | Cron / watchdog / long autonomous / remote background | Opus 5.5 (`claude-opus-5-5`, standard) |
+| Motion graphics / Frontend UI & interaction (모션그래픽/UI) | Opus 5.5 (`claude`, standard) / gpt-6-astra (`default`) |
 | Core architecture reasoning | Opus 5.5 (`high`; `xhigh` via `--max-capability`, standard) |
 | Hardest reasoning / architecture (explicit opt-in) | Opus 5.5 Ultra (`claude-ultra` or `--effort ultra` → `--effort max` + `ultrathink`, standard, 3x quota) |
+| General coding & parallel submodules (1순위 주력) | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
-| Parallel submodule implementation | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
+| PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
 | Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
 
 ## 2.7. Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)

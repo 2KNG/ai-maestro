@@ -69,6 +69,7 @@ LLM 토큰 소모 없이 로컬 프로세스, SQLite, JSONL 로그를 파싱하�
 
 #### 워커 배정 고지 및 속도 티어 정책
 
+- 실전 모델 우선순위 위계: **1순위 주력** `gpt-6-astra (medium · default)` > **2순위 주력** `Opus 5.5 (high/medium · claude)` > **3순위 특수 목적** `gpt-6.1-sol (high · standard, computer-use/test loop)`.
 - 워커 투입 시 각 작업에 배정된 모델, 노력 수준, 속도 티어를 사전 명시합니다.
 - 사후 보고 시 `--pool auto` 배정 결과나 장애 조치(Failover) 내역을 기록합니다.
 - 속도 티어 정책:
@@ -82,11 +83,12 @@ LLM 토큰 소모 없이 로컬 프로세스, SQLite, JSONL 로그를 파싱하�
 |---|---|
 | 반응형 UI / 빠른 패치 (명시적 fast 요청 시) | Opus 5.5 Fast (`claude-fast`, 2x quota) |
 | Cron / 감시 루프 / 장시간 자율 / 백그라운드 | Opus 5.5 (`claude-opus-5-5`, standard) |
+| 모션그래픽 / 프론트엔드 UI 및 인터랙션 | Opus 5.5 (`claude`, standard) / gpt-6-astra (`default`) |
 | 핵심 아키텍처 및 심층 추론 | Opus 5.5 (`high`; `xhigh` via `--max-capability`, standard) |
 | 최고난도 추론 / 복합 설계 (명시적 선택) | Opus 5.5 Ultra (`claude-ultra` 또는 `--effort ultra` → `--effort max` + `ultrathink`, standard, 3x quota) |
+| 전반적인 일반 코딩 및 병렬 모듈 구현 (1순위 주력) | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | 백엔드 / 시스템 / 테스트 검증 | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC 조작 / 데스크탑 GUI 제어 / Computer-Use | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
-| 병렬 서브모듈 구현 | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | 빠른 코드베이스 및 로그 탐색 | Gemini 3.8 Flash (`low`, `fast`) |
 
 ### 4. Git Worktree 격리 병렬 실행 및 세션 핸드오버 메모리

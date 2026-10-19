@@ -22,6 +22,7 @@
 
 ## Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
+- 실전 모델 우선순위 위계: **1순위 주력** `gpt-6-astra (medium · default)` > **2순위 주력** `Opus 5.5 (high/medium · claude)` > **3순위 특수 목적** `gpt-6.1-sol (high · standard, computer-use/test loop)`.
 - 워커 투입 시 모델, 노력 수준, 속도 티어를 사전 명시합니다.
 - 사후 보고 시 `--pool auto` 배정 결과나 장애 조치(Failover) 내역을 기록합니다.
 - 속도 티어 정책:
@@ -34,11 +35,12 @@
 |---|---|
 | Responsive UI / quick patch (명시적 fast 요청 시) | Opus 5.5 Fast (`claude-fast`, 2x quota) |
 | Cron / watchdog / long autonomous / remote background | Opus 5.5 (`claude-opus-5-5`, standard) |
+| Motion graphics / Frontend UI & interaction (모션그래픽/UI) | Opus 5.5 (`claude`, standard) / gpt-6-astra (`default`) |
 | Core architecture reasoning | Opus 5.5 (`high`; `xhigh` via `--max-capability`, standard) |
 | Hardest reasoning / architecture (explicit opt-in) | Opus 5.5 Ultra (`claude-ultra` or `--effort ultra` → `--effort max` + `ultrathink`, standard, 3x quota) |
+| General coding & parallel submodules (1순위 주력) | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
-| Parallel submodule implementation | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
 
 ## Natural Developer Communication Style

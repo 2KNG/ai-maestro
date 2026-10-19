@@ -230,5 +230,61 @@ class WorkerDispatchTests(unittest.TestCase):
             self.assertEqual(codex.call_args.kwargs.get("pool"), "codex")
 
 
+    def test_is_motion_or_ui_task(self):
+        positive = [
+            "모션그래픽 효과 추가", "부드러운 애니메이션 구현", "frontend ui 스타일링",
+            "three.js 3D 렌더링", "canvas 인터랙션 최적화", "motion physics 개선",
+            "tailwind css 레이아웃 수정", "svg 아이콘 애니메이션", "웹 프론트엔드 작업",
+        ]
+        for spec in positive:
+            with self.subTest(spec=spec):
+                self.assertTrue(workers.is_motion_or_ui_task(spec))
+
+        negative = ["백엔드 DB 쿼리 튜닝", "단위 테스트 실행", "리팩토링", "", None]
+        for spec in negative:
+            with self.subTest(spec=spec):
+                self.assertFalse(workers.is_motion_or_ui_task(spec))
+
+    def test_auto_routing_motion_ui_to_claude(self):
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--spec", "모션그래픽 인터랙션 추가", "--pool", "auto", "--wait"]), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             mock.patch.object(workers, "start_claude_worker", return_value={"ok": True}) as claude, \
+             mock.patch.object(workers, "start_agy_worker") as agy, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            agy.assert_not_called()
+            codex.assert_not_called()
+            claude.assert_called_once()
+            self.assertEqual(claude.call_args.args[0], "claude")
+
+    def test_medium_difficulty_hierarchy_prefers_astra(self):
+        routing = {
+            "pool": "codex",
+            "candidates": [
+                {"pool": "codex", "status": "available", "remaining_percent": 80.0, "weekly_remaining": 60.0},
+                {"pool": "claude", "status": "available", "remaining_percent": 80.0, "weekly_remaining": 65.0},
+            ],
+        }
+        with mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(usage, "select_best_pool", return_value=routing):
+            pool, _ = workers.choose_auto_pool("medium")
+            self.assertEqual(pool, "codex-astra")
+
+    def test_medium_difficulty_hierarchy_prefers_claude_when_headroom_large(self):
+        routing = {
+            "pool": "codex",
+            "candidates": [
+                {"pool": "codex", "status": "available", "remaining_percent": 50.0, "weekly_remaining": 30.0},
+                {"pool": "claude", "status": "available", "remaining_percent": 80.0, "weekly_remaining": 50.0},  # 50 > 30 + 12
+            ],
+        }
+        with mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(usage, "select_best_pool", return_value=routing):
+            pool, _ = workers.choose_auto_pool("medium")
+            self.assertEqual(pool, "claude")
+
+
 if __name__ == "__main__":
     unittest.main()

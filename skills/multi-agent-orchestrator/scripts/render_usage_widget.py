@@ -1171,6 +1171,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       return `${m}분 후`;
     }
 
+    /*__POOL_CAPACITIES_JSON_START__*/
     const POOL_TOKEN_CAPACITIES = {
       agy_gemini_5h: 193000000,
       agy_gemini_7d: 621000000,
@@ -1180,6 +1181,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       claude_7d: 97830000,
       codex_7d: 31240000
     };
+    /*__POOL_CAPACITIES_JSON_END__*/
 
     function formatTokenKorean(tokens) {
       if (!tokens || isNaN(tokens) || tokens <= 0) return '0';
@@ -1456,6 +1458,23 @@ POOL_TOKEN_CAPACITIES = {
 }
 
 
+def load_calibrated_pool_token_capacities() -> dict:
+    """Load dynamically calibrated pool token capacities from telemetry_calibration.json with baseline fallback."""
+    cal_file = os.path.expanduser("~/.gemini/antigravity/telemetry_calibration.json")
+    capacities = dict(POOL_TOKEN_CAPACITIES)
+    if os.path.exists(cal_file):
+        try:
+            with open(cal_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            custom = data.get("pool_token_capacities") or {}
+            for k, v in custom.items():
+                if isinstance(v, (int, float)) and v > 0:
+                    capacities[k] = int(round(v))
+        except Exception:
+            pass
+    return capacities
+
+
 def format_token_korean(tokens: int) -> str:
     """Format token count cleanly into Korean 만 / 억 units (e.g. 193_000_000 -> 1억 9,300만, 2_120_000 -> 212만)."""
     if not tokens or tokens <= 0:
@@ -1490,8 +1509,10 @@ def build_accounts(data: dict) -> list[dict]:
     cl_wk = claude.get("weekly") or {}
     cl_fable = cl_wk.get("weekly_scoped")
 
+    cal_caps = load_calibrated_pool_token_capacities()
+
     def win(label, short, src, minutes, model_icons, period_kind, pool_key, default_rem=100.0):
-        total_tokens = POOL_TOKEN_CAPACITIES.get(pool_key)
+        total_tokens = cal_caps.get(pool_key)
         item = {
             "label": label,
             "shortPeriod": short,
@@ -1577,6 +1598,10 @@ SERVER_STATE_BLOCK_RE = re.compile(r"/\*__SERVER_STATE_JSON_START__\*/.*?/\*__SE
 QUOTA_GRID_BLOCK_RE = re.compile(r"<!--__QUOTA_GRID_HTML_START__-->.*?<!--__QUOTA_GRID_HTML_END__-->", re.S)
 ACTIVE_TREE_BLOCK_RE = re.compile(r"<!--__ACTIVE_TREE_HTML_START__-->.*?<!--__ACTIVE_TREE_HTML_END__-->", re.S)
 CLOSED_TREE_BLOCK_RE = re.compile(r"<!--__CLOSED_TREE_HTML_START__-->.*?<!--__CLOSED_TREE_HTML_END__-->", re.S)
+POOL_CAPACITIES_BLOCK_RE = re.compile(
+    r"/\*__POOL_CAPACITIES_JSON_START__\*/.*?/\*__POOL_CAPACITIES_JSON_END__\*/|const\s+POOL_TOKEN_CAPACITIES\s*=\s*\{.*?\};",
+    re.S,
+)
 
 
 def _html_esc(s: str) -> str:
@@ -1737,11 +1762,21 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
         )
     if provider == "claude":
         m_raw = (model_str or "claude-opus-5-5").lower()
-        is_fast = (service_tier == "fast") or ("fast" in m_raw and "5-5" not in m_raw)
+        is_fast = (service_tier in ("fast", "priority", "ultrafast")) or ("fast" in m_raw and "5-5" not in m_raw)
         is_ultra = (effort in ("ultra", "max")) or ("ultra" in m_raw)
         if "opus" in m_raw:
-            m_full = "Opus 5.5 Ultra" if is_ultra else ("Opus 5.5 Fast" if is_fast else "Opus 5.5")
-            m_short = "O-5.5U" if is_ultra else ("O-5.5F" if is_fast else "O-5.5")
+            if is_ultra and is_fast:
+                m_full = "Opus 5.5 Ultra Fast"
+                m_short = "O-5.5UF"
+            elif is_ultra:
+                m_full = "Opus 5.5 Ultra"
+                m_short = "O-5.5U"
+            elif is_fast:
+                m_full = "Opus 5.5 Fast"
+                m_short = "O-5.5F"
+            else:
+                m_full = "Opus 5.5"
+                m_short = "O-5.5"
         elif "sonnet" in m_raw:
             m_full = "Sonnet 5.5"
             m_short = "S-5.5"
@@ -1749,10 +1784,12 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
             m_full = model_str.replace("claude-", "")
             m_short = m_full[:6]
         eff_svg = _effort_gauge_svg("max" if is_ultra else (effort or "high"))
-        bolt_svg = (
-            '<svg width="11" height="10" style="flex-shrink:0" aria-label="fast"><title>Claude service_tier: Fast (2x quota)</title><use href="#ico-bolt-1"/></svg>'
-            if is_fast else ""
-        )
+        if service_tier == "ultrafast":
+            bolt_svg = '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Claude service_tier: Ultra Fast (6x quota)</title><use href="#ico-bolt-3"/></svg>'
+        elif is_fast:
+            bolt_svg = '<svg width="11" height="10" style="flex-shrink:0" aria-label="fast"><title>Claude service_tier: Fast (2x quota)</title><use href="#ico-bolt-1"/></svg>'
+        else:
+            bolt_svg = ""
         return (
             '<svg class="brand-icon" width="15" height="15" style="color:var(--claude, #d97757)"><use href="#ico-claude"/></svg>',
             f'<span class="model-pill claude" title="Claude {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
@@ -2380,14 +2417,24 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     pool = node.get("pool") or ""
 
     is_fallback = bool(node.get("fallback_from"))
-    is_fast = (tier == "fast" or pool in ("claude-fast", "fast") or ("fast" in model.lower() and "opus-5-5" not in model.lower())) and not is_fallback and tier != "default"
+    is_fast = (tier in ("fast", "priority", "ultrafast") or pool in ("claude-fast", "fast") or ("fast" in model.lower() and "opus-5-5" not in model.lower())) and not is_fallback and tier != "default"
     is_ultra = (effort in ("ultra", "max")) or ("ultra" in model.lower()) or ("ultra" in pool)
-    service_tier = "fast" if is_fast else tier
+    service_tier = tier if tier in ("fast", "priority", "ultrafast") else ("fast" if is_fast else "default")
 
     m_raw = model.lower()
     if "opus" in m_raw:
-        mp_full = "Opus 5.5 Ultra" if is_ultra else ("Opus 5.5 Fast" if is_fast else "Opus 5.5")
-        mp_short = "Opus-U" if is_ultra else ("Opus-F" if is_fast else "Opus")
+        if is_ultra and is_fast:
+            mp_full = "Opus 5.5 Ultra Fast"
+            mp_short = "Opus-UF"
+        elif is_ultra:
+            mp_full = "Opus 5.5 Ultra"
+            mp_short = "Opus-U"
+        elif is_fast:
+            mp_full = "Opus 5.5 Fast"
+            mp_short = "Opus-F"
+        else:
+            mp_full = "Opus 5.5"
+            mp_short = "Opus"
     elif "sonnet" in m_raw:
         mp_full = "Sonnet 5.5"
         mp_short = "Sonnet"
@@ -2412,7 +2459,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     title_line = (raw_title.splitlines() or ["Claude worker"])[0].strip()
     title = _html_esc(title_line)
 
-    badge = " Ultra" if is_ultra else (" Fast" if is_fast else "")
+    badge = " Ultra Fast" if (is_ultra and is_fast) else (" Ultra" if is_ultra else (" Fast" if is_fast else ""))
     label = _html_esc(f"{mp_full} · {effort}{badge}")
     c_icon, c_pill, _ = _provider_icon_and_pill(model, "claude", service_tier, effort)
     c_node_id = f"node-sub-claude-{sid}"
@@ -3494,6 +3541,7 @@ def _render_model_icons_html(icons: list[str], size: int = 12) -> str:
 
 def build_static_quota_grid_html(accounts: list[dict]) -> str:
     now_sec = datetime.now().timestamp()
+    cal_caps = load_calibrated_pool_token_capacities()
     sorted_accs = sorted(
         accounts,
         key=lambda a: 1 if max([0.0] + [float(w.get("remaining") or 0.0) for w in a.get("windows", [])]) > 0 else 0,
@@ -3533,7 +3581,7 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
                 if show_compact_pool else ""
             )
             token_line = ""
-            total_tok = w.get("totalTokens") or POOL_TOKEN_CAPACITIES.get(w.get("poolKey"))
+            total_tok = w.get("totalTokens") or cal_caps.get(w.get("poolKey"))
             if total_tok and rem is not None:
                 rem_tok = int(round(total_tok * (rem / 100.0)))
                 token_line = f"\n토큰 용량: 잔여 약 {format_token_korean(rem_tok)} / 총 {format_token_korean(total_tok)} 토큰"
@@ -3625,6 +3673,16 @@ def inject_live_data(template: str, data: dict) -> str:
         "    /*__ACCOUNTS_JSON_END__*/"
     )
     html = ACCOUNTS_BLOCK_RE.sub(lambda _m: accounts_js, html, count=1)
+
+    cal_caps = load_calibrated_pool_token_capacities()
+    cap_js = (
+        "/*__POOL_CAPACITIES_JSON_START__*/\n"
+        f"    const POOL_TOKEN_CAPACITIES = {json.dumps(cal_caps, indent=2)};\n"
+        "    /*__POOL_CAPACITIES_JSON_END__*/"
+    )
+    if POOL_CAPACITIES_BLOCK_RE.search(html):
+        html = POOL_CAPACITIES_BLOCK_RE.sub(lambda _m: cap_js, html, count=1)
+
     if QUOTA_GRID_BLOCK_RE.search(html):
         static_grid = build_static_quota_grid_html(accounts)
         html = QUOTA_GRID_BLOCK_RE.sub(lambda _m: static_grid, html, count=1)
@@ -3686,7 +3744,16 @@ def build_widget_html(data: dict) -> str:
         f"    const ACCOUNTS = {json.dumps(accounts, ensure_ascii=False, indent=2)};\n"
         f"    const AGENT_TREES = {json.dumps(agent_trees, ensure_ascii=False, indent=2)};"
     )
-    return WIDGET_TEMPLATE.replace("/*__LIVE_DATA_JS__*/", live_js)
+    cal_caps = load_calibrated_pool_token_capacities()
+    cap_js = (
+        "/*__POOL_CAPACITIES_JSON_START__*/\n"
+        f"    const POOL_TOKEN_CAPACITIES = {json.dumps(cal_caps, indent=2)};\n"
+        "    /*__POOL_CAPACITIES_JSON_END__*/"
+    )
+    res = WIDGET_TEMPLATE.replace("/*__LIVE_DATA_JS__*/", live_js)
+    if POOL_CAPACITIES_BLOCK_RE.search(res):
+        res = POOL_CAPACITIES_BLOCK_RE.sub(lambda _m: cap_js, res, count=1)
+    return res
 
 
 TEMPLATE_FILENAME = "usage_widget_template.html"

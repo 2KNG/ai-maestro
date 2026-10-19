@@ -1765,9 +1765,9 @@ WEEKLY_CONSERVE_THRESHOLD = 10.0  # 7d <= 10%: 주간 보호 감속·우회 구�
 WEEKLY_RESERVE_FLOOR = 2.0        # 7d <= 2%: 비상 예비 동결 구간 (타 풀 가용 시 자동배분 제외)
 
 
-def _routing_windows(usage: dict) -> tuple[float | None, float | None, float | None, str]:
+def _routing_windows(usage: dict, provider: str | None = None) -> tuple[float | None, float | None, float | None, str]:
     """Return (effective_routing_pct, five_hour_remaining, weekly_remaining, routing_mode).
-    - Normal (7d > 10%): use 5h remaining directly without mixing 5h and 7d.
+    - Normal (7d > 10%): blend 5h and 7d remaining quotas (Codex 0.25*5h + 0.75*7d, Claude 0.45*5h + 0.55*7d).
     - Weekly Conserve (2% < 7d <= 10%): throttle score so pools with higher 7d headroom take primary load.
     - Reserve Hold (0% < 7d <= 2%): hold last 2% for manual use unless all other pools are exhausted.
     - Exhausted (5h <= 0% or 7d <= 0%): hard block (0.0).
@@ -1799,7 +1799,11 @@ def _routing_windows(usage: dict) -> tuple[float | None, float | None, float | N
         if fh_rem is not None:
             return round(min(fh_rem, wk_rem * 3.5), 2), fh_rem, wk_rem, "weekly_conserve"
         return wk_rem, None, wk_rem, "weekly_conserve"
-    # Zone 1: Normal zone (7d > 10%) -> route by 5h window so 5h rolling quota is utilized freely
+    # Zone 1: Normal zone (7d > 10%) -> blend 5h and 7d rolling/weekly quotas
+    if fh_rem is not None and wk_rem is not None:
+        is_codex = (provider == "codex") or bool(usage.get("plan")) or ("service_tiers" in usage)
+        blended = (0.25 * fh_rem + 0.75 * wk_rem) if is_codex else (0.45 * fh_rem + 0.55 * wk_rem)
+        return round(blended, 2), fh_rem, wk_rem, "normal"
     if fh_rem is not None:
         return fh_rem, fh_rem, wk_rem, "normal"
     return wk_rem, None, wk_rem, "normal"
@@ -1822,8 +1826,8 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
     codex = data.get("codex_local") or {}
     claude = data.get("claude_local") or {}
     weights = {
-        "high": (1.0, 1.0, 1.0, 1.0),
-        "medium": (1.0, 1.0, 1.0, 0.95),
+        "high": (1.0, 1.0, 1.0, 1.08),
+        "medium": (1.0, 1.0, 1.0, 1.05),
         "low": (0.8, 1.0, 0.9, 0.8),
     }[difficulty]
 
@@ -1841,10 +1845,11 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
     gem_pool = agy_pools.get("Gemini Pool (Argon / Flash)") or {}
     if agy.get("error") or agy.get("stale"):
         cl_pool = gem_pool = agy
+    codex_model = "gpt-6-astra" if difficulty == "medium" else "gpt-6.1-sol"
     specs = [
         ("antigravity_claude", "antigravity", "Claude & GPT-OSS Pool (Antigravity)", cl_pool, agy_model(cl_pool, "claude")),
         ("antigravity_gemini", "antigravity", "Gemini Pool (Argon / Flash)", gem_pool, agy_model(gem_pool, "gemini")),
-        ("codex", "codex", "Codex " + str(codex.get("plan") or "ProMax"), codex, "gpt-6.1-sol"),
+        ("codex", "codex", "Codex " + str(codex.get("plan") or "ProMax"), codex, codex_model),
         ("claude", "claude", "Claude " + str(claude.get("subscription") or "Team"), claude, "claude-opus-5-5"),
     ]
     bench_info = {}
@@ -1863,7 +1868,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
 
     candidates = []
     for (pool_id, provider, label, usage, model), weight in zip(specs, weights):
-        remaining, fh_rem, wk_rem, routing_mode = _routing_windows(usage)
+        remaining, fh_rem, wk_rem, routing_mode = _routing_windows(usage, provider=provider)
         unavailable = (provider == "claude" and usage.get("authenticated") is False) or (provider == "codex" and usage.get("model_available") is False)
         status = "unavailable" if unavailable else "unknown" if remaining is None else "exhausted" if remaining <= 0 else "available"
         b_meta = bench_scores.get(pool_id) or {}
@@ -1876,7 +1881,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
             "five_hour_remaining": fh_rem,
             "weekly_remaining": wk_rem,
             "routing_mode": routing_mode,
-            "window_basis": "5h+7d_guard" if (fh_rem is not None and wk_rem is not None and wk_rem <= WEEKLY_CONSERVE_THRESHOLD) else ("5h" if fh_rem is not None else "7d"),
+            "window_basis": "5h+7d_guard" if (fh_rem is not None and wk_rem is not None and wk_rem <= WEEKLY_CONSERVE_THRESHOLD) else ("5h+7d_blend" if (fh_rem is not None and wk_rem is not None) else ("5h" if fh_rem is not None else "7d")),
             "status": status,
             "score": round(remaining * weight, 2) if status == "available" else 0.0,
             "swe_bench_verified": b_meta.get("swe_bench_verified"),
@@ -1918,7 +1923,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
             f"모드={best.get('routing_mode','normal')})"
             if best else "가용 한도가 확인된 풀이 없습니다."
         ),
-        "policy": "3-Zone Weekly Guardrail: 7d>10% uses 5h freely; 2%<7d<=10% throttles score (weekly_conserve) to rotate load; 7d<=2% holds reserve; 0% hard blocks & auto-steers",
+        "policy": "3-Zone Weekly Guardrail: 7d>10% blends 5h and 7d (Codex 25:75, Claude 45:55); 2%<7d<=10% throttles score (weekly_conserve) to rotate load; 7d<=2% holds reserve; 0% hard blocks & auto-steers",
         "candidates": candidates,
     }
 
