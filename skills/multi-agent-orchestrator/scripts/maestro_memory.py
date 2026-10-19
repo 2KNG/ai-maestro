@@ -574,6 +574,7 @@ BASELINE_ETA_TABLE: dict[tuple[str, str, str], tuple[float, int, int]] = {
     ("claude-opus-5-5", "high", "default"): (120.0, 150000, 5000),
     ("claude-opus-5-5", "xhigh", "default"): (150.0, 220000, 6000),
     ("claude-opus-5-5", "ultra", "default"): (180.0, 1200000, 15000),
+    ("claude-ultra", "ultra", "default"): (180.0, 1200000, 15000),
     ("gpt-6-astra", "medium", "default"): (120.0, 200000, 3000),
     ("gpt-6.1-sol", "medium", "default"): (60.0, 150000, 2000),
     ("gpt-6.1-sol", "medium", "priority"): (50.0, 150000, 2000),
@@ -601,27 +602,34 @@ NETWORK_ERROR_KEYWORDS = (
 
 def normalize_telemetry_model(model: str, tier: str = "default") -> str:
     m = (model or "").lower().strip()
-    if "flash" in m:
+    if "flash" in m or "m401" in m:
         return "gemini-3.8-flash"
-    if "argon" in m:
+    if "argon" in m or "m402" in m:
         return "gemini-4-argon"
-    if "sonnet" in m:
+    if "sonnet" in m or "sonnet-4-6" in m:
         return "claude-sonnet-5-5"
-    if "opus" in m:
+    if "ultra" in m:
+        return "claude-ultra"
+    if "opus" in m or "claude" in m or "opus-4-6" in m:
         if tier == "fast" or "fast" in m:
             return "claude-opus-5-fast"
         return "claude-opus-5-5"
-    if "astra" in m:
+    if "mini" in m or "spark" in m or "astra" in m or "gpt-5.4-mini" in m or "gpt-5.3" in m:
         return "gpt-6-astra"
-    if "sol" in m or "gpt-6.1" in m:
+    if "sol" in m or "gpt-6.1" in m or "gpt-5.4" in m:
         return "gpt-6.1-sol"
     return m
+
+
+_normalize_telemetry_model = normalize_telemetry_model
 
 
 def lookup_baseline_eta(model: str, effort: str = "high", tier: str = "default") -> tuple[float, int, int]:
     m_norm = normalize_telemetry_model(model, tier)
     e_norm = (effort or "high").lower().strip()
     if e_norm in ("max", "ultra"):
+        e_norm = "ultra"
+    elif e_norm == "xhigh" and "sol" in m_norm:
         e_norm = "ultra"
     t_norm = (tier or "default").lower().strip()
     if t_norm in ("standard", ""):
@@ -766,6 +774,8 @@ def record_worker_telemetry(
     norm_effort = (effort or "high").lower().strip()
     if norm_effort in ("max", "ultra"):
         norm_effort = "ultra"
+    elif norm_effort == "xhigh" and "sol" in norm_model:
+        norm_effort = "ultra"
 
     # Query tokens from Codex or Claude databases if not supplied
     if (actual_net_tokens is None or actual_gross_tokens is None) and session_id:
@@ -887,14 +897,34 @@ def record_worker_telemetry(
     }
 
 
-def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -> dict:
+def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300, reset: bool = False) -> dict:
     """Scan past valid completed Codex threads and Claude sessions to populate initial baseline."""
     conn = _connect()
-    existing = set(
-        x[0] for x in conn.execute(
-            "SELECT session_id FROM worker_telemetry WHERE session_id IS NOT NULL AND session_id != ''"
-        ).fetchall()
-    )
+    if reset:
+        with conn:
+            conn.execute("DELETE FROM worker_telemetry")
+        existing = set()
+    else:
+        existing = set(
+            x[0] for x in conn.execute(
+                "SELECT session_id FROM worker_telemetry WHERE session_id IS NOT NULL AND session_id != ''"
+            ).fetchall()
+        )
+
+    # Preload spawned session metadata (tier, effort, model) to join with state_5.sqlite and claude sessions
+    spawned_map = {}
+    spawn_reg = os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json")
+    if os.path.exists(spawn_reg):
+        try:
+            with open(spawn_reg, "r", encoding="utf-8") as sf:
+                s_data = json.load(sf)
+                for sid, sinfo in s_data.items():
+                    if isinstance(sinfo, dict):
+                        spawned_map[sid] = sinfo
+                        for tid in sinfo.get("thread_ids") or []:
+                            spawned_map[tid] = sinfo
+        except Exception:
+            pass
 
     codex_scanned = 0
     claude_scanned = 0
@@ -933,10 +963,12 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -
                 net_p, gross_p, tier_p = _parse_codex_rollout_tokens(r["rollout_path"])
                 gross_tokens = gross_p or r["tokens_used"] or 0
                 net_tokens = net_p or int(round(gross_tokens * 0.15))
-                m = r["model"] or ("gpt-6-astra" if "astra" in (r["title"] or "").lower() else "gpt-6.1-sol")
-                eff = r["reasoning_effort"] or "high"
-                t = tier_p or "default"
-                pool = "codex-astra" if "astra" in m.lower() else "codex"
+
+                sp_info = spawned_map.get(tid, {})
+                m = sp_info.get("model") or r["model"] or ("gpt-6-astra" if "astra" in (r["title"] or "").lower() else "gpt-6.1-sol")
+                eff = sp_info.get("effort") or r["reasoning_effort"] or "high"
+                t = sp_info.get("tier") or tier_p or "default"
+                pool = sp_info.get("pool") or ("codex-astra" if "astra" in str(m).lower() else "codex")
 
                 ts_dt = datetime.datetime.fromtimestamp(r["created_at"] or time.time(), tz=KST)
                 ts_str = ts_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -948,7 +980,7 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -
                     tier=t,
                     actual_sec=dur,
                     session_id=tid,
-                    title=r["title"] or "",
+                    title=r["title"] or sp_info.get("title", ""),
                     ok=True,
                     actual_net_tokens=net_tokens,
                     actual_gross_tokens=gross_tokens,
@@ -1016,10 +1048,11 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -
         )
         gross = net + sum((r.get("cache_read_input_tokens", 0) or 0) for r in records)
 
-        m_chosen = models[0] if models else "claude-opus-5-5"
-        eff = "high"
-        tier = "default"
-        pool = "claude"
+        sp_info = spawned_map.get(sid, {})
+        m_chosen = sp_info.get("model") or (models[0] if models else "claude-opus-5-5")
+        eff = sp_info.get("effort") or "high"
+        tier = sp_info.get("tier") or "default"
+        pool = sp_info.get("pool") or "claude"
 
         # Multi-turn interactive session gap detection
         extra_err = ""
@@ -1061,10 +1094,22 @@ def backfill_historical_telemetry(max_codex: int = 300, max_claude: int = 300) -
     }
 
 
-def get_telemetry_calibration_summary() -> list[dict]:
+def get_telemetry_calibration_summary() -> dict:
     """Aggregate worker telemetry comparison grouped by (model, effort, tier)."""
     conn = _connect()
     try:
+        tot_row = conn.execute(
+            """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN is_valid = 0 THEN 1 ELSE 0 END)
+            FROM worker_telemetry
+            """
+        ).fetchone()
+        tot_records = tot_row[0] or 0
+        val_records = tot_row[1] or 0
+        excl_records = tot_row[2] or 0
+
         rows = conn.execute(
             """
             SELECT model, effort, tier,
@@ -1082,13 +1127,14 @@ def get_telemetry_calibration_summary() -> list[dict]:
             """
         ).fetchall()
 
-        summary = []
+        calibrations = []
         for r in rows:
             m, e, t = r[0], r[1], r[2]
             valid_count = r[4] or 0
             excl_count = r[5] or 0
 
             med_sec = None
+            med_net_tok = None
             if valid_count > 0:
                 secs = [
                     x[0] for x in conn.execute(
@@ -1099,21 +1145,53 @@ def get_telemetry_calibration_summary() -> list[dict]:
                 if secs:
                     med_sec = round(statistics.median(secs), 1)
 
+                toks = [
+                    x[0] for x in conn.execute(
+                        "SELECT actual_net_tokens FROM worker_telemetry WHERE model=? AND effort=? AND tier=? AND is_valid=1",
+                        (m, e, t),
+                    ).fetchall() if x[0] is not None
+                ]
+                if toks:
+                    med_net_tok = int(round(statistics.median(toks)))
+
             est_s, est_tok, _ = lookup_baseline_eta(m, e, t)
-            summary.append({
+            e_sec = r[9] if r[9] is not None else est_s
+            e_tok = r[10] if r[10] is not None else est_tok
+
+            ratio_s = round(med_sec / e_sec, 2) if (med_sec is not None and e_sec and e_sec > 0) else None
+            ratio_t = round(med_net_tok / e_tok, 2) if (med_net_tok is not None and e_tok and e_tok > 0) else None
+
+            calibrations.append({
                 "model": m,
                 "effort": e,
                 "tier": t,
-                "sample_count": valid_count,
-                "excluded_count": excl_count,
-                "est_sec": r[9] if r[9] is not None else est_s,
+                "valid_samples": valid_count,
+                "excluded_samples": excl_count,
+                "est_sec": e_sec,
                 "avg_actual_sec": round(r[6], 1) if r[6] is not None else None,
                 "median_actual_sec": med_sec,
-                "est_tokens": r[10] if r[10] is not None else est_tok,
-                "avg_net_tokens": int(round(r[7])) if r[7] is not None else None,
+                "ratio_sec": ratio_s,
+                "est_net_tokens": e_tok,
+                "avg_actual_net_tokens": int(round(r[7])) if r[7] is not None else None,
+                "median_actual_net_tokens": med_net_tok,
+                "ratio_net_tokens": ratio_t,
                 "avg_gross_tokens": int(round(r[8])) if r[8] is not None else None,
             })
-        return summary
-    except Exception:
-        return []
+
+        return {
+            "ok": True,
+            "total_records": tot_records,
+            "valid_records": val_records,
+            "excluded_records": excl_records,
+            "calibrations": calibrations,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "total_records": 0,
+            "valid_records": 0,
+            "excluded_records": 0,
+            "calibrations": [],
+        }
 

@@ -347,6 +347,22 @@ def start_agy_worker(pool: str, spec: str, cwd: str, wait: bool, timeout: int) -
         ok=True,
         min_elapsed_sec=60.0,
     )
+    try:
+        maestro_memory.record_worker_telemetry(
+            pool=pool,
+            model=model_id,
+            effort="low" if "flash" in model_id.lower() or "flash" in pool.lower() else "high",
+            tier="fast" if "flash" in model_id.lower() or "flash" in pool.lower() else "default",
+            actual_sec=elapsed,
+            session_id=cid,
+            title=agy_title,
+            ok=bool(result.get("ok", True)),
+            output=result.get("output", "") or "",
+            stderr=result.get("error", "") or "",
+            error=result.get("error", "") or "",
+        )
+    except Exception:
+        pass
     return result
 
 
@@ -365,18 +381,23 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     title = make_agy_title(spec, abs_cwd)
     session_id = str(uuid.uuid4())
     handover = maestro_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
-    prompt = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{title}\n\n{spec}"
+    prompt = spec
     if handover:
         prompt += f"\n\n{handover}"
     selected_effort = effort or ("xhigh" if max_capability else "high")
     if selected_effort in ("ultra", "xhigh", "max") and not max_capability and effort is None:
         selected_effort = "high"
+    if timeout == 180:
+        timeout = {"low": 120, "medium": 180, "high": 300, "xhigh": 420, "ultra": 600}.get(selected_effort, 180)
     # An explicit Fast pool remains an opt-in, including background invocations, unless ultra is requested.
     fast = (pool in CLAUDE_FAST_POOLS or ((interactive or urgent) and not background and not max_capability)) and selected_effort != "ultra"
     model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
     if selected_effort == "ultra":
         prompt = "ultrathink\n\n" + prompt
     started = time.monotonic()
+
+    worker_env = dict(os.environ)
+    worker_env["MAESTRO_WORKER_ACTIVE"] = "1"
 
     def command():
         return [os.path.expanduser("~/.local/bin/claude"), "-p",
@@ -399,12 +420,14 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         if not wait:
             with tempfile.NamedTemporaryFile(prefix="maestro-claude-", suffix=".log", delete=False) as log:
                 proc = subprocess.Popen(command(), cwd=abs_cwd, stdin=subprocess.DEVNULL,
-                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                        env=worker_env)
             register("running", pid=proc.pid)
             return {**result, "ok": True, "status": "running", "model": model,
                     "effort": selected_effort, "pid": proc.pid, "log_path": log.name}
 
-        proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=timeout,
+                              env=worker_env)
         error_text = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
         unsupported = any(marker in error_text for marker in (
             "model not found", "unknown model", "invalid model", "unsupported model",
@@ -425,7 +448,8 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command(), timeout)
-            proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=remaining)
+            proc = subprocess.run(command(), cwd=abs_cwd, capture_output=True, text=True, timeout=remaining,
+                                  env=worker_env)
         output = (proc.stdout or "").strip()[-4000:]
         result.update(ok=proc.returncode == 0, model=model, effort=selected_effort,
                       elapsed_sec=round(time.monotonic() - started, 2), output=output,
@@ -437,10 +461,41 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         maestro_memory.notify_long_task_completion(session_id=session_id, title=title, pool=pool,
                                                elapsed_sec=result["elapsed_sec"], cwd=abs_cwd,
                                                ok=result["ok"], min_elapsed_sec=60.0)
+        try:
+            maestro_memory.record_worker_telemetry(
+                pool=pool,
+                model=model,
+                effort=selected_effort,
+                tier="fast" if "fast" in pool.lower() or "fast" in model.lower() else "default",
+                actual_sec=result["elapsed_sec"],
+                session_id=session_id,
+                title=title,
+                ok=result["ok"],
+                output=output,
+                stderr=result["stderr"],
+                error="" if result["ok"] else (result["stderr"] or "Worker exited with error"),
+            )
+        except Exception:
+            pass
         return result
     except (OSError, subprocess.TimeoutExpired) as exc:
+        elapsed_fail = round(time.monotonic() - started, 2)
         register("timeout" if isinstance(exc, subprocess.TimeoutExpired) else "failed",
                  ok=False, error=str(exc))
+        try:
+            maestro_memory.record_worker_telemetry(
+                pool=pool,
+                model=model,
+                effort=selected_effort,
+                tier="fast" if "fast" in pool.lower() or "fast" in model.lower() else "default",
+                actual_sec=elapsed_fail,
+                session_id=session_id,
+                title=title,
+                ok=False,
+                error=str(exc),
+            )
+        except Exception:
+            pass
         return {**result, "ok": False, "model": model, "effort": selected_effort, "error": str(exc)}
 
 
@@ -502,12 +557,15 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     model, effort, tier = resolve_codex_settings(
         pool, model, effort, tier, max_capability=max_capability,
         interactive=interactive, urgent=urgent, background=background)
+    if timeout == 180:
+        timeout = {"low": 120, "medium": 180, "high": 300, "xhigh": 420, "ultra": 600}.get(effort, 180)
     agy_title = make_agy_title(spec, abs_cwd)
     handover_ctx = maestro_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
     tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
     if handover_ctx:
         tagged_spec = f"{tagged_spec}\n\n{handover_ctx}"
     env = os.environ.copy()
+    env["MAESTRO_WORKER_ACTIVE"] = "1"
     nvm_bins = sorted(glob.glob(os.path.expanduser("~/.config/nvm/versions/node/*/bin")), reverse=True)
     extra_paths = nvm_bins + [os.path.expanduser("~/.local/bin")]
     env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
@@ -575,6 +633,23 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             ok=(proc.returncode == 0),
             min_elapsed_sec=60.0,
         )
+        try:
+            first_tid = stamped[0] if stamped else sid
+            maestro_memory.record_worker_telemetry(
+                pool=pool,
+                model=model,
+                effort=effort,
+                tier=tier,
+                actual_sec=elapsed,
+                session_id=first_tid,
+                title=agy_title,
+                ok=(proc.returncode == 0),
+                output=out_txt,
+                stderr=(proc.stderr or "").strip()[-1000:],
+                error="" if (proc.returncode == 0) else ((proc.stderr or "").strip()[-1000:] or "Worker failed"),
+            )
+        except Exception:
+            pass
         return {
             "ok": proc.returncode == 0,
             "pool": pool,
@@ -590,7 +665,24 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             "stderr": (proc.stderr or "").strip()[-1000:],
         }
     except subprocess.TimeoutExpired as e:
+        elapsed_err = round(time.time() - t0, 2)
         stamped = stamp_and_register("timeout", ok=False, error=f"Timeout after {timeout}s")
+        try:
+            first_tid = stamped[0] if stamped else sid
+            maestro_memory.record_worker_telemetry(
+                pool=pool,
+                model=model,
+                effort=effort,
+                tier=tier,
+                actual_sec=elapsed_err,
+                session_id=first_tid,
+                title=agy_title,
+                ok=False,
+                output=(e.stdout or "")[-2000:] if e.stdout else "",
+                error=f"Timeout after {timeout}s",
+            )
+        except Exception:
+            pass
         return {
             "ok": False,
             "pool": pool,
@@ -600,7 +692,23 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
             "output": (e.stdout or "")[-2000:] if e.stdout else "",
         }
     except OSError as e:
+        elapsed_err = round(time.time() - t0, 2)
         stamped = stamp_and_register("failed", ok=False, error=str(e))
+        try:
+            first_tid = stamped[0] if stamped else sid
+            maestro_memory.record_worker_telemetry(
+                pool=pool,
+                model=model,
+                effort=effort,
+                tier=tier,
+                actual_sec=elapsed_err,
+                session_id=first_tid,
+                title=agy_title,
+                ok=False,
+                error=str(e),
+            )
+        except Exception:
+            pass
         return {"ok": False, "pool": pool, "title": agy_title,
                 "thread_ids": stamped, "error": str(e)}
     finally:
@@ -699,6 +807,11 @@ def main():
     p_mget.add_argument("--cwd", default=os.getcwd())
     p_mget.add_argument("--limit", type=int, default=5)
     p_mget.add_argument("--max-age", type=int, default=21600)
+
+    p_telemetry = sub.add_parser("telemetry-stats")
+    p_telemetry.add_argument("--backfill", action="store_true", help="Backfill historical telemetry from Codex rollouts and Claude sessions")
+    p_telemetry.add_argument("--reset-backfill", action="store_true", help="Clear existing telemetry table and re-backfill all historical data")
+    p_telemetry.add_argument("--json", action="store_true", help="Output raw JSON summary")
 
     args = parser.parse_args()
 
@@ -865,6 +978,58 @@ def main():
             limit=args.limit,
         )
         print(json.dumps({"ok": True, "repo": repo, "branch": branch, "notes": notes}, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "telemetry-stats":
+        import maestro_memory
+        if args.backfill or args.reset_backfill:
+            bf_res = maestro_memory.backfill_historical_telemetry(reset=args.reset_backfill)
+            if not args.json:
+                print(f"[telemetry] Backfill complete (reset={args.reset_backfill}): inserted={bf_res.get('inserted')}, valid={bf_res.get('valid')}, excluded={bf_res.get('excluded')}\n")
+
+        summary = maestro_memory.get_telemetry_calibration_summary()
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            return
+
+        calibrations = summary.get("calibrations", [])
+        if not calibrations:
+            print("기록된 워커 텔레메트리 데이터가 없습니다.")
+            return
+
+        print(f"### Worker ETA vs Actual Telemetry Calibration (총 {summary.get('total_records', 0)}건, 유효 {summary.get('valid_records', 0)}건, 제외 {summary.get('excluded_records', 0)}건)\n")
+        headers = ["Model", "Effort", "Tier", "Samples", "Est Sec", "Act Sec (med)", "Sec Ratio", "Est Net Tok", "Act Net Tok (med)", "Tok Ratio"]
+        rows = []
+        for c in calibrations:
+            model_disp = str(c.get("model", "-"))
+            eff_disp = str(c.get("effort", "-"))
+            tier_disp = str(c.get("tier", "-"))
+            samples_disp = str(c.get("valid_samples", 0))
+            est_s = c.get("est_sec")
+            est_sec_disp = f"{est_s:.0f}s" if est_s is not None else "-"
+            med_s = c.get("median_actual_sec")
+            act_sec_disp = f"{med_s:.1f}s" if med_s is not None else "-"
+            ratio_s = c.get("ratio_sec")
+            sec_ratio_disp = f"{ratio_s:.2f}x" if ratio_s is not None else "-"
+            est_t = c.get("est_net_tokens")
+            est_tok_disp = f"{est_t // 1000}k" if est_t else "0k"
+            med_t = c.get("median_actual_net_tokens")
+            act_tok_disp = f"{med_t // 1000}k" if med_t is not None else "-"
+            ratio_t = c.get("ratio_net_tokens")
+            tok_ratio_disp = f"{ratio_t:.2f}x" if ratio_t is not None else "-"
+            rows.append([model_disp, eff_disp, tier_disp, samples_disp, est_sec_disp, act_sec_disp, sec_ratio_disp, est_tok_disp, act_tok_disp, tok_ratio_disp])
+
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, val in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(val))
+
+        header_line = "| " + " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)) + " |"
+        sep_line = "| " + " | ".join("-" * col_widths[i] for i in range(len(headers))) + " |"
+        print(header_line)
+        print(sep_line)
+        for row in rows:
+            print("| " + " | ".join(val.ljust(col_widths[i]) for i, val in enumerate(row)) + " |")
         return
 
 
