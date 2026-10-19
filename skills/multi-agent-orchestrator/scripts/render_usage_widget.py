@@ -630,11 +630,49 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       border-radius: 5px;
       cursor: pointer;
       min-width: 0;
-      transition: background 0.12s;
+      transition: background 0.12s, box-shadow 0.15s;
     }
     .agent-row:hover { background: var(--surface-2); }
-    .agent-row.depth-0 { background: rgba(128, 145, 175, 0.08); margin-top: 0; }
-    .agent-row.depth-0:hover { background: var(--surface-2); }
+    .agent-row.parent,
+    .agent-row.depth-0 {
+      background: rgba(128, 145, 175, 0.08);
+      margin-top: 0;
+      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.45);
+      transition: background 0.12s, box-shadow 0.15s;
+    }
+    .agent-row.parent:hover,
+    .agent-row.depth-0:hover {
+      background: var(--surface-2);
+      box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.75);
+    }
+    .agent-row.child,
+    .agent-row.depth-1,
+    .agent-row.depth-2 {
+      background: rgba(128, 145, 175, 0.025);
+      box-shadow: none !important;
+    }
+
+    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent,
+    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.depth-0 {
+      box-shadow: inset 2px 0 0 #3b82f6;
+    }
+    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.parent:hover,
+    .tree-node[data-running="1"]:not(.sub-node) > .agent-row.depth-0:hover {
+      box-shadow: inset 2px 0 0 #60a5fa;
+    }
+
+    .tree-node.pinned:not(.sub-node) > .agent-row.parent,
+    .tree-node.pinned:not(.sub-node) > .agent-row.depth-0,
+    .tree-node.imported:not(.sub-node) > .agent-row.parent,
+    .tree-node.imported:not(.sub-node) > .agent-row.depth-0 {
+      box-shadow: inset 2px 0 0 #a855f7;
+    }
+    .tree-node.pinned:not(.sub-node) > .agent-row.parent:hover,
+    .tree-node.pinned:not(.sub-node) > .agent-row.depth-0:hover,
+    .tree-node.imported:not(.sub-node) > .agent-row.parent:hover,
+    .tree-node.imported:not(.sub-node) > .agent-row.depth-0:hover {
+      box-shadow: inset 2px 0 0 #c084fc;
+    }
 
     .agent-left {
       display: flex;
@@ -1357,6 +1395,17 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       setTimeout(() => { btn.textContent = prev; }, 1000);
     }
 
+    function openSession(e, nodeId, cid, label, repo) {
+      if (e) { e.stopPropagation(); e.preventDefault(); }
+      const text = cid ? `conversation://${cid}` : (nodeId || '');
+      if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+      fetch('http://127.0.0.1:18765/api/open-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeId, cascadeId: cid, label, repo })
+      }).catch(() => {});
+    }
+
     renderQuotas();
     renderTrees();
     document.getElementById('btn-toggle-all').textContent = allCollapsed ? '전체 펴기' : '전체 접기';
@@ -1605,6 +1654,17 @@ def _pin_btn_html(node_id: str, label: str, is_pinned: bool) -> str:
         f'onclick="event.stopPropagation(); togglePin(\'{node_id}\', \'{_html_esc(label[:28])}\', this)" '
         f'title="{tip}" aria-label="고정 핀">'
         f'<svg width="12" height="12" aria-hidden="true"><use href="#ico-pin"/></svg></button>'
+    )
+
+
+def _open_btn_html(node_id: str, cid: str, label: str, repo: str = "") -> str:
+    esc_label = _html_esc(label[:28]).replace("'", "\\'")
+    esc_repo = _html_esc(repo).replace("'", "\\'")
+    return (
+        f'<button type="button" class="icon-act-btn open" '
+        f'onclick="event.stopPropagation(); openSession(event, \'{node_id}\', \'{cid}\', \'{esc_label}\', \'{esc_repo}\')" '
+        f'title="세션 열기 (Antigravity 전환)" aria-label="세션 열기">'
+        f'<svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></button>'
     )
 
 
@@ -2899,7 +2959,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'{c_pill}'
                 f'{_context_pill_html(c_used, c_pct, "blue", ch, c_running, c_dot)}'
                 f'<span class="row-actions">'
-                f'<a class="icon-act-btn open" href="conversation://{ccid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
+                f'{_open_btn_html(c_node_id, ccid, c_role, c_repo)}'
                 f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_role[:24])}\')">✕</button>'
                 f'</span>'
                 f'</div></div>'
@@ -3013,7 +3073,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'{_context_pill_html(used_k, pct, "blue", ag, is_busy_ag, root_dot)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp_title, is_pinned)}'
-            f'<a class="icon-act-btn open" href="conversation://{cid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
+            f'{_open_btn_html(node_id, cid, disp_title, repo)}'
             f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(disp_title)}\')">✕</button>'
             f'</span>'
             f'</div></div>'
@@ -3264,7 +3324,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'{_context_pill_html(used_k, pct, "blue", item, False, cls_dot)}'
                 f'<span class="row-actions">'
                 f'{_pin_btn_html(node_id, raw_title, is_pinned)}'
-                f'<a class="icon-act-btn open" href="conversation://{cid}" target="_top" onclick="event.stopPropagation()" title="세션 열기" aria-label="세션 열기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></a>'
+                f'{_open_btn_html(node_id, cid, raw_title, "")}'
                 f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(raw_title[:28])}\')">✕</button>'
                 f'</span>'
                 f'</div></div>'

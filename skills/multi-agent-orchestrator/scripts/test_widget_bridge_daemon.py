@@ -38,6 +38,17 @@ def get_json(base, path):
         return response.status, json.load(response)
 
 
+def post_json(base, path, payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        response = urllib.request.urlopen(req, timeout=5)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.status, json.load(response)
+
+
 class UnarchiveTests(unittest.TestCase):
     def test_preserves_every_original_cwd_and_other_threads(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -136,6 +147,22 @@ class RouteTests(unittest.TestCase):
                 status, _ = get_json(base, "/api/refresh?write_disk=1")
                 self.assertEqual(status, 200)
                 write_widgets.assert_called_once_with(data, target_dirs=[has_widget, missing_widget])
+
+    def test_open_session_launches_antigravity_cli_without_custom_url_scheme_dialog(self):
+        with mock.patch.object(bridge, "load_state", return_value={"importedCascades": {"node-1": "casc-1"}}), \
+             mock.patch.object(bridge, "unarchive_codex_thread") as unarchive, \
+             mock.patch.object(bridge.os.path, "exists", return_value=True), \
+             mock.patch.object(bridge.subprocess, "Popen") as popen, \
+             running_bridge() as base:
+            status, body = post_json(base, "/api/open-session", {
+                "nodeId": "node-1",
+                "label": "Test Task",
+                "repo": "ai-maestro",
+            })
+            self.assertEqual(status, 200)
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["cascadeId"], "casc-1")
+            popen.assert_called_once()
 
 
 if __name__ == "__main__":
