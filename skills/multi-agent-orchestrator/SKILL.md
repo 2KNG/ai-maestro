@@ -43,7 +43,9 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 ## 2.5. Maestro Multi-Pool Dispatch (`maestro`)
 
 > [!IMPORTANT]
-> `invoke_subagent` only supports **Gemini Pool** models (`inherit` / `pro` / `flash`). **NEVER** call `invoke_subagent(Model='inherit' | 'pro')` when the parent runs on Argon.
+> - **`Gemini 3.8 Flash (Model='flash')`는 오직 읽기 전용 탐색·로그/파일 조사(`TypeName='research', Model='flash'`)에만 사용한다.**
+> - **코드 작성·수정·리팩토링·UI/모션·알고리즘·아키텍처 작업에 `invoke_subagent(TypeName='self', Model='flash')`를 사용하는 것을 절대 금지한다!**
+> - **코딩 및 구현 위임은 반드시 `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto ...` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`)를 사용하거나, Antigravity 내부 서브에이전트가 꼭 필요한 경우 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 사용한다.**
 
 | Difficulty | Dispatch command |
 |---|---|
@@ -55,7 +57,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 | Max-capability by domain (12-profile benchmark) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --max-capability --domain coding\|reasoning\|frontend_ui\|speed --cwd <dir> --wait --spec "..."` |
 | Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
 | PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
-| Low / read-only lookup | `invoke_subagent(Model='flash')` only |
+| Low / read-only lookup (읽기 전용 탐색·조사) | `invoke_subagent(TypeName='research', Model='flash')` only (코딩/수정 시 Flash 금지) |
 
 - **PC 조작 / 데스크탑 GUI 제어 / Computer-Use 작업**: OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`)의 Computer Use 스킬이 가장 안정적이므로, PC 화면 조작·마우스/키보드 제어·데스크탑 앱 자동화 작업은 GPT(`--pool codex`)로 우선 라우팅한다 (`--pool auto` 사용 시에도 키워드 감지 시 자동 `codex`로 라우팅).
 - Run Claude-pool and Codex-pool workers in parallel when useful; balance by `ai-usage` remaining %.

@@ -2,7 +2,9 @@
 Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
 
 1. `<MAESTRO_DISPATCH_GATE>`:
-   - `<thought>` 3~4줄 이내 작성 후 첫 툴로 즉시 위임 (`invoke_subagent(Model='flash')` 또는 `maestro worker-start`).
+   - `<thought>` 3~4줄 이내 작성 후 첫 툴로 즉시 위임:
+     * 읽기 전용 탐색·조사: `invoke_subagent(TypeName='research', Model='flash')` 전용 (research 타입만 허용).
+     * 코딩·구현·수정·설계: Flash 사용 절대 금지! `maestro worker-start --pool auto --difficulty <high|medium> --cwd <dir> --wait --spec "<task>"` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`) 또는 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 허용.
    - 메인 에이전트 단독 도구 연속 실행 2회 초과 금지 (Hard Solo-Tool Cap).
 2. Task-Domain + Live Benchmark-Driven Routing & Speed Tiers:
    - Task-Fit Benchmark Routing with Low-Quota Guard (`LOW_QUOTA_THRESHOLD = 20.0%`): 20% 미만 진입 전까지 실시간 벤치마크 점수·태스크 적합성 우선 자동 배정 (긴 호흡 코딩: `gpt-6.1-sol`, 심층 추론: `Gemini 4 Argon` & `gpt-6-astra`, 모션/UI: `Opus 5.5`, PC 조작: `gpt-6.1-sol`, 빠른 탐색: `Gemini 3.8 Flash`, 일반 코딩: `gpt-6-astra`).

@@ -65,7 +65,7 @@ def main() -> int:
             print('{"decision":"allow"}')
         else:
             if prev_streak >= 2:
-                print("[🎼 MAESTRO HARNESS] 단독 작업이 연속되었습니다. 첫 툴로 위임 도구(invoke_subagent / maestro worker-start)를 사용하세요.")
+                print("[🎼 MAESTRO HARNESS] 단독 작업이 연속되었습니다. 읽기/탐색은 invoke_subagent(TypeName='research', Model='flash'), 코드 수정/구현은 maestro worker-start (Astra/Opus/Sol, 코딩에 Flash 금지)로 위임하세요.")
         return 0
 
     if event in ("PreToolUse", "BeforeTool"):

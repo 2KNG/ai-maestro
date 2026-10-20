@@ -42,7 +42,7 @@
 | General coding & parallel submodules (1순위 주력) | gpt-6-astra (`medium`, `default`; `high`/`ultra` only via `--max-capability`) |
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
-| Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
+| Fast code / log search (읽기 전용 조사) | Gemini 3.8 Flash (`low`, `fast`) (코딩/수정 시 Flash 금지) |
 
 ## Natural Developer Communication Style
 - 장황한 서두나 AI 클리셰 없이 핵심 내용 위주로 간결하게 보고한다.

@@ -4,8 +4,8 @@
 You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking or solo-coding:
 - 3-Line Thinking Cap (`<thought>` 최대 3~4줄): 코드 분석이나 파일 수정 계획을 혼자 길게 작성하지 않는다. 위임 계획을 4줄 이내로 정리하고 즉시 위임 도구를 호출한다.
 - First-Tool Delegation:
-  - 코드베이스 탐색, 파일 검사, 웹/UI 조사: 첫 번째 툴로 `invoke_subagent(Model='flash')`를 즉시 호출한다.
-  - 멀티파일 코딩, 리팩토링, 디버깅, 테스트 루프: `/home/mjserver/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"`로 즉시 디스패치한다.
+  - **읽기 전용 탐색·로그/파일 스캔**: `invoke_subagent(TypeName='research', Model='flash')` 전용 (파일 수정/코딩 권한 없는 research 타입만 허용).
+  - **모든 코딩·파일 수정·구현·리팩토링·설계**: `Flash` 사용 절대 금지! 반드시 `/home/mjserver/.local/bin/maestro worker-start --pool auto --difficulty <high|medium> --cwd <dir> --wait --spec "<task>"` (`gpt-6-astra` · `Opus 5.5` · `gpt-6.1-sol`) 또는 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)로만 수행한다.
 - Hard Solo-Tool Cap: 메인 에이전트에서 단독 도구 호출(`view_file`, `replace_file_content`, `write_to_file`, `run_command`)을 연속 2회 초과하여 수행하지 않는다.
 
 ## 1. Task-Domain + Live Benchmark-Driven Routing & Speed Tier Policy (`maestro`)
