@@ -2655,7 +2655,8 @@ def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
                     pass
         if age_sec is None and node.get("last_modified_time"):
             age_sec = _age_sec_from_iso(node.get("last_modified_time") or "")
-        if age_sec is not None and age_sec > 180:
+        stale_threshold = 1800 if str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING") else 180
+        if age_sec is not None and age_sec > stale_threshold:
             return False
 
     return (str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING")

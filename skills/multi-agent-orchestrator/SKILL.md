@@ -45,23 +45,29 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 > [!IMPORTANT]
 > - **`Gemini 3.8 Flash (Model='flash')`는 오직 읽기 전용 탐색·로그/파일 조사(`TypeName='research', Model='flash'`)에만 사용한다.**
 > - **코드 작성·수정·리팩토링·UI/모션·알고리즘·아키텍처 작업에 `invoke_subagent(TypeName='self', Model='flash')`를 사용하는 것을 절대 금지한다!**
-> - **코딩 및 구현 위임은 반드시 `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto ...` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`)를 사용하거나, Antigravity 내부 서브에이전트가 꼭 필요한 경우 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 사용한다.**
+> - **코딩 및 구현 위임은 반드시 `~/.local/bin/maestro worker-start --pool auto ...` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`)를 사용하거나, Antigravity 내부 서브에이전트가 꼭 필요한 경우 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 사용한다.**
 
 | Difficulty | Dispatch command |
 |---|---|
-| High / Medium → Antigravity Claude Pool (`planModel` `MODEL_PLACEHOLDER_M402` Opus 5.5 High / `MODEL_PLACEHOLDER_M405` Sonnet 5.5 High) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool agy-claude --cwd <dir> --wait --spec "..."` |
-| High / Medium → OpenAI Codex Pool (`gpt-6.1-sol`, default/`standard` tier; `priority` interactive/urgent only, `ultrafast` urgent only) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
-| Responsive UI / quick patch → Local Claude Code Fast (Opus 5.5 Fast, live interactive only · 2x quota) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool claude-fast --cwd <dir> --wait --spec "..."` |
-| Core architecture → Local Claude Code (Opus 5.5 `high`; `xhigh` via `--max-capability`) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool claude --cwd <dir> --wait --spec "..."` |
-| Hardest reasoning / architecture → Local Claude Code Ultra (Opus 5.5 `ultra` → `--effort max` + `ultrathink`, standard, 3x quota) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool claude-ultra --cwd <dir> --wait --spec "..."` (aliases `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`; no `--max-capability` needed) |
-| Max-capability by domain (12-profile benchmark) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool auto --max-capability --domain coding\|reasoning\|frontend_ui\|speed --cwd <dir> --wait --spec "..."` |
-| Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
-| PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `/home/u24c9g5090r64/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
+| High / Medium → Antigravity Claude Pool (`planModel` `MODEL_PLACEHOLDER_M402` Opus 5.5 High / `MODEL_PLACEHOLDER_M405` Sonnet 5.5 High) | `~/.local/bin/maestro worker-start --pool agy-claude --cwd <dir> --wait --spec "..."` |
+| High / Medium → OpenAI Codex Pool (`gpt-6.1-sol`, default/`standard` tier; `priority` interactive/urgent only, `ultrafast` urgent only) | `~/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
+| Responsive UI / quick patch → Local Claude Code Fast (Opus 5.5 Fast, live interactive only · 2x quota) | `~/.local/bin/maestro worker-start --pool claude-fast --cwd <dir> --wait --spec "..."` |
+| Core architecture → Local Claude Code (Opus 5.5 `high`; `xhigh` via `--max-capability`) | `~/.local/bin/maestro worker-start --pool claude --cwd <dir> --wait --spec "..."` |
+| Hardest reasoning / architecture → Local Claude Code Ultra (Opus 5.5 `ultra` → `--effort max` + `ultrathink`, standard, 3x quota) | `~/.local/bin/maestro worker-start --pool claude-ultra --cwd <dir> --wait --spec "..."` (aliases `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`; no `--max-capability` needed) |
+| Max-capability by domain (12-profile benchmark) | `~/.local/bin/maestro worker-start --pool auto --max-capability --domain coding\|reasoning\|frontend_ui\|speed --cwd <dir> --wait --spec "..."` |
+| Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `~/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
+| PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `~/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
 | Low / read-only lookup (읽기 전용 탐색·조사) | `invoke_subagent(TypeName='research', Model='flash')` only (코딩/수정 시 Flash 금지) |
 
+- **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
+  - When a Depth 1 sub-worker receives an oversized task (3+ independent modules or large implementation + verification), it reports its split plan (`[SUB-ORCHESTRATION REPORT]`) and spawns Depth 2 leaf workers (`MAESTRO_WORKER_DEPTH=2`) within its own model family only.
+  - Claude sub-worker (`parent_pool == 'claude'`) is strictly locked to Claude workers (`--pool claude`, `Opus 5.5`).
+  - Codex sub-worker (`parent_pool == 'codex'`) is strictly locked to Codex workers (`--pool codex`, `gpt-6-astra` or `gpt-6.1-sol`).
+  - Sub-workers can choose `--effort` (`low`, `medium`, `high`) freely, but `ultra` is clamped to `high`, and speed tiers (`fast`, `ultrafast`, `priority`) are clamped to `default` (preventing 2x/3x quota burn without user opt-in).
+  - Max depth guard: `MAESTRO_WORKER_DEPTH >= 2` blocks Depth 3 recursion and instructs the leaf worker to execute directly.
 - **PC 조작 / 데스크탑 GUI 제어 / Computer-Use 작업**: OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`)의 Computer Use 스킬이 가장 안정적이므로, PC 화면 조작·마우스/키보드 제어·데스크탑 앱 자동화 작업은 GPT(`--pool codex`)로 우선 라우팅한다 (`--pool auto` 사용 시에도 키워드 감지 시 자동 `codex`로 라우팅).
 - Run Claude-pool and Codex-pool workers in parallel when useful; balance by `ai-usage` remaining %.
-- **Every response** must silently run `/home/u24c9g5090r64/.local/bin/ai-usage-widget /home/u24c9g5090r64/.gemini/antigravity/brain/<conversation-id>/usage_widget.html` in the background. Do NOT embed `<agent-embed>` in chat unless the user explicitly says `"위젯 띄워줘"` / `"위젯 인라인으로 보여줘"`.
+- **Every response** must silently run `~/.local/bin/ai-usage-widget <appDataDir>/brain/<conversation-id>/usage_widget.html` in the background. Do NOT embed `<agent-embed>` in chat unless the user explicitly says `"위젯 띄워줘"` / `"위젯 인라인으로 보여줘"`.
 
 ## 2.6. Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
@@ -83,7 +89,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
   - `--tier default|standard|priority|ultrafast` is supported: `priority` requires `--interactive` / `--urgent`; `ultrafast` requires `--urgent`.
   - Astra (`gpt-6-astra`) is ALWAYS default tier, with a `medium` effort cap unless `--max-capability` unlocks `high` / `ultra`.
   - `--max-capability` + `--domain coding|reasoning|frontend_ui|speed` uses the `benchmark_sync` recommendation and retains quota-exhaustion steering; an explicit `--pool` constrains the recommendation.
-  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`) runs standard `claude-opus-5-5` with `--effort max` and prepends `ultrathink` to the prompt; it consumes **3x quota** vs. standard `claude-opus-5-5`, never uses the Fast tier, and is therefore allowed in background runs; clean ETA: `⏱ 3분 · 120만 토큰 (1만5천원)`.
+  - Claude Opus 5.5 Ultra (`--pool claude-ultra` / `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`) runs standard `claude-opus-5-5` with `--effort max` and prepends `ultrathink` to the prompt; it consumes **3x quota** vs. standard `claude-opus-5-5`, never uses the Fast tier, and is therefore allowed in background runs; clean ETA: `⏱ 2분 45초 · 14만 토큰 (1만2천원)`.
   - Explicit `--effort ultra` / `--effort max` (or an ultra alias pool) is allowed WITHOUT `--max-capability`; only implicit escalation is gated — with no `--effort`, Claude runs `high`, or `xhigh` under `--max-capability`.
   - **Max-Capability Policy**: `--max-capability` also excludes the Fast profile unless `--pool claude-fast` is explicit, disables auto-Fast under `--interactive` / `--urgent`, and unlocks Astra `high` / `ultra`; reserve Opus 5.5 Ultra (3x quota) for the hardest reasoning / architecture subtasks.
   - The `benchmark_sync` matrix has **12 profiles** scored across **4 domains** (`coding`, `reasoning`, `frontend_ui`, `speed`), each with a quota multiplier (Opus 5.5 Ultra 3x, Opus 5.5 Fast 2x); JSON/YAML coding scores update only on a matching model + effort.
@@ -117,7 +123,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 
 - These are **calibrated planning values (보정된 계획용 기준값), NOT actual measured billing (실측 청구액 아님)**. Pick the row matching each worker's assigned model · effort · tier. Default/standard tiers have no separate row — use the same-effort row; `priority` / `ultrafast` rows apply only under `--interactive` / `--urgent`.
 - NEVER write `~` ranges (`1~3분`, `3천~6천`), `"예상"`, `"평균"`, `"약"`, `"대"`, `"규모"`, `"구독"`, human calendar estimates (`"며칠/1주일"`), or raw `k/M` units.
-- Chat ETA output contains only a single wall-clock value, Korean tokens, and KRW: `⏱ 2분 · 35만 토큰 (5천원)`. Never append subscription percentages or cache-included parenthetical notes.
+- Chat ETA output contains only a single wall-clock value, Korean tokens, and KRW: `⏱ 3분 · 13만 토큰 (3천원)`. Never append subscription percentages or cache-included parenthetical notes.
 - NEVER run or print `5h/7d` quota lookups (`"다시 조회"`, `"미제공"`) just to produce an ETA. Quota checks remain mandatory for **routing** (`--pool auto`, 3-Stage Weekly Protection, 0% Auto-Steering).
 
 ## 2.8. Natural Developer Communication Style

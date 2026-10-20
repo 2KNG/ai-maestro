@@ -1,5 +1,9 @@
 # Claude Code Orchestration Rules (`ai-maestro`)
-- Coordinate multi-agent tasks via `/home/mjserver/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules; `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- Coordinate multi-agent tasks via `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules; `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
+  - Depth 1 Claude 서브 워커(`parent_pool == 'claude'`)가 대규모 독립 모듈 분할 시 분할 계획(`[SUB-ORCHESTRATION REPORT]`)을 보고하고 오직 Claude 계열(`--pool claude`, `Opus 5.5`)로만 Depth 2 리프 워커(`MAESTRO_WORKER_DEPTH=2`)를 분기 기동한다 (Codex 호출 금지).
+  - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`로 자유 지정 가능하나 `ultra`는 `high`로 자동 조정되며, 속도 티어는 `default`로 고정된다.
+  - 최대 깊이 가드: `MAESTRO_WORKER_DEPTH >= 2`인 리프 워커는 추가 위임(Depth 3)이 차단되며 직접 실행해야 한다.
 
 ## Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 

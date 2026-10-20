@@ -1,6 +1,10 @@
 # Codex Orchestration Rules (`ai-maestro`)
 - Default tier: `service_tier = "default"` (standard) for background / cron / long autonomous work. Use `"priority"` (`Fast` ⚡) only for live interactive ping-pong, and `"ultrafast"` (`⚡⚡⚡`) only when urgent real-time turnaround is explicitly requested (see Speed Tier Policy below).
-- For parallel sub-tasks, spawn child workers or use `/home/mjserver/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-ultra|claude-fast|agy-argon|agy-claude|agy-flash`; `claude-ultra` / `opus-ultra` / `opus-5.5-ultra` = Opus 5.5 `--effort max` + `ultrathink`, 3x quota; `--model gpt-6-astra` for parallel submodules; `--effort low|medium|high|xhigh|max|ultra`, `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- For parallel sub-tasks, spawn child workers or use `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-ultra|claude-fast|agy-argon|agy-claude|agy-flash`; `claude-ultra` / `opus-ultra` / `opus-5.5-ultra` = Opus 5.5 `--effort max` + `ultrathink`, 3x quota; `--model gpt-6-astra` for parallel submodules; `--effort low|medium|high|xhigh|max|ultra`, `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
+  - Depth 1 Codex 서브 워커(`parent_pool == 'codex'`)가 대규모 독립 모듈 분할 시 분할 계획(`[SUB-ORCHESTRATION REPORT]`)을 보고하고 오직 Codex 계열(`--pool codex`, `gpt-6-astra` 또는 `gpt-6.1-sol`)로만 Depth 2 리프 워커(`MAESTRO_WORKER_DEPTH=2`)를 분기 기동한다 (Claude 호출 금지).
+  - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`로 자유 지정 가능하나 `ultra`는 `high`로 자동 조정되며, 속도 티어는 `default`로 고정된다.
+  - 최대 깊이 가드: `MAESTRO_WORKER_DEPTH >= 2`인 리프 워커는 추가 위임(Depth 3)이 차단되며 직접 실행해야 한다.
 
 ## Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 

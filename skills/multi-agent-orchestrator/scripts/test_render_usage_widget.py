@@ -265,18 +265,29 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(badge, '반복')
         self.assertEqual(tooltip, '정기 실행 대기')
 
-    def test_stale_subagent_over_180s_not_active(self):
+    def test_stale_subagent_over_1800s_not_active(self):
         now = datetime.now(timezone.utc).timestamp()
         stale_sub = {
             "conversation_id": "stale-sub-123",
             "role": "Subagent",
             "is_subagent": True,
             "status": "CASCADE_RUN_STATUS_RUNNING",
-            "last_modified_time": datetime.fromtimestamp(now - 200, timezone.utc).isoformat(),
+            "last_modified_time": datetime.fromtimestamp(now - 1900, timezone.utc).isoformat(),
         }
         with mock.patch("os.path.exists", return_value=False):
             is_active = widget._agy_worker_is_active(stale_sub, set())
             self.assertFalse(is_active)
+
+        # Active running subagent at 200s (waiting on tool/build) is preserved
+        active_sub = {
+            "conversation_id": "active-sub-123",
+            "role": "Subagent",
+            "is_subagent": True,
+            "status": "CASCADE_RUN_STATUS_RUNNING",
+            "last_modified_time": datetime.fromtimestamp(now - 200, timezone.utc).isoformat(),
+        }
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertTrue(widget._agy_worker_is_active(active_sub, set()))
 
     def test_cron_clean_desc_and_no_redundant_model_pill(self):
         now = datetime.now(timezone.utc)

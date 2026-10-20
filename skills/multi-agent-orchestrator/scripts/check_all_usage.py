@@ -1193,7 +1193,8 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
 
         is_subagent = bool(parent_id or depth > 0 or spec)
         is_running_agy = (str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"))
-        if is_subagent and t_age_sec is not None and t_age_sec > 180:
+        stale_threshold = 1800 if is_running_agy else 180
+        if is_subagent and t_age_sec is not None and t_age_sec > stale_threshold:
             is_running_agy = False
             if str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"):
                 status = "CASCADE_RUN_STATUS_DONE"

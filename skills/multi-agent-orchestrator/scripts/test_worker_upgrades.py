@@ -286,5 +286,63 @@ class WorkerDispatchTests(unittest.TestCase):
             self.assertEqual(pool, "claude")
 
 
+    def test_depth_2_blocks_further_delegation(self):
+        with mock.patch.dict(os.environ, {"MAESTRO_WORKER_DEPTH": "2", "MAESTRO_WORKER_POOL": "claude"}):
+            with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--spec", "do leaf work", "--pool", "claude"]), \
+                 redirect_stdout(io.StringIO()) as out:
+                workers.main()
+                res = json.loads(out.getvalue())
+                self.assertFalse(res["ok"])
+                self.assertIn("Max worker orchestration depth (2) reached", res["error"])
+
+    def test_depth_1_claude_locks_to_claude_and_clamps_effort_tier(self):
+        with mock.patch.dict(os.environ, {"MAESTRO_WORKER_DEPTH": "1", "MAESTRO_WORKER_POOL": "claude"}):
+            with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--spec", "split work", "--pool", "codex", "--effort", "ultra", "--tier", "fast", "--wait"]), \
+                 mock.patch.object(usage, "collect_usage", return_value={}), \
+                 mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+                 mock.patch.object(workers, "start_claude_worker", return_value={"ok": True}) as claude, \
+                 mock.patch.object(workers, "start_codex_worker") as codex, \
+                 redirect_stdout(io.StringIO()):
+                workers.main()
+                codex.assert_not_called()
+                claude.assert_called_once()
+                # target_pool is locked to claude, effort clamped to high, tier clamped to default
+                self.assertEqual(claude.call_args.args[0], "claude")
+                self.assertEqual(claude.call_args.args[3], "high")
+                self.assertEqual(claude.call_args.kwargs.get("tier"), "default")
+
+    def test_depth_1_codex_locks_to_codex_and_clamps_effort_tier(self):
+        with mock.patch.dict(os.environ, {"MAESTRO_WORKER_DEPTH": "1", "MAESTRO_WORKER_POOL": "codex"}):
+            with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--spec", "split codex work", "--pool", "claude", "--effort", "ultra", "--tier", "priority", "--wait"]), \
+                 mock.patch.object(usage, "collect_usage", return_value={}), \
+                 mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+                 mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+                 mock.patch.object(workers, "start_claude_worker") as claude, \
+                 redirect_stdout(io.StringIO()):
+                workers.main()
+                claude.assert_not_called()
+                codex.assert_called_once()
+                # target_pool is locked to codex, effort clamped to high, tier clamped to default
+                self.assertEqual(codex.call_args.kwargs.get("pool"), "codex")
+                self.assertEqual(codex.call_args.args[2], "high")
+                self.assertEqual(codex.call_args.args[3], "default")
+
+    def test_depth_env_forwarding_in_claude_and_codex(self):
+        with mock.patch.dict(os.environ, {"MAESTRO_WORKER_DEPTH": "0"}, clear=False):
+            with mock.patch("subprocess.run") as sub_run, \
+                 mock.patch("subprocess.Popen") as sub_popen:
+                sub_run.return_value = mock.Mock(returncode=0, stdout="done", stderr="")
+                res_claude = workers.start_claude_worker("claude", "test spec", "/tmp", effort="high", wait=True, timeout=1800)
+                self.assertEqual(res_claude["depth"], 1)
+                env_passed_claude = sub_run.call_args.kwargs["env"]
+                self.assertEqual(env_passed_claude["MAESTRO_WORKER_DEPTH"], "1")
+                self.assertEqual(env_passed_claude["MAESTRO_WORKER_POOL"], "claude")
+
+                res_codex = workers.start_codex_worker("test spec", "/tmp", effort="high", tier="default", timeout=1800)
+                env_passed_codex = sub_run.call_args.kwargs["env"]
+                self.assertEqual(env_passed_codex["MAESTRO_WORKER_DEPTH"], "1")
+                self.assertEqual(env_passed_codex["MAESTRO_WORKER_POOL"], "codex")
+
+
 if __name__ == "__main__":
     unittest.main()

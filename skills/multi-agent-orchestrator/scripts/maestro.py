@@ -471,8 +471,12 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
         prompt = "ultrathink\n\n" + prompt
     started = time.monotonic()
 
+    current_depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
     worker_env = dict(os.environ)
     worker_env["MAESTRO_WORKER_ACTIVE"] = "1"
+    worker_env["MAESTRO_WORKER_DEPTH"] = str(current_depth + 1)
+    worker_env["MAESTRO_WORKER_POOL"] = "claude"
+    worker_env["MAESTRO_PARENT_SESSION_ID"] = os.environ.get("MAESTRO_PARENT_SESSION_ID") or session_id
     if fast:
         worker_env["CLAUDE_CODE_FAST_MODE"] = "1"
 
@@ -484,7 +488,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
 
     result = {"pool": pool, "title": title, "cwd": abs_cwd,
               "session_id": session_id, "handover_injected": bool(handover),
-              "tier": effective_tier}
+              "tier": effective_tier, "depth": current_depth + 1}
 
     def register(status, **extra):
         record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
@@ -642,8 +646,13 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
     if handover_ctx:
         tagged_spec = f"{tagged_spec}\n\n{handover_ctx}"
+    temporary_sid = f"codex-{uuid.uuid4()}"
+    current_depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
     env = os.environ.copy()
     env["MAESTRO_WORKER_ACTIVE"] = "1"
+    env["MAESTRO_WORKER_DEPTH"] = str(current_depth + 1)
+    env["MAESTRO_WORKER_POOL"] = "codex"
+    env["MAESTRO_PARENT_SESSION_ID"] = os.environ.get("MAESTRO_PARENT_SESSION_ID") or temporary_sid
     nvm_bins = sorted(glob.glob(os.path.expanduser("~/.config/nvm/versions/node/*/bin")), reverse=True)
     extra_paths = nvm_bins + [os.path.expanduser("~/.local/bin")]
     env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
@@ -663,10 +672,10 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         tagged_spec,
     ]
     t0 = int(time.time())
-    temporary_sid = f"codex-{uuid.uuid4()}"
     registration = {"provider": "codex", "pool": pool, "model": model,
                     "effort": effort, "tier": tier, "cwd": abs_cwd, "title": agy_title,
-                    "spec_preview": spec[:160], "started_at": t0, "status": "running"}
+                    "spec_preview": spec[:160], "started_at": t0, "status": "running",
+                    "depth": current_depth + 1}
     record_spawned_session(temporary_sid, registration)
     registration_lock = threading.Lock()
     thread_ids = []
@@ -913,6 +922,35 @@ def main():
 
     if args.cmd == "worker-start":
         import maestro_memory
+
+        current_depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
+        parent_pool = os.environ.get("MAESTRO_WORKER_POOL", "").strip()
+        canonical_parent = _canonical_pool_key(parent_pool) if parent_pool else ""
+
+        if current_depth >= 2:
+            print(json.dumps({
+                "ok": False,
+                "error": "Max worker orchestration depth (2) reached. Leaf workers must execute subtasks directly without further delegation."
+            }, ensure_ascii=False, indent=2))
+            return
+
+        # Depth 1 Sub-Worker Guards: Same-Family Lock & Effort/Tier Clamping
+        if current_depth == 1:
+            if args.effort in ("ultra", "max", "xhigh"):
+                args.effort = "high"
+            if args.tier in ("fast", "ultrafast", "priority"):
+                args.tier = "default"
+            args.interactive = False
+            args.urgent = False
+            args.background = True
+
+            if canonical_parent == "claude" or parent_pool in CLAUDE_POOLS:
+                args.model = None
+                args.pool = "claude"
+            elif canonical_parent == "codex" or parent_pool in CODEX_POOLS:
+                if args.pool not in CODEX_POOLS:
+                    args.pool = "codex"
+
         requested_pool = args.pool
         if args.model:
             if requested_pool not in ("auto", *CODEX_POOLS):
@@ -930,11 +968,13 @@ def main():
             try:
                 recommendation = benchmark_sync.get_max_capability_recommendation(
                     args.domain, pools=_benchmark_pools(requested_pool), model=args.model,
-                    allow_fast=requested_pool in CLAUDE_FAST_POOLS)
+                    allow_fast=requested_pool in CLAUDE_FAST_POOLS and current_depth < 1)
             except ValueError as exc:
                 parser.error(str(exc))
             if requested_pool == "auto":
                 requested_pool = recommendation["pool"]
+            if current_depth == 1 and recommendation and recommendation.get("effort") in ("ultra", "max", "xhigh"):
+                recommendation["effort"] = "high"
         steered_from = None
         steer_reason = None
         if requested_pool == "auto":
@@ -945,11 +985,17 @@ def main():
             if exhausted:
                 steered_from = requested_pool
                 steer_reason = f"Pre-flight auto-steer: {ex_reason}"
-                pool, _ = choose_auto_pool(
-                    args.difficulty,
-                    spec=args.spec,
-                    exclude_canonical={_canonical_pool_key(requested_pool)},
-                )
+                if current_depth == 1:
+                    if canonical_parent == "claude" or parent_pool in CLAUDE_POOLS:
+                        pool = None
+                    else:
+                        pool = "codex-astra" if requested_pool == "codex" else "codex"
+                else:
+                    pool, _ = choose_auto_pool(
+                        args.difficulty,
+                        spec=args.spec,
+                        exclude_canonical={_canonical_pool_key(requested_pool)},
+                    )
             else:
                 pool = requested_pool
 
@@ -996,11 +1042,17 @@ def main():
 
         if midflight_exhausted:
             failed_pool = pool
-            fallback_pool, _ = choose_auto_pool(
-                args.difficulty,
-                spec=args.spec,
-                exclude_canonical={_canonical_pool_key(failed_pool), _canonical_pool_key(requested_pool)},
-            )
+            if current_depth == 1:
+                if canonical_parent == "claude" or parent_pool in CLAUDE_POOLS:
+                    fallback_pool = None
+                else:
+                    fallback_pool = "codex-astra" if failed_pool == "codex" else "codex"
+            else:
+                fallback_pool, _ = choose_auto_pool(
+                    args.difficulty,
+                    spec=args.spec,
+                    exclude_canonical={_canonical_pool_key(failed_pool), _canonical_pool_key(requested_pool)},
+                )
             if fallback_pool and _canonical_pool_key(fallback_pool) != _canonical_pool_key(failed_pool):
                 maestro_memory.save_handover_note(
                     cwd=args.cwd,
