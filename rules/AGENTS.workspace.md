@@ -4,8 +4,8 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
 1. `<MAESTRO_DISPATCH_GATE>`:
    - `<thought>` 3~4줄 이내 작성 후 첫 툴로 즉시 위임 (`invoke_subagent(Model='flash')` 또는 `maestro worker-start`).
    - 메인 에이전트 단독 도구 연속 실행 2회 초과 금지 (Hard Solo-Tool Cap).
-2. Explicit Worker Role Roster & Speed Tiers:
-   - Practical Hierarchy: 1순위 주력 `gpt-6-astra (medium · default)` > 2순위 주력 `Opus 5.5 (high/medium · claude)` > 3순위 특수 목적 `gpt-6.1-sol (high · standard, computer-use/test loop)`.
+2. Task-Domain + Live Benchmark-Driven Routing & Speed Tiers:
+   - Task-Fit Benchmark Routing with Low-Quota Guard (`LOW_QUOTA_THRESHOLD = 20.0%`): 20% 미만 진입 전까지 실시간 벤치마크 점수·태스크 적합성 우선 자동 배정 (긴 호흡 코딩: `gpt-6.1-sol`, 심층 추론: `Gemini 4 Argon` & `gpt-6-astra`, 모션/UI: `Opus 5.5`, PC 조작: `gpt-6.1-sol`, 빠른 탐색: `Gemini 3.8 Flash`, 일반 코딩: `gpt-6-astra`).
    - `Opus 5.5 Fast (claude-fast · 2x quota)`: 명시적 fast 요청 전용.
    - `Opus 5.5 (xhigh/high · claude / agy-claude)`: 아키텍처 및 심층 추론, 프론트엔드 UI/UX 및 모션그래픽.
    - `Opus 5.5 Ultra (ultra · 3x quota)`: 최고난도 추론 전용 (`--effort ultra`).

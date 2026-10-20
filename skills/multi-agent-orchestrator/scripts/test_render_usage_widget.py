@@ -149,12 +149,16 @@ class RenderingTests(unittest.TestCase):
 
     def test_server_restart_cleans_stale_tasks(self):
         import tempfile
+        now_dt = datetime.now(timezone.utc)
+        ts_past = (now_dt - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts_restart = (now_dt - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts_recent = (now_dt - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         lines = [
-            json.dumps({"step_index": 1, "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/15 * * * *"}}], "created_at": "2026-10-16T10:00:00Z"}),
-            json.dumps({"step_index": 2, "content": "background task with task id: test/task-100\nTask Description: Cron: */15 * * * *", "created_at": "2026-10-16T10:00:00Z"}),
-            json.dumps({"step_index": 3, "content": "All your subagents and background tasks have been stopped due to server restart", "created_at": "2026-10-19T02:00:00Z"}),
-            json.dumps({"step_index": 4, "tool_calls": [{"name": "run_command", "args": {"IsDaemon": True}}], "created_at": "2026-10-19T03:00:00Z"}),
-            json.dumps({"step_index": 5, "content": "background task with task id: test/task-200\nTask Description: python server.py --port 8080", "created_at": "2026-10-19T03:00:00Z"}),
+            json.dumps({"step_index": 1, "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/15 * * * *"}}], "created_at": ts_past}),
+            json.dumps({"step_index": 2, "content": "background task with task id: test/task-100\nTask Description: Cron: */15 * * * *", "created_at": ts_past}),
+            json.dumps({"step_index": 3, "content": "All your subagents and background tasks have been stopped due to server restart", "created_at": ts_restart}),
+            json.dumps({"step_index": 4, "tool_calls": [{"name": "run_command", "args": {"IsDaemon": True}}], "created_at": ts_recent}),
+            json.dumps({"step_index": 5, "content": "background task with task id: test/task-200\nTask Description: python server.py --port 8080", "created_at": ts_recent}),
         ]
         with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as tf:
             tf.write("\n".join(lines) + "\n")

@@ -63,10 +63,14 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 
 ## 2.6. Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
-- **Practical Model Priority Hierarchy (실전 모델 우선순위 위계)**:
-  - **1순위 주력**: `gpt-6-astra (medium · default)`: 전반적인 일반 코딩 및 모션그래픽·멀티파일 구현 최우선 (`--pool auto --difficulty medium` 자동 선택)
-  - **2순위 주력**: `Opus 5.5 (high/medium · claude)`: 복합 아키텍처 설계, 심층 추론, 프론트엔드 UI/UX 및 모션 그래픽 (`--pool auto` motion/ui 키워드 자동 배정)
-  - **3순위 특수 목적**: `gpt-6.1-sol (high · standard)`: PC 조작(Computer Use), 로우레벨 시스템 제어 및 정밀 유닛테스트 검증 루프 전용
+- **Task-Domain + Live Benchmark-Driven Routing (`LOW_QUOTA_THRESHOLD = 20.0%`)**:
+  - 쿼터 잔여율이 20% 미만으로 떨어지기 전까지는 실시간 벤치마크 점수 및 태스크 적합성을 최우선으로 자동 라우팅하며, 20% 미만 진입 시에만 차순위 가용 풀로 우회/페일오버한다.
+  - **긴 호흡 코딩 / 디버깅·테스트 루프 (`long_horizon_coding`)**: `gpt-6.1-sol (high)` (98.0) > `claude-opus-5-5 (high)` (93.5)
+  - **심층 추론 / 아키텍처 연구 (`research_orchestration`)**: `Gemini 4 Argon (High)` (97.5) & `gpt-6-astra (medium)` (96.0) > `claude-opus-5-5 (high)` (94.5)
+  - **프론트엔드 UI·UX / 모션그래픽 (`frontend_ui_motion`)**: `claude-opus-5-5 (high)` (97.5) > `gpt-6-astra (medium)` (93.5)
+  - **PC 조작 / 데스크탑 GUI 제어 (`computer_use`)**: `gpt-6.1-sol (high)` (96.0) & `gpt-6-astra (medium)` (95.0) > `claude-opus-5-5 (high)` (82.0)
+  - **초고속 코드베이스/로그 탐색 (`fast_explore`)**: `Gemini 3.8 Flash (low · fast)` (98.5)
+  - **일반 멀티파일 코딩 (`general_coding`)**: `gpt-6-astra (medium · default)` 1순위 주력
 - Whenever delegating one or many workers (`maestro worker-start`, `invoke_subagent`, child workers), ALWAYS state the exact **model + effort + speed tier** assigned to each concrete subtask **BEFORE launch**, with its ETA row.
 - After launch / completion, report every actual `--pool auto` assignment or fallback / failover change (`requested → actual` model · effort · tier + reason, e.g. 0% quota steering).
 - **Speed Tier Policy (속도 티어 정책)**:

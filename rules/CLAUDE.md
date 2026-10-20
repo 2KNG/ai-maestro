@@ -22,7 +22,14 @@
 
 ## Explicit Worker Assignment Roster Rule (워커 배정 명시 · 투입 전 고지)
 
-- 실전 모델 우선순위 위계: **1순위 주력** `gpt-6-astra (medium · default)` > **2순위 주력** `Opus 5.5 (high/medium · claude)` > **3순위 특수 목적** `gpt-6.1-sol (high · standard, computer-use/test loop)`.
+- Task-Domain + Live Benchmark-Driven Routing with Low-Quota Guard (`LOW_QUOTA_THRESHOLD = 20.0%`):
+  - 쿼터 잔여율이 20% 미만으로 떨어지기 전까지는 실시간 벤치마크 점수 및 태스크 적합성을 최우선으로 자동 라우팅하며, 20% 미만 진입 시에만 차순위 가용 풀로 우회/페일오버한다.
+  - 긴 호흡 코딩/테스트루프: `gpt-6.1-sol (high)` (98.0) > `claude-opus-5-5 (high)` (93.5)
+  - 심층추론/아키텍처연구: `Gemini 4 Argon (High)` (97.5) & `gpt-6-astra (medium)` (96.0) > `claude-opus-5-5 (high)` (94.5)
+  - 프론트엔드UI/모션그래픽: `claude-opus-5-5 (high)` (97.5) > `gpt-6-astra (medium)` (93.5)
+  - PC조작/Computer-Use: `gpt-6.1-sol (high)` (96.0) & `gpt-6-astra (medium)` (95.0) > `claude-opus-5-5 (high)` (82.0)
+  - 초고속탐색: `Gemini 3.8 Flash (low · fast)` (98.5)
+  - 일반코딩: `gpt-6-astra (medium · default)` 1순위 주력
 - 워커 투입 시 모델, 노력 수준, 속도 티어를 사전 명시합니다.
 - 사후 보고 시 `--pool auto` 배정 결과나 장애 조치(Failover) 내역을 기록합니다.
 - 속도 티어 정책:

@@ -264,6 +264,45 @@ class SpeedAndDispatchTests(unittest.TestCase):
         with mock.patch.object(workers.cau,'select_best_pool',return_value=routing):
             self.assertIsNone(workers.choose_auto_pool(exclude_canonical={'codex'})[0])
 
+    def test_task_domain_benchmark_routing_and_low_quota_failover(self):
+        # 1. Domain classifications and benchmark winning models
+        domains_and_models = [
+            ("긴 호흡의 버그 수정 및 단위테스트 루프", "high", "gpt-6.1-sol"),
+            ("모션 그래픽 CSS SVG 애니메이션 위젯 제작", "high", "claude-opus-5-5"),
+            ("복합 아키텍처 연구 및 심층 알고리즘 분석", "high", "Gemini 4 Argon"),
+            ("빠른 로그 스캔 및 파일 탐색", "low", "Gemini 3.8 Flash"),
+            ("OSWorld 데스크탑 화면 마우스 조작", "high", "gpt-6.1-sol"),
+        ]
+        for spec, diff, expected_model in domains_and_models:
+            with self.subTest(spec=spec, diff=diff):
+                rec = bench.recommend_model_for_task(spec=spec, difficulty=diff)
+                self.assertEqual(rec["recommended_model"], expected_model)
+
+        # 2. Low quota threshold (< 20%) failover:
+        # When Codex quota drops to 15% (<20%), long-horizon coding fails over to Claude
+        low_codex_usage = {
+            "codex_local": {"weekly": {"remaining_percent": 15.0}},
+            "claude_local": {"weekly": {"remaining_percent": 80.0}},
+            "antigravity": {"pools": {}},
+        }
+        failover_rec = bench.recommend_model_for_task(
+            spec="긴 호흡의 버그 수정 및 단위테스트 루프", difficulty="high", usage_data=low_codex_usage
+        )
+        self.assertEqual(failover_rec["recommended_model"], "claude-opus-5-5")
+
+    def test_worker_timeout_safety_floor(self):
+        # Default safety floor for high effort is 3600s
+        workers.start_codex_worker("task", "/tmp", "high", "default", 180)
+        self.assertEqual(self.run.call_args.kwargs.get("timeout"), 3600)
+
+        workers.start_claude_worker("claude", "task", "/tmp", "high", True, 180)
+        self.assertEqual(self.run.call_args.kwargs.get("timeout"), 3600)
+
+        # Environment override MAESTRO_ALLOW_SHORT_TIMEOUT allows short timeouts
+        with mock.patch.dict("os.environ", {"MAESTRO_ALLOW_SHORT_TIMEOUT": "1"}):
+            workers.start_codex_worker("task", "/tmp", "high", "default", 45)
+            self.assertEqual(self.run.call_args.kwargs.get("timeout"), 45)
+
 
 if __name__ == '__main__':
     unittest.main()

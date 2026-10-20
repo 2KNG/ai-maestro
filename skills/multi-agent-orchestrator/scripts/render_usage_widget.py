@@ -2825,7 +2825,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     # Map maestro worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
     maestro_specs_by_cid: dict[str, str] = {}
     repo_to_parent_cid: dict[str, str] = {}
-    for ag_p in sorted(active_ag, key=lambda x: 1 if x.get("conversation_id") == "521b781e-43da-4647-b411-585e65e5f002" else 0):
+    for ag_p in sorted(active_ag, key=lambda x: _age_sec_from_iso(x.get("last_modified_time") or "")):
         p_cid = ag_p.get("conversation_id", "")
         p_repo, _ = _repo_from_uris_or_cwd(ag_p.get("workspaces"))
         if p_repo and p_repo not in repo_to_parent_cid:
@@ -2852,15 +2852,19 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         w_key = w_raw[:24].strip()
         w_repo, _ = _repo_from_uris_or_cwd(w_ag.get("workspaces"))
         target_p = None
-        if len(w_key) >= 8:
+        # 1. Direct parent_conversation_id if it exists in active_ag
+        p_direct = w_ag.get("parent_conversation_id")
+        if p_direct and any(ag.get("conversation_id") == p_direct for ag in active_ag):
+            target_p = p_direct
+        # 2. Spec match in parent's transcript
+        if not target_p and len(w_key) >= 8:
             for p_cid, specs_txt in maestro_specs_by_cid.items():
                 if w_key in specs_txt:
                     target_p = p_cid
                     break
-        if not target_p:
+        # 3. Match active parent in the exact same workspace repo
+        if not target_p and w_repo:
             target_p = repo_to_parent_cid.get(w_repo)
-        if not target_p and w_repo == "dev" and _agy_worker_is_active(w_ag, live_agy_ids):
-            target_p = "521b781e-43da-4647-b411-585e65e5f002"
         if target_p:
             attached_ag_workers_by_parent.setdefault(target_p, []).append({
                 **w_ag,

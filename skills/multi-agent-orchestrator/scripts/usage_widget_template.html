@@ -776,6 +776,19 @@
       background: rgba(217, 119, 87, 0.14);
       color: #D97757;
     }
+    .refresh-ts-badge {
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: #94a3b8;
+      background: rgba(148, 163, 184, 0.08);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 4px;
+      padding: 2px 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
 
     .agent-detail {
       --border: var(--bdr);
@@ -1206,6 +1219,11 @@
       background: rgba(194, 89, 56, 0.10);
       border-color: rgba(194, 89, 56, 0.38);
       color: #9a3412;
+    }
+    html.light .refresh-ts-badge {
+      color: #64748b;
+      background: rgba(100, 116, 139, 0.08);
+      border-color: rgba(100, 116, 139, 0.22);
     }
     html.light .import-btn {
       background: rgba(126, 34, 206, 0.08);
@@ -2186,10 +2204,7 @@
         </div>
 
         <div style="display:flex;align-items:center;gap:4px">
-          <button type="button" class="open-btn codex" onclick="openCodexDirectBar('', '새 Codex 6.1-sol · fast 작업')" title="Codex(gpt-6.1-sol · fast)에 위젯에서 바로 명령 내리기">
-            <svg width="10" height="10"><use href="#ico-codex"/></svg>
-            <span>+ Codex</span>
-          </button>
+          <span id="last-refresh-ts" class="refresh-ts-badge" title="마지막 실시간 동기화 시각">↻ --:--:--</span>
           <button type="button" class="icon-btn" id="btn-refresh-scope" onclick="refreshByScope()" title="실시간 사용량 및 작업중/닫은 세션 상태 새로고침" style="padding:0 6px">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M4 9a9 9 0 0114.65-3.36L20 7M20 15a9 9 0 01-14.65 3.36L4 17"/>
@@ -2787,10 +2802,29 @@
     const STORAGE_SCOPE = 'agy_tree_scope_v1';
     const STORAGE_TAB = 'agy_tree_tab_v1';
     const STORAGE_CLOSED_DAYS = 'agy_closed_days_v1';
+    const STORAGE_STATUS_FILTER = 'agy_status_filter_v1';
     const STORAGE_DENSITY = 'agy_density_v1';
     const STORAGE_ALL_COLLAPSED = 'agy_all_collapsed_v1';
     const STORAGE_SHOW_BG_DAEMONS = 'agy_show_bg_daemons_v1';
     const STORAGE_OPEN_DETAILS = 'agy_open_details_v1';
+
+    function updateLastRefreshBadge(tsMs) {
+      const d = new Date(tsMs || Date.now());
+      const pad = n => String(n).padStart(2, '0');
+      const hh = pad(d.getHours());
+      const mm = pad(d.getMinutes());
+      const ss = pad(d.getSeconds());
+      const timeStr = `${hh}:${mm}:${ss}`;
+      const yyyy = d.getFullYear();
+      const mo = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const fullStr = `${yyyy}-${mo}-${dd} ${timeStr}`;
+      const el = document.getElementById('last-refresh-ts');
+      if (el) {
+        el.textContent = `↻ ${timeStr}`;
+        el.title = `마지막 동기화: ${fullStr}`;
+      }
+    }
 
     function storedIdList(key, fallback) {
       let ids = fallback;
@@ -2821,6 +2855,7 @@
     let currentScope = safeGet(STORAGE_SCOPE, SERVER_STATE.scope || 'current');
     let currentTab = safeGet(STORAGE_TAB, SERVER_STATE.tab || 'active');
     let closedDays = Number(safeGet(STORAGE_CLOSED_DAYS, String(SERVER_STATE.closedDays || 7))) === 30 ? 30 : 7;
+    let statusFilter = safeGet(STORAGE_STATUS_FILTER, SERVER_STATE.statusFilter || 'all');
     let currentDensity = safeGet(STORAGE_DENSITY, SERVER_STATE.density || 'compact') === 'expanded' ? 'expanded' : 'compact';
     let allCollapsed = safeGet(STORAGE_ALL_COLLAPSED, String(SERVER_STATE.allCollapsed === true)) === 'true';
     let showBgDaemons = safeGet(STORAGE_SHOW_BG_DAEMONS, String(SERVER_STATE.showBgDaemons !== false)) !== 'false';
@@ -2838,6 +2873,49 @@
       document.title = 'AI Usage & Multi-Agent Orchestrator';
     }
 
+    function syncAgentCustomFromBridge(state) {
+      if (!state || typeof state !== 'object') return;
+      if (Array.isArray(state.dismissed)) dismissedSet = new Set([...dismissedSet, ...state.dismissed]);
+      if (Array.isArray(state.pinned)) pinnedSet = new Set([...pinnedSet, ...state.pinned]);
+      if (Array.isArray(state.imported)) importedSet = new Set([...importedSet, ...state.imported]);
+      if (state.importedCascades && typeof state.importedCascades === 'object') {
+        importedCascades = { ...importedCascades, ...state.importedCascades };
+      }
+      if (state.closedDays) {
+        closedDays = Number(state.closedDays) === 30 ? 30 : 7;
+        safeSet(STORAGE_CLOSED_DAYS, String(closedDays));
+      }
+      if (state.scope && ['current', 'all'].includes(state.scope)) {
+        currentScope = state.scope;
+        safeSet(STORAGE_SCOPE, currentScope);
+      }
+      if (state.statusFilter) {
+        statusFilter = state.statusFilter;
+        safeSet(STORAGE_STATUS_FILTER, statusFilter);
+      }
+      if (!userTouchedTab && state.tab && ['active', 'closed'].includes(state.tab)) {
+        currentTab = state.tab;
+        safeSet(STORAGE_TAB, currentTab);
+      }
+      if (safeGet(STORAGE_DENSITY, null) === null && ['compact', 'expanded'].includes(state.density)) {
+        currentDensity = state.density;
+      }
+      if (safeGet(STORAGE_ALL_COLLAPSED, null) === null && typeof state.allCollapsed === 'boolean') {
+        allCollapsed = state.allCollapsed;
+      }
+      if (safeGet(STORAGE_SHOW_BG_DAEMONS, null) === null && typeof state.showBgDaemons === 'boolean') {
+        showBgDaemons = state.showBgDaemons;
+      }
+      if (safeGet(STORAGE_OPEN_DETAILS, null) === null && Array.isArray(state.openDetails)) {
+        openDetails.clear();
+        state.openDetails.filter(id => typeof id === 'string').forEach(id => openDetails.add(id));
+      }
+    }
+
+    function saveCustomState(extraBody = {}) {
+      saveState(extraBody);
+    }
+
     function saveState(extraBody = {}) {
       userTouchedState = true;
       safeSet(STORAGE_DISMISSED, JSON.stringify([...dismissedSet]));
@@ -2846,26 +2924,34 @@
       safeSet(STORAGE_SCOPE, currentScope);
       safeSet(STORAGE_TAB, currentTab);
       safeSet(STORAGE_CLOSED_DAYS, String(closedDays));
+      safeSet(STORAGE_STATUS_FILTER, statusFilter);
       safeSet(STORAGE_DENSITY, currentDensity);
       safeSet(STORAGE_ALL_COLLAPSED, String(allCollapsed));
       safeSet(STORAGE_SHOW_BG_DAEMONS, String(showBgDaemons));
       safeSet(STORAGE_OPEN_DETAILS, JSON.stringify([...openDetails]));
+      const payload = {
+        dismissed: [...dismissedSet],
+        pinned: [...pinnedSet],
+        imported: [...importedSet],
+        scope: currentScope,
+        tab: currentTab,
+        closedDays: closedDays,
+        statusFilter: statusFilter,
+        density: currentDensity,
+        allCollapsed: allCollapsed,
+        showBgDaemons: showBgDaemons,
+        openDetails: [...openDetails],
+        ...extraBody
+      };
       fetch(`${BRIDGE_URL}/api/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dismissed: [...dismissedSet],
-          pinned: [...pinnedSet],
-          imported: [...importedSet],
-          scope: currentScope,
-          tab: currentTab,
-          closedDays: closedDays,
-          density: currentDensity,
-          allCollapsed: allCollapsed,
-          showBgDaemons: showBgDaemons,
-          openDetails: [...openDetails],
-          ...extraBody
-        })
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+      fetch(`${BRIDGE_URL}/api/widget-state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       }).catch(() => {});
     }
 
@@ -3528,6 +3614,7 @@
           pinImportedNodes();
           applyTreeUiState();
           applyTreeFilters();
+          updateLastRefreshBadge(Date.now());
           notifyParentResize();
           if (btn) btn.classList.remove('spinning');
           showToast(`✓ 실시간 사용량 + ${scopeLabel} 새로고침 완료 (${j.timestamp_kst || '방금'})`);
@@ -3538,6 +3625,7 @@
       applyDensityState();
       applyTreeUiState();
       applyTreeFilters();
+      updateLastRefreshBadge(Date.now());
       notifyParentResize();
       setTimeout(() => {
         if (btn) btn.classList.remove('spinning');
@@ -3915,29 +4003,10 @@
           const changedClosed = smartPatchTree(vc, j.closedTreeHtml);
           // Startup hydration must never overwrite an interaction made while status was in flight.
           if (j.state && !userTouchedState) {
-            if (Array.isArray(j.state.dismissed)) dismissedSet = new Set([...dismissedSet, ...j.state.dismissed]);
-            if (Array.isArray(j.state.pinned)) pinnedSet = new Set([...pinnedSet, ...j.state.pinned]);
-            if (Array.isArray(j.state.imported)) importedSet = new Set([...importedSet, ...j.state.imported]);
-            if (j.state.importedCascades) importedCascades = j.state.importedCascades;
-            if (j.state.closedDays) closedDays = Number(j.state.closedDays) === 30 ? 30 : 7;
-            if (!userTouchedTab && j.state.tab) {
-              currentTab = j.state.tab === 'closed' ? 'closed' : 'active';
-            }
-            if (safeGet(STORAGE_DENSITY, null) === null && ['compact', 'expanded'].includes(j.state.density)) {
-              currentDensity = j.state.density;
-            }
-            if (safeGet(STORAGE_ALL_COLLAPSED, null) === null && typeof j.state.allCollapsed === 'boolean') {
-              allCollapsed = j.state.allCollapsed;
-            }
-            if (safeGet(STORAGE_SHOW_BG_DAEMONS, null) === null && typeof j.state.showBgDaemons === 'boolean') {
-              showBgDaemons = j.state.showBgDaemons;
-            }
-            if (safeGet(STORAGE_OPEN_DETAILS, null) === null && Array.isArray(j.state.openDetails)) {
-              openDetails.clear();
-              j.state.openDetails.filter(id => typeof id === 'string').forEach(id => openDetails.add(id));
-            }
+            syncAgentCustomFromBridge(j.state);
           }
           renderQuotas();
+          updateLastRefreshBadge(Date.now());
           if (changedActive || changedClosed || !va.dataset.initialized) {
             va.dataset.initialized = '1';
             applyDensityState();
@@ -4081,6 +4150,7 @@
       if (changedTree) notifyParentResize();
     }
 
+    updateLastRefreshBadge(Date.now());
     renderQuotas();
     applyDensityState();
     applyPcTelemetryOpenState();

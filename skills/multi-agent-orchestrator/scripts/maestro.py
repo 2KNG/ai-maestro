@@ -14,8 +14,8 @@ Why this exists:
 
 Commands:
   maestro status [--json]
-  maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|codex-astra|claude|claude-fast|agy-flash] [--model <model>] [--cwd <dir>] [--wait] [--timeout 180] [--json]
-  maestro check --id <cascade_id> [--wait] [--timeout 180] [--json]
+  maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|codex-astra|claude|claude-fast|agy-flash] [--model <model>] [--cwd <dir>] [--wait] [--timeout 3600] [--json]
+  maestro check --id <cascade_id> [--wait] [--timeout 3600] [--json]
   maestro sync-widgets [--json]
 """
 import argparse
@@ -147,15 +147,14 @@ def is_pool_exhausted(pool: str, data: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def choose_auto_pool(difficulty: str = "high", exclude_canonical: set[str] | None = None) -> tuple[str, dict]:
+def choose_auto_pool(difficulty: str = "high", spec: str = "", exclude_canonical: set[str] | None = None) -> tuple[str | None, dict]:
     data = cau.collect_usage(include_agent_trees=False)
-    best = cau.select_best_pool(data, difficulty)
+    best = cau.select_best_pool(data, difficulty, spec=spec)
     excl = exclude_canonical or set()
     winner = best.get("pool")
 
-    # Hierarchy: gpt-6-astra > Opus 5.5 > gpt-6.1-sol
-    # For medium difficulty general coding, prefer codex-astra unless Claude 7d > Codex 7d by 12%+
-    if difficulty == "medium" and "codex" not in excl and "claude" not in excl:
+    # For medium difficulty general coding without spec, prefer codex-astra unless Claude 7d > Codex 7d by 12%+
+    if not spec and difficulty == "medium" and "codex" not in excl and "claude" not in excl:
         c_map = {c.get("pool"): c for c in (best.get("candidates") or [])}
         codex_c = c_map.get("codex")
         claude_c = c_map.get("claude")
@@ -183,6 +182,12 @@ def choose_auto_pool(difficulty: str = "high", exclude_canonical: set[str] | Non
         ]
         candidates.sort(key=lambda x: x[1], reverse=True)
         winner = candidates[0][0] if candidates else None
+
+    rec = best.get("benchmark_recommendation") or {}
+    rec_pool = rec.get("recommended_pool")
+    if spec and winner == rec.get("canonical_pool") and rec_pool and _canonical_pool_key(rec_pool) not in excl:
+        return rec_pool, data
+
     return (_map_canonical_to_cli_pool(winner, difficulty) if winner else None), data
 
 
@@ -436,8 +441,9 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     selected_effort = effort or ("xhigh" if max_capability else "high")
     if selected_effort in ("ultra", "xhigh", "max") and not max_capability and effort is None:
         selected_effort = "high"
-    if timeout == 180:
-        timeout = {"low": 120, "medium": 180, "high": 300, "xhigh": 420, "ultra": 600}.get(selected_effort, 180)
+    min_timeout = {"low": 900, "medium": 1800, "high": 3600, "xhigh": 3600, "ultra": 5400}.get(selected_effort, 1800)
+    if not os.environ.get("MAESTRO_ALLOW_SHORT_TIMEOUT"):
+        timeout = max(int(timeout or min_timeout), min_timeout)
 
     # Opus Fast speed tier determination:
     if selected_effort == "ultra":
@@ -628,8 +634,9 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     model, effort, tier = resolve_codex_settings(
         pool, model, effort, tier, max_capability=max_capability,
         interactive=interactive, urgent=urgent, background=background)
-    if timeout == 180:
-        timeout = {"low": 120, "medium": 180, "high": 300, "xhigh": 420, "ultra": 600}.get(effort, 180)
+    min_timeout = {"low": 900, "medium": 1800, "high": 3600, "xhigh": 3600, "ultra": 5400}.get(effort, 1800)
+    if not os.environ.get("MAESTRO_ALLOW_SHORT_TIMEOUT"):
+        timeout = max(int(timeout or min_timeout), min_timeout)
     agy_title = make_agy_title(spec, abs_cwd)
     handover_ctx = maestro_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
     tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
@@ -853,13 +860,13 @@ def main():
                          help="Benchmark domain for --max-capability")
     p_start.add_argument("--urgent", action="store_true", help="Use ultrafast tier only when urgent immediate response is required")
     p_start.add_argument("--wait", action="store_true")
-    p_start.add_argument("--timeout", type=int, default=180)
+    p_start.add_argument("--timeout", type=int, default=3600)
     p_start.add_argument("--json", action="store_true")
 
     p_check = sub.add_parser("check")
     p_check.add_argument("--id", required=True)
     p_check.add_argument("--wait", action="store_true")
-    p_check.add_argument("--timeout", type=int, default=180)
+    p_check.add_argument("--timeout", type=int, default=3600)
     p_check.add_argument("--json", action="store_true")
 
     p_sync = sub.add_parser("sync-widgets")
@@ -931,7 +938,7 @@ def main():
         steered_from = None
         steer_reason = None
         if requested_pool == "auto":
-            pool, live_data = choose_auto_pool(args.difficulty)
+            pool, live_data = choose_auto_pool(args.difficulty, spec=args.spec)
         else:
             live_data = cau.collect_usage(include_agent_trees=False)
             exhausted, ex_reason = is_pool_exhausted(requested_pool, live_data)
@@ -940,6 +947,7 @@ def main():
                 steer_reason = f"Pre-flight auto-steer: {ex_reason}"
                 pool, _ = choose_auto_pool(
                     args.difficulty,
+                    spec=args.spec,
                     exclude_canonical={_canonical_pool_key(requested_pool)},
                 )
             else:
@@ -990,6 +998,7 @@ def main():
             failed_pool = pool
             fallback_pool, _ = choose_auto_pool(
                 args.difficulty,
+                spec=args.spec,
                 exclude_canonical={_canonical_pool_key(failed_pool), _canonical_pool_key(requested_pool)},
             )
             if fallback_pool and _canonical_pool_key(fallback_pool) != _canonical_pool_key(failed_pool):

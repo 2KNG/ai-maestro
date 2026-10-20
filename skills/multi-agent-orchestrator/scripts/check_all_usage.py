@@ -690,8 +690,8 @@ def get_claude_status() -> dict:
                 except Exception:
                     pass
         except Exception as e:
-            five_hour_info["error"] = str(e)
-            weekly_info["error"] = str(e)
+            err_str = str(e)
+            is_429 = "429" in err_str or "Too Many Requests" in err_str
             if os.path.exists(cache_path):
                 try:
                     with open(cache_path, "r", encoding="utf-8") as cf:
@@ -700,6 +700,12 @@ def get_claude_status() -> dict:
                     stale = datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) >= CLAUDE_CACHE_MAX_AGE_SECONDS
                 except Exception:
                     data = None
+            if not data:
+                five_hour_info["error"] = err_str
+                weekly_info["error"] = err_str
+            else:
+                data["api_error"] = err_str
+                data["is_429"] = is_429
 
     if isinstance(data, dict):
         fh = data.get("five_hour") or {}
@@ -755,14 +761,17 @@ def get_claude_status() -> dict:
                     "reset_time_kst": fmt_iso_to_kst(sd_rst),
                     "status": "한도 도달 (주간 소진)",
                 }
-        # Keep the age flag, but allow reset inference after an API rate limit
-        # only if every known window has reset or is idle without a reset date.
-        known_windows = [window for window in (fh, sd) if window.get("utilization") is not None]
-        reset_reconciled = any(_is_iso_past(window.get("resets_at")) for window in known_windows) and all(
-            _is_iso_past(window.get("resets_at"))
-            or (window.get("utilization") == 0 and not window.get("resets_at"))
-            for window in known_windows
-        )
+        # Allow reset inference after API rate limit (429) or cache expiry:
+        # If 5h window passed resets_at, 5h is refreshed to 100%. Reconcile if 5h reset passed
+        # and weekly quota is not exhausted, or if cache is not stale.
+        fh_rst = fh.get("resets_at")
+        fh_reset_past = _is_iso_past(fh_rst)
+        if fh_reset_past or (fh.get("utilization") == 0 and not fh_rst):
+            reset_reconciled = (sd_util < 100.0 or _is_iso_past(sd.get("resets_at")))
+        elif not stale:
+            reset_reconciled = True
+        else:
+            reset_reconciled = False
 
     return {
         "authenticated": has_oauth,
@@ -784,6 +793,9 @@ def get_claude_status() -> dict:
             "Google Drive / Gmail / Calendar (✔ Connected)",
         ],
     }
+
+
+get_claude_code_usage = get_claude_status
 
 
 def _load_agy_spawn_registry() -> dict:
@@ -1801,8 +1813,12 @@ def _routing_windows(usage: dict, provider: str | None = None) -> tuple[float | 
         return wk_rem, None, wk_rem, "weekly_conserve"
     # Zone 1: Normal zone (7d > 10%) -> blend 5h and 7d rolling/weekly quotas
     if fh_rem is not None and wk_rem is not None:
-        is_codex = (provider == "codex") or bool(usage.get("plan")) or ("service_tiers" in usage)
-        blended = (0.25 * fh_rem + 0.75 * wk_rem) if is_codex else (0.45 * fh_rem + 0.55 * wk_rem)
+        if provider == "antigravity":
+            blended = 0.25 * fh_rem + 0.75 * min(fh_rem, wk_rem)
+        elif (provider == "codex") or bool(usage.get("plan")) or ("service_tiers" in usage):
+            blended = 0.25 * fh_rem + 0.75 * wk_rem
+        else:
+            blended = 0.45 * fh_rem + 0.55 * wk_rem
         return round(blended, 2), fh_rem, wk_rem, "normal"
     if fh_rem is not None:
         return fh_rem, fh_rem, wk_rem, "normal"
@@ -1814,9 +1830,9 @@ def _routing_remaining(usage: dict) -> float | None:
     return eff
 
 
-def select_best_pool(data, difficulty='high', urgent: bool = False, interactive: bool = False) -> dict:
+def select_best_pool(data, difficulty='high', urgent: bool = False, interactive: bool = False, spec: str = "") -> dict:
     """Rank shared quota pools with 3-Zone Weekly Guardrail (10% conserve / 2% reserve / 0% block)
-    and once-a-day zero-token verified benchmark rankings.
+    and task-domain live benchmark recommendations.
     """
     if difficulty not in ("high", "medium", "low"):
         raise ValueError("difficulty must be high, medium, or low")
@@ -1853,11 +1869,14 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
         ("claude", "claude", "Claude " + str(claude.get("subscription") or "Team"), claude, "claude-opus-5-5"),
     ]
     bench_info = {}
+    rec_info = {}
     try:
         import benchmark_sync
         bench_info = benchmark_sync.get_daily_benchmark_and_models(agy)
+        rec_info = benchmark_sync.recommend_model_for_task(spec=spec, difficulty=difficulty, usage_data=data)
     except Exception:
         bench_info = {}
+        rec_info = {}
     bench_scores = bench_info.get("benchmark_scores") or {}
     preference = {
         "codex": int((bench_scores.get("codex") or {}).get("routing_preference", 3)),
@@ -1902,18 +1921,33 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
                 candidate.update(status="unavailable", score=0.0)
         candidates.append(candidate)
 
-    candidates.sort(key=lambda item: (item["status"] == "available", item["score"], preference.get(item["pool"], 0)), reverse=True)
+    if spec:
+        rec_canonical = rec_info.get("canonical_pool")
+        rec_cand = next((c for c in candidates if c["pool"] == rec_canonical and c["status"] == "available"), None)
+        if rec_cand and (rec_cand.get("remaining_percent") or 0.0) >= 20.0:
+            candidates.sort(key=lambda item: (item["status"] == "available", item["pool"] == rec_canonical, item["score"]), reverse=True)
+        else:
+            candidates.sort(key=lambda item: (item["status"] == "available", item["score"], preference.get(item["pool"], 0)), reverse=True)
+    else:
+        candidates.sort(key=lambda item: (item["status"] == "available", item["score"], preference.get(item["pool"], 0)), reverse=True)
+
     best = next((item for item in candidates if item["status"] == "available"), None)
+    best_model = (rec_info.get("recommended_model") if (spec and best and best["pool"] == rec_info.get("canonical_pool")) else (best["model"] if best else None))
     return {
         "difficulty": difficulty,
+        "spec": spec,
+        "task_domain": rec_info.get("domain", "general_coding"),
         "pool": best["pool"] if best else None,
         "provider": best["provider"] if best else None,
-        "model": best["model"] if best else None,
+        "model": best_model,
         "service_tier": best.get("service_tier") if best else None,
         "remaining_percent": best["remaining_percent"] if best else None,
         "five_hour_remaining": best.get("five_hour_remaining") if best else None,
         "weekly_remaining": best.get("weekly_remaining") if best else None,
         "routing_mode": best.get("routing_mode") if best else None,
+        "citation": rec_info.get("citation"),
+        "cost_krw": rec_info.get("cost_krw"),
+        "benchmark_recommendation": rec_info,
         "new_models_detected": bench_info.get("new_models_detected") or [],
         "benchmark_last_sync_kst": bench_info.get("last_sync_kst"),
         "reason": (
@@ -1923,7 +1957,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
             f"모드={best.get('routing_mode','normal')})"
             if best else "가용 한도가 확인된 풀이 없습니다."
         ),
-        "policy": "3-Zone Weekly Guardrail: 7d>10% blends 5h and 7d (Codex 25:75, Claude 45:55); 2%<7d<=10% throttles score (weekly_conserve) to rotate load; 7d<=2% holds reserve; 0% hard blocks & auto-steers",
+        "policy": "Task-Domain Benchmark Routing with 3-Zone Weekly Guardrail (LOW_QUOTA_THRESHOLD = 20.0%)",
         "candidates": candidates,
     }
 

@@ -192,6 +192,7 @@ def _normalize_state(st) -> dict:
     st["importedCascades"] = cascades if isinstance(cascades, dict) else {}
     st["closedDays"] = _normalize_closed_days(st.get("closedDays", DEFAULT_CLOSED_DAYS))
     st["scope"] = st.get("scope") if st.get("scope") in ("current", "all") else "current"
+    st["statusFilter"] = str(st.get("statusFilter") or "all")
     st["tab"] = st.get("tab") if isinstance(st.get("tab"), str) and st.get("tab") else "active"
     # UI cache: persisted so re-rendered widgets keep the user's expand/collapse choices.
     st["density"] = st.get("density") if st.get("density") in ("compact", "expanded") else "compact"
@@ -448,7 +449,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "enabled": False, "error": str(e)}).encode("utf-8"))
             return
 
-        if parsed.path == "/api/state":
+        if parsed.path in ("/api/state", "/api/widget-state"):
             self._set_cors(200)
             self.wfile.write(json.dumps({"ok": True, "state": load_state()}, ensure_ascii=False).encode("utf-8"))
             return
@@ -503,7 +504,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
             return
 
-        if parsed.path == "/api/state":
+        if parsed.path in ("/api/state", "/api/widget-state"):
             if not isinstance(body, dict):
                 body = {}
             with _sync_lock:
@@ -529,6 +530,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     st["closedDays"] = _normalize_closed_days(body["closedDays"])
                 if "scope" in body:
                     st["scope"] = body["scope"]
+                if "statusFilter" in body:
+                    st["statusFilter"] = str(body["statusFilter"] or "all")
                 if "tab" in body:
                     st["tab"] = body["tab"]
                 if "density" in body:
