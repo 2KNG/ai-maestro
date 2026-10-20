@@ -17,6 +17,9 @@ class RenderingTests(unittest.TestCase):
         patcher = mock.patch.object(widget, '_worker_registry', return_value={})
         self.addCleanup(patcher.stop)
         patcher.start()
+        processes = mock.patch("live_worker_processes.scan_live_worker_processes", return_value=[])
+        self.addCleanup(processes.stop)
+        processes.start()
 
     def test_unmatched_active_workers_never_become_roots(self):
         now = datetime.now(timezone.utc)
@@ -173,7 +176,7 @@ class RenderingTests(unittest.TestCase):
         lines = [
             json.dumps({"step_index": 1, "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/15 * * * *"}}], "created_at": ts_past}),
             json.dumps({"step_index": 2, "content": "background task with task id: test/task-100\nTask Description: Cron: */15 * * * *", "created_at": ts_past}),
-            json.dumps({"step_index": 3, "content": "All your subagents and background tasks have been stopped due to server restart", "created_at": ts_restart}),
+            json.dumps({"type": "SYSTEM_MESSAGE", "step_index": 3, "content": "All your subagents and background tasks have been stopped due to server restart", "created_at": ts_restart}),
             json.dumps({"step_index": 4, "tool_calls": [{"name": "run_command", "args": {"IsDaemon": True}}], "created_at": ts_recent}),
             json.dumps({"step_index": 5, "content": "background task with task id: test/task-200\nTask Description: python server.py --port 8080", "created_at": ts_recent}),
         ]

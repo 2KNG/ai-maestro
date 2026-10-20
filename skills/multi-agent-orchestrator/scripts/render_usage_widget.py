@@ -2185,9 +2185,16 @@ def _parse_render_background_tasks(tpath):
                 c = str(d.get("content") or "")
                 created_iso = d.get("created_at") or ""
 
-                if "stopped due to server restart" in c.lower() or "server restart" in c.lower():
-                    for tv in tasks.values():
-                        tv["done"] = True
+                if ("stopped due to server restart" in c.lower()
+                        and d.get("type") == "SYSTEM_MESSAGE" and d.get("source", "SYSTEM") == "SYSTEM"):
+                    event_time = _parse_any_ts(created_iso)
+                    mentioned = set(re.findall(r"[\w./-]*task-\d+", c))
+                    for tid, tv in tasks.items():
+                        started = _parse_any_ts(tv.get("created_at"))
+                        if (((tid in mentioned or tv["short_id"] in mentioned) and
+                             not (event_time and started and started > event_time)) or
+                                (not mentioned and (not event_time or (started and started <= event_time)))):
+                            tv["done"] = True
 
                 m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
                 if m:
@@ -2362,6 +2369,50 @@ def _merge_registry_workers(nodes: list[dict], provider: str) -> list[dict]:
     return merged
 
 
+def _merge_live_process_workers(nodes: list[dict], provider: str, processes: list[dict], now_sec: float) -> list[dict]:
+    """Join exact live process evidence, synthesizing a row before registry flush."""
+    from spawn_evidence import prompt_fragments
+    nodes = [dict(n) for n in nodes]
+    id_key = "thread_id" if provider == "codex" else "session_id"
+    for process in processes:
+        if process.get("provider") != provider or not process.get("parent_conversation_id"):
+            continue
+        sid = process.get("session_id") or process.get("registry_id")
+        exact = [n for n in nodes if (sid and sid in {n.get(id_key), n.get("session_id"), n.get("registry_id")})
+                 or (n.get("pid") and str(n["pid"]) == str(process.get("pid")))]
+        if not exact and process.get("spec"):
+            spec = " ".join(process["spec"].split())
+            for n in nodes:
+                if sid and n.get(id_key) != sid and not n.get("registry_only"):
+                    continue
+                if n.get("status") in ("completed", "failed", "timeout", "done", "closed"):
+                    continue
+                # When a body is available, a shared generated title is insufficient.
+                source = {k: n[k] for k in ("spec", "spec_preview") if n.get(k)} or n
+                fragments = prompt_fragments(source)
+                if fragments and all(" ".join(f.split()) in spec for f in fragments):
+                    exact.append(n)
+        if len(exact) > 1:
+            continue  # Ambiguous prompts never acquire a guessed owner.
+        if exact:
+            node = exact[0]
+            if sid and (node.get("registry_only") or str(node.get(id_key) or "").startswith(f"live-{provider}-")):
+                node[id_key] = sid
+                if "session_id" in node:
+                    node["session_id"] = sid
+        else:
+            node = {id_key: sid or f"live-{provider}-{process['pid']}",
+                    "title": (process.get("spec") or f"{provider} worker").splitlines()[0][:160],
+                    "spec": process.get("spec") or "", "cwd": process.get("cwd") or "",
+                    "source": "exec", "agy_origin": True, "registry_only": True}
+            nodes.append(node)
+        node.update(parent_conversation_id=process["parent_conversation_id"],
+                    pid=process["pid"], is_running=True, live_process=True, updated_at=now_sec,
+                    status="running", turn_completed=False)
+        node.pop("ok", None)
+    return nodes
+
+
 def _maestro_result_ids(content: str) -> set[str]:
     """Recognize actual CLI result objects, not quoted IDs in investigation text."""
     try:
@@ -2384,6 +2435,9 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
 
     ids = {worker.get(k) for k in ("thread_id", "session_id", "registry_id")} - {None, ""}
     candidates = [p for p in parents if identity(p) not in ids]
+    direct = worker.get("parent_conversation_id")
+    if direct and any(identity(p) == direct for p in candidates):
+        return direct
     explicit = [p for p in candidates if identity(p) in
                 (worker.get("parent_id"), worker.get("parent_cid"), worker.get("parent_conversation_id"),
                  worker.get("parent_session_id"), worker.get("parent_thread_id"))
@@ -2397,16 +2451,23 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
         if len(launches) == 1:
             return identity(launches[0])
         candidates = launches
-    title = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", worker.get("spec") or worker.get("title") or "").strip()
+    from spawn_evidence import prompt_fragments
+    fragments = prompt_fragments(worker)
     for by_id in (True, False):
-        matches = [p for p in candidates if any(
-            value in transcripts.get(identity(p), "")
-            for value in (ids if by_id else [title[:200]] if len(title) >= 8 else []))]
+        scores = {}
+        for p in candidates:
+            evidence = transcripts.get(identity(p), "")
+            values = ids if by_id else fragments
+            if not by_id:
+                evidence = " ".join(evidence.split())
+            scores[identity(p)] = sum(
+                (value if by_id else " ".join(value.split())) in evidence for value in values)
+        best = max(scores.values(), default=0)
+        matches = [p for p in candidates if best and scores[identity(p)] == best]
         if matches:
             if len(matches) == 1:
                 return identity(matches[0])
             candidates = matches
-            break
     return None
 
 
@@ -2645,6 +2706,8 @@ def _codex_worker_is_active(node: dict, live_ids: set[str], paths: dict[str, str
 def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
     if node.get("killed"):
         return False
+    if node.get("has_active_bg") or node.get("has_active_cli"):
+        return True
     cid = node.get("conversation_id", "")
     is_sub = bool(
         node.get("is_subagent")
@@ -2653,6 +2716,12 @@ def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
         or (node.get("role") and "Subagent" in str(node.get("role", "")))
     )
     if is_sub:
+        # A planner response can be a progress update while run_command --wait
+        # is still blocked on a worker. Transcript age alone cannot end it.
+        if any(t.get("kind") != "cron" for t in (node.get("background_tasks") or [])):
+            return True
+        if cid and any(t.get("kind") != "cron" for t in _extract_active_bg_tasks(cid, time.time())):
+            return True
         age_sec = None
         last_step = None
         if cid:
@@ -2743,7 +2812,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     transcript_parents, transcript_killed = transcript_state(ag_by_cid)
     ag_parent_ids.update(transcript_parents)
     for cid, node in ag_by_cid.items():
-        if transcript_killed.get(cid, node.get("killed", False)):
+        if cid in transcript_killed:
+            node["killed"] = transcript_killed[cid]
+        if node.get("killed"):
             node.update(killed=True, is_running=False, status="TERMINATED")
     sub_to_root_cid: dict[str, str] = {}
     for cid, node in ag_by_cid.items():
@@ -2757,7 +2828,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     # root visible when a flat descendant is running, without duplicate owners.
     ag_by_cid = {
         cid: ({**node, "children": [child for child_id, child in ag_by_cid.items()
-                                   if sub_to_root_cid.get(child_id) == cid and not child.get("killed")]}
+                                   if sub_to_root_cid.get(child_id) == cid]}
               if cid not in sub_to_root_cid else node)
         for cid, node in ag_by_cid.items()
     }
@@ -2769,6 +2840,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     live_codex_ids, live_agy_ids, live_claude_ids = _running_worker_sessions(now_sec)
     cdx_list = _merge_registry_workers(cdx_list, "codex")
     claude_list = _merge_registry_workers(trees_raw.get("claude", []), "claude")
+    from live_worker_processes import scan_live_worker_processes
+    live_processes = scan_live_worker_processes()
+    live_parent_ids = {p.get("parent_conversation_id") for p in live_processes}
+    for cid, node in ag_by_cid.items():
+        if cid in live_parent_ids:
+            node["has_active_cli"] = True
+    cdx_list = _merge_live_process_workers(cdx_list, "codex", live_processes, now_sec)
+    claude_list = _merge_live_process_workers(claude_list, "claude", live_processes, now_sec)
+    live_codex_ids.update(n["thread_id"] for n in cdx_list if n.get("live_process"))
+    live_claude_ids.update(n["session_id"] for n in claude_list if n.get("live_process"))
     claude_list = [c for c in claude_list if c.get("session_id") in live_claude_ids
                    or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC]
     rollout_paths = _codex_rollout_paths(cdx_list)
@@ -2924,8 +3005,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
     attached_ag_workers_by_parent: dict[str, list[dict]] = {}
     for w_ag in internal_ag_workers:
-        if w_ag.get("killed"):
-            continue
         w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", ((w_ag.get("title") or "").splitlines() or [""])[0]).strip()
         target_p = None
         # 1. Direct parent_conversation_id if it exists in active_ag

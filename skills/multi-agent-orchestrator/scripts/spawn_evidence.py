@@ -3,6 +3,8 @@ from collections import OrderedDict
 import json
 import os
 import re
+import shlex
+import stat
 import threading
 
 WINDOW = 64 * 1024
@@ -11,6 +13,68 @@ CACHE_LIMIT = 4096
 _cache = OrderedDict()
 _versions = {}
 _lock = threading.RLock()
+
+
+def read_spec_file(path, limit=400):
+    """Read only a small preview of a regular spec file, invalidated by stat."""
+    try:
+        metadata = os.stat(path)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size >= 256 * 1024:
+            return ''
+        def load(filename):
+            with open(filename, encoding='utf-8', errors='replace') as stream:
+                return stream.read(limit)
+        return cached(path, ('spec-file', limit), load)
+    except (OSError, ValueError):
+        return ''
+
+
+def command_evidence(command, *, include_files=True):
+    """Extract prompt bodies before bounding shell command evidence; never execute it."""
+    pieces = [compact(command)]
+    # Keep heredoc bodies even when a long launcher/options prefix precedes them.
+    for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][\w]*)['\"]?[^\n]*\n", command):
+        end = re.search(r'(?m)^\s*' + re.escape(match[1]) + r'\s*$', command[match.end():])
+        body = command[match.end():match.end() + end.start()] if end else command[match.end():]
+        pieces.append(body[:600])
+    # A quoted option may contain spaces. shlex parses tokens only, without shell evaluation.
+    for match in re.finditer(r'--(spec-file|spec)(?:=|\s+)', command):
+        try:
+            lexer = shlex.shlex(command[match.end():], posix=True)
+            lexer.whitespace_split = True
+            value = next(lexer)
+        except (ValueError, StopIteration):
+            continue
+        if match[1] == 'spec-file':
+            # Always retain the reference so its own stat can invalidate the
+            # preview without reopening an unchanged parent transcript.
+            pieces.append('--spec-file ' + shlex.quote(value))
+            if include_files:
+                pieces.append(read_spec_file(value))
+        else:
+            pieces.append(value[:600])
+    return compact('\n'.join(pieces))
+
+
+def is_worker_command(command):
+    return bool(re.search(
+        r'(?:^|[\s;/])(?:maestro(?:\.py)?|agy-orca)\s+worker-start\b'
+        r'|(?:^|[\s;/])codex\s+(?:exec|resume)\b'
+        r'|(?:^|[\s;/])claude\s+(?:-p\b|--print\b|--session-id\b)', command))
+
+
+def prompt_fragments(worker):
+    """Match synthesized titles and the original body independently."""
+    fragments = []
+    for key in ('spec', 'spec_preview', 'title', 'display_name'):
+        text = re.sub(r'^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?', '', str(worker.get(key) or '')).strip()
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip() and p.strip() != 'ultrathink']
+        if not paragraphs:
+            continue
+        for part in [paragraphs[0].splitlines()[0], *paragraphs[1:2]]:
+            if len(part) >= 8:
+                fragments.append(part[:120])
+    return tuple(dict.fromkeys(fragments))
 
 
 def cached(path, kind, loader):
@@ -104,7 +168,7 @@ def rollout_evidence(path):
         snippets = Snippets()
         with open(path, encoding='utf-8', errors='replace') as stream:
             for line in stream:
-                if 'maestro' not in line and 'session_id' not in line and 'thread_id' not in line:
+                if not any(token in line for token in ('maestro', 'codex', 'claude', 'session_id', 'thread_id')):
                     continue
                 try:
                     step = json.loads(line)
@@ -115,16 +179,17 @@ def rollout_evidence(path):
                     continue
                 if payload.get('type') == 'function_call':
                     args = payload.get('arguments') or ''
-                    if 'maestro' in args and 'worker-start' in args:
-                        try:
-                            args = json.loads(args)
-                        except (ValueError, TypeError):
-                            pass
-                        snippets.append(compact(str(args)))
+                    try:
+                        args = json.loads(args)
+                    except (ValueError, TypeError):
+                        pass
+                    command = (args.get('cmd') or args.get('command') or '') if isinstance(args, dict) else str(args)
+                    if is_worker_command(command):
+                        snippets.append(command_evidence(command, include_files=False))
                 elif payload.get('type') == 'function_call_output':
                     snippets.append(compact(str(payload.get('output') or '')))
         return snippets.text
-    return cached(path, 'rollout-evidence', load)
+    return command_evidence(cached(path, 'rollout-evidence', load))
 
 
 def last_step_state(path):

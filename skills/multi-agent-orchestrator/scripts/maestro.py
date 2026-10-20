@@ -306,6 +306,12 @@ def record_spawned_session(session_id: str, info: dict, *, replace_session_id: s
     import tempfile
     temporary = None
     try:
+        from live_worker_processes import detect_parent_conversation_id
+        info = dict(info)
+        if not info.get("parent_conversation_id"):
+            parent_cid = detect_parent_conversation_id()
+            if parent_cid:
+                info["parent_conversation_id"] = parent_cid
         os.makedirs(os.path.dirname(SPAWN_REGISTRY_PATH), exist_ok=True)
         with open(SPAWN_REGISTRY_PATH + ".lock", "a", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

@@ -1042,9 +1042,25 @@ def _parse_background_tasks(tpath):
                 c = str(d.get("content") or "")
                 created_iso = d.get("created_at") or ""
 
-                if "stopped due to server restart" in c.lower() or "server restart" in c.lower():
-                    for tv in tasks.values():
-                        tv["done"] = True
+                # Restart notices can be appended after newer task records.
+                # Compare event times rather than flushing every known task.
+                runtime_restart = (
+                    "stopped due to server restart" in c.lower()
+                    and d.get("type") == "SYSTEM_MESSAGE"
+                    and d.get("source", "SYSTEM") == "SYSTEM"
+                )
+                if runtime_restart:
+                    event_time = _timing_timestamp(created_iso)
+                    mentioned = set(re.findall(r"[\w./-]*task-\d+", c))
+                    for tid, tv in tasks.items():
+                        started = _timing_timestamp(tv.get("created_at"))
+                        explicitly_named = tid in mentioned or tv["short_id"] in mentioned
+                        before_restart = not mentioned and (
+                            event_time is None or (started is not None and started <= event_time)
+                        )
+                        after_restart = event_time is not None and started is not None and started > event_time
+                        if (explicitly_named and not after_restart) or before_restart:
+                            tv["done"] = True
 
                 m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
                 if m:
@@ -1189,6 +1205,9 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
     spawn_reg = _load_agy_spawn_registry()
     from agy_transcript_state import transcript_state
     transcript_parents, transcript_killed = transcript_state(trajs)
+    from live_worker_processes import scan_live_worker_processes
+    active_cli_parents = {process.get("parent_conversation_id")
+                          for process in scan_live_worker_processes()}
 
     nodes = {}
     for cid, summary in trajs.items():
@@ -1245,6 +1264,11 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             if str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"):
                 status = "CASCADE_RUN_STATUS_DONE"
 
+        background_tasks = extract_active_bg_tasks(cid, time.time())
+        has_active_bg = any(task.get("kind") != "cron" for task in background_tasks) or cid in active_cli_parents
+        if has_active_bg:
+            is_running_agy = True
+            status = "CASCADE_RUN_STATUS_RUNNING"
         killed = transcript_killed.get(cid, False)
         if killed:
             is_running_agy = False
@@ -1270,7 +1294,8 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "created_time": created_time,
             "last_modified_time": last_mod,
             **_extract_agy_turn_timing(cid, created_time, last_mod),
-            "background_tasks": extract_active_bg_tasks(cid, time.time()),
+            "background_tasks": background_tasks,
+            "has_active_bg": has_active_bg and not killed,
             "workspaces": workspaces,
             "agy_origin": True,
             "nesting_depth": depth,

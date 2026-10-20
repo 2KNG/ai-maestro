@@ -189,9 +189,9 @@ class WorkerAttributionTests(unittest.TestCase):
                     self.log('e6219556', '\n'.join(map(json.dumps, spawn + [stop] + ([revive] if revived else []))))
                     parents, killed = transcript_state(['e6219556'])
                     self.assertEqual(parents['child000'], 'e6219556')
-                    self.assertEqual(killed['child000'], not revived)
+                    self.assertEqual(killed['child000'], stop is not restart and not revived)
                     tree, active, _ = self.render([self.node('e6219556'), self.node('child000')])
-                    self.assertEqual('node-sub-child000' in tree.nodes, revived)
+                    self.assertIn('node-sub-child000', tree.nodes)
         self.log('e6219556', '\n'.join(map(json.dumps, [restart] + spawn)))
         self.assertFalse(transcript_state(['e6219556'])[1]['child000'])
 

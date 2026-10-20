@@ -1,4 +1,6 @@
 """Exact Antigravity spawn edges and ordered child lifecycle from transcripts."""
+import datetime
+import math
 import json
 import os
 import re
@@ -15,9 +17,41 @@ def decode(value):
     return value
 
 
+def _timestamp(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            value = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _latest_activity(path):
+    """Read recent event times, never file mtime (copying logs is not activity)."""
+    from spawn_evidence import cached
+    def load(path):
+        latest = None
+        with open(path, 'rb') as stream:
+            stream.seek(max(0, os.fstat(stream.fileno()).st_size - 65536))
+            for line in stream.read().splitlines():
+                try:
+                    step = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(step, dict):
+                    continue
+                stamp = _timestamp(step.get('created_at') or step.get('timestamp'))
+                if stamp is not None:
+                    latest = max(latest or stamp, stamp)
+        return latest
+    return cached(path, 'agy-latest-activity', load)
+
+
 def _parse_transcript(path):
-    from spawn_evidence import compact, result_ids, Snippets
-    parents, killed = {}, {}
+    from spawn_evidence import compact, command_evidence, is_worker_command, result_ids, Snippets
+    parents, killed, kill_times = {}, {}, {}
     children = set()
     pending_spawn = False
     cid = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))))
@@ -44,14 +78,7 @@ def _parse_transcript(path):
                     snippets.append(compact(output))
                     launches.update(result_ids(output))
             activity = activity or 'maestro' in line
-            # Only runtime messages count; a user quoting the marker is not a stop.
-            if RESTART in content and (
-                (step.get('type') == 'SYSTEM_MESSAGE' and step.get('source', 'SYSTEM') == 'SYSTEM'
-                 and ('sender=system' in content or content.strip() == RESTART))
-                or content.strip() == RESTART
-            ):
-                for child in children:
-                    killed[child] = True
+            # Restart notices describe background tasks, not child lifecycles.
             if pending_spawn and 'Created the following subagents:' in content:
                 for child in re.findall(r'"conversationId"\s*:\s*"([^"\s]+)"', content):
                     if child != cid:
@@ -68,8 +95,8 @@ def _parse_transcript(path):
                     continue
                 if name == 'run_command':
                     command = str(decode(args.get('CommandLine') or ''))
-                    if 'maestro' in command and 'worker-start' in command:
-                        snippets.append(compact(command))
+                    if is_worker_command(command):
+                        snippets.append(command_evidence(command, include_files=False))
                 if name == 'invoke_subagent':
                     pending_spawn = True
                 elif name in ('manage_subagents', 'send_message'):
@@ -80,24 +107,39 @@ def _parse_transcript(path):
                     for child in children:
                         if name == 'manage_subagents' and (action == 'kill_all' or (action == 'kill' and child in targets)):
                             killed[child] = True
+                            kill_times[child] = _timestamp(step.get('created_at') or step.get('timestamp'))
                         elif name == 'send_message' and child in targets:
                             killed[child] = False
-    return parents, killed, snippets.text, frozenset(launches), activity
+    return parents, killed, snippets.text, frozenset(launches), activity, kill_times
 
 
 def transcript_summary(path):
-    from spawn_evidence import cached
-    return cached(path, 'agy-transcript', _parse_transcript)
+    from spawn_evidence import cached, command_evidence
+    summary = cached(path, 'agy-transcript', _parse_transcript)[:5]
+    # Spec files have an independent lifecycle from the transcript that names them.
+    return (*summary[:2], command_evidence(summary[2]), *summary[3:])
 
 
 def transcript_state(cids):
-    parents, killed = {}, {}
+    from spawn_evidence import cached
+    parents, killed, kill_times = {}, {}, {}
     for cid in cids:
         path = os.path.expanduser(f'~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl')
         try:
-            p, k, _, _, _ = transcript_summary(path)
+            p, k, _, _, _, times = cached(path, 'agy-transcript', _parse_transcript)
         except OSError:
             continue
         parents.update(p)
         killed.update(k)
+        kill_times.update(times)
+    for child, stopped in killed.items():
+        if not stopped or kill_times.get(child) is None:
+            continue
+        path = os.path.expanduser(f'~/.gemini/antigravity/brain/{child}/.system_generated/logs/transcript.jsonl')
+        try:
+            latest = _latest_activity(path)
+        except OSError:
+            continue
+        if latest is not None and latest > kill_times[child]:
+            killed[child] = False
     return parents, killed
