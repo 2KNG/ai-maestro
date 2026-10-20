@@ -2420,7 +2420,7 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
     return None
 
 
-def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
+def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float, *, root: bool = False) -> str:
     sid = _html_esc(str(node.get("session_id") or node.get("id") or ""))
     model = node.get("model") or "claude-opus-5-5"
     effort = node.get("effort") or node.get("reasoning_effort") or "high"
@@ -2479,8 +2479,10 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     pct = float(tokens.get("percent") or 0.0)
 
     c_ts = int(_parse_any_ts(node.get("updated_at")) or 0)
+    row_class = "tree-node" if root else "tree-node sub-node sub-ripening"
+    scope = _repo_from_uris_or_cwd(None, node.get("cwd") or "")[1]
     return (
-        f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}" data-idle-age="{int(age)}" data-done-ts="{c_ts}">'
+        f'<div class="{row_class}" data-scope="{scope}" data-running="{int(running)}" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}" data-idle-age="{int(age)}" data-done-ts="{c_ts}">'
         f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-claude-{sid}\')">'
         f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
         f'{c_icon}'
@@ -2488,6 +2490,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
         f'{c_pill}'
         f'{_context_pill_html(fmt_k(total), pct, "green", node, running, dot)}'
         f'<span class="row-actions">'
+        f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{c_node_id}\', \'claude --resume {sid}\', this)" title="세션 가져오기">↗</button>'
         f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(title_line[:24])}\')">✕</button>'
         f'</span>'
         f'</div></div>'
@@ -3245,8 +3248,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             continue
         cwd = cdx.get("cwd") or os.path.expanduser("~/dev")
         repo, scope = _repo_from_uris_or_cwd(None, cwd)
-        if cdx.get("agy_origin") and cdx.get("source") == "exec" and (repo in seen_active_repos or repo in active_vscode_repos):
-            continue
         if scope == "current" or is_pinned or node_id in imported:
             active_curr_cnt += 1
         disp_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?(?:[A-Za-z0-9_.-]+\s*·\s*)?", "", (cdx.get("display_name") or cdx.get("title") or "Codex Agent")).strip()
@@ -3380,7 +3381,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             continue
         active_entries.append({"is_main_orch": False, "is_live_running": sid in live_claude_ids,
                                "updated_ts": _parse_any_ts(worker.get("updated_at")) or 0,
-                               "html": _claude_worker_row(worker, live_claude_ids, now_sec)})
+                               "html": _claude_worker_row(worker, live_claude_ids, now_sec, root=True)})
     active_entries.sort(key=lambda item: (
         0 if item["is_main_orch"] else 1,
         0 if item["is_live_running"] else 1,

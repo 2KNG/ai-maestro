@@ -3291,7 +3291,7 @@
         const impBtn = node.querySelector(':scope > .agent-row .import-btn');
         if (impBtn && !importedCascades[id]) {
           const onclickAttr = impBtn.getAttribute('onclick') || '';
-          const m = onclickAttr.match(/codex resume [0-9a-f-]+/i);
+          const m = onclickAttr.match(/(?:codex resume|claude (?:--resume|-r)) [0-9a-f-]+/i);
           if (m) {
             const nameEl = node.querySelector(':scope > .agent-row .agent-name');
             const label = nameEl ? nameEl.textContent.trim() : id;
@@ -4018,7 +4018,7 @@
 
     async function initLiveBridge() {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3500);
+      const timeout = setTimeout(() => controller.abort(), 6000);
       try {
         const r = await fetch(`${BRIDGE_URL}/api/status`, { signal: controller.signal });
         const j = await r.json();
@@ -4203,9 +4203,7 @@
     } catch (_) {}
     initLiveBridge().finally(notifyParentResize);
     setInterval(tickSubRipening, 1000);
-    if (window.parent === window) {
-      setInterval(initLiveBridge, 4000);
-    }
+    setInterval(initLiveBridge, 4000);
   </script>
 </body>
 </html>

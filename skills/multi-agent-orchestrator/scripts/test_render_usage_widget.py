@@ -18,6 +18,23 @@ class RenderingTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
 
+    def test_unmatched_active_workers_remain_top_level(self):
+        now = datetime.now(timezone.utc)
+        parent = dict(conversation_id='parent-test', status='RUNNING',
+                      last_modified_time=now.isoformat(), workspaces=['file:///home/u24c9g5090r64/dev'])
+        codex = dict(thread_id='standalone-codex', source='exec', agy_origin=True,
+                     is_running=True, status='running', updated_at=now.timestamp(),
+                     cwd='/home/u24c9g5090r64/dev')
+        claude = dict(session_id='standalone-claude', is_running=True,
+                      updated_at=now.timestamp(), cwd='/home/u24c9g5090r64/dev')
+        with mock.patch.object(widget, '_worker_parent', return_value=None), \
+             mock.patch.object(widget, '_running_worker_sessions', return_value=({'standalone-codex'}, set(), {'standalone-claude'})):
+            active, _, _, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'antigravity': [parent], 'codex': [codex], 'claude': [claude]}}, {})
+        self.assertIn('data-node-id="node-cdx-standalone-codex"', active)
+        self.assertIn('data-running="1" data-node-id="node-sub-claude-standalone-claude"', active)
+        self.assertIn('claude --resume standalone-claude', active)
+
     def test_closed_sessions_use_exact_recency_and_stop_at_eight(self):
         # Sessions older than seven days are closed; all share age_days, in oldest-first input order.
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Session {i}',

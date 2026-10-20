@@ -39,6 +39,32 @@ def _is_delegation_command(cmd_str: str) -> bool:
         return False
     return any(m in cmd_str for m in ("maestro worker-start", "agy-orca worker-start", "maestro.py worker-start", "agy_orca.py worker-start", "codex exec", "claude -p"))
 
+FLASH_MARKERS = ("MODEL_TIER_FLASH", "MODEL_PLACEHOLDER_M322")
+
+
+def _flash_session(payload: dict, session_id: str) -> bool:
+    if any(marker in key or marker in value
+           for key, value in os.environ.items() for marker in FLASH_MARKERS):
+        return True
+    path = payload.get("transcript_path") or payload.get("transcriptPath")
+    if not path and session_id != "default" and os.path.basename(session_id) == session_id:
+        path = os.path.expanduser(
+            f"~/.gemini/antigravity/brain/{session_id}/.system_generated/logs/transcript.jsonl")
+    if path:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as transcript:
+                return any(any(marker in line for marker in FLASH_MARKERS) for line in transcript)
+        except OSError:
+            pass
+    return False
+
+
+def _block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}), flush=True)
+    print(reason, file=sys.stderr, flush=True)
+    sys.exit(2)
+
+
 def main() -> int:
     try:
         raw = sys.stdin.read()
@@ -47,6 +73,27 @@ def main() -> int:
         payload = {}
     event = (sys.argv[1] if len(sys.argv) > 1 else "") or payload.get("hook_event_name") or payload.get("event") or "PreInvocation"
 
+    session_id = str(payload.get("conversationId") or payload.get("conversation_id") or payload.get("session_id") or "default")
+    tool_call = payload.get("toolCall") if isinstance(payload.get("toolCall"), dict) else {}
+    tool_name = str(tool_call.get("name") or payload.get("tool_name") or payload.get("tool") or "")
+    tool_input = tool_call.get("arguments") or payload.get("tool_input") or payload.get("input") or {}
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except ValueError:
+            tool_input = {"raw": tool_input}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if event in ("PreToolUse", "BeforeTool"):
+        if tool_name == "invoke_subagent":
+            for entry in tool_input.get("Subagents", tool_input.get("subagents", [])) or []:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("Model") or "").lower() in ("flash", "flash_lite") and str(entry.get("TypeName") or "self").lower() != "research":
+                    _block("BLOCKED BY MAESTRO HARNESS: Gemini Flash (Model='flash') is strictly READ-ONLY. You MUST set TypeName='research' when invoking Flash. Never allow Flash to touch or edit code! Use maestro worker-start (gpt-6-astra / Opus 5.5 / gpt-6.1-sol) or Model='pro' for any coding.")
+        if tool_name in SOLO_WRITE_TOOLS and _flash_session(payload, session_id):
+            _block("BLOCKED BY MAESTRO HARNESS: Gemini Flash is strictly READ-ONLY and forbidden from modifying any file!")
+
     # Immediately bypass if running inside an active sub-worker (prevents blocking worker execution)
     if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1":
         if event in ("PreToolUse", "BeforeTool"):
@@ -54,7 +101,6 @@ def main() -> int:
         return 0
 
     is_agy = "conversationId" in payload or "toolCall" in payload
-    session_id = str(payload.get("conversationId") or payload.get("session_id") or "default")
     st = _load_session_state(session_id)
 
     if event in ("PreInvocation", "UserPromptSubmit", "BeforeAgent", "SessionStart"):
@@ -72,14 +118,6 @@ def main() -> int:
         return 0
 
     if event in ("PreToolUse", "BeforeTool"):
-        tool_call = payload.get("toolCall") if isinstance(payload.get("toolCall"), dict) else {}
-        tool_name = str(tool_call.get("name") or payload.get("tool_name") or payload.get("tool") or "")
-        tool_input = tool_call.get("arguments") or payload.get("tool_input") or payload.get("input") or {}
-        if isinstance(tool_input, str):
-            try:
-                tool_input = json.loads(tool_input)
-            except Exception:
-                tool_input = {"raw": tool_input}
         cmd_line = str(tool_input.get("CommandLine") or tool_input.get("command") or tool_input.get("cmd") or "")
         if tool_name in DELEGATION_TOOLS or _is_delegation_command(cmd_line):
             st["solo_streak"] = 0
