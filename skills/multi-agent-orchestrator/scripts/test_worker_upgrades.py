@@ -14,6 +14,7 @@ import check_all_usage as usage
 import maestro as workers
 import maestro_memory
 import benchmark_sync
+import maestro_harness_hook
 
 
 class ClaudeResetTests(unittest.TestCase):
@@ -392,6 +393,72 @@ class WorkerDispatchTests(unittest.TestCase):
             lines = prompt.splitlines()
             self.assertTrue(lines[0].startswith("✦ implement feature"))
             self.assertEqual(lines[2], "ultrathink")
+
+    def test_wait_defaults_to_true_and_supports_no_wait(self):
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--pool", "codex", "--spec", "default wait test"]), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            self.assertTrue(codex.call_args.kwargs.get("wait"))
+
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--pool", "codex", "--spec", "no wait test", "--no-wait"]), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            self.assertFalse(codex.call_args.kwargs.get("wait"))
+
+    def test_spec_from_file_and_stdin(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tf:
+            tf.write("Spec from temporary file")
+            tf_name = tf.name
+
+        try:
+            with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--pool", "codex", "--spec-file", tf_name]), \
+                 mock.patch.object(usage, "collect_usage", return_value={}), \
+                 mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+                 mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+                 redirect_stdout(io.StringIO()):
+                workers.main()
+                self.assertEqual(codex.call_args.args[0], "Spec from temporary file")
+        finally:
+            os.unlink(tf_name)
+
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--pool", "codex"]), \
+             mock.patch.object(workers.sys.stdin, "isatty", return_value=False), \
+             mock.patch.object(workers.sys.stdin, "read", return_value="Spec from heredoc stdin"), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            self.assertEqual(codex.call_args.args[0], "Spec from heredoc stdin")
+
+    def test_hook_backtick_warning(self):
+        hook_payload = json.dumps({
+            "event": "PreToolUse",
+            "conversationId": "test-conv",
+            "toolCall": {
+                "name": "run_command",
+                "arguments": {
+                    "CommandLine": 'maestro worker-start --pool codex --spec "`ssh orin` echo test"'
+                }
+            }
+        })
+        stderr_buf = io.StringIO()
+        stdout_buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"MAESTRO_WORKER_ACTIVE": ""}), \
+             mock.patch.object(maestro_harness_hook.sys, "argv", ["maestro_harness_hook.py"]), \
+             mock.patch.object(maestro_harness_hook.sys.stdin, "read", return_value=hook_payload), \
+             mock.patch.object(maestro_harness_hook.sys, "stderr", stderr_buf), \
+             mock.patch.object(maestro_harness_hook.sys, "stdout", stdout_buf):
+            ret = maestro_harness_hook.main()
+            self.assertEqual(ret, 0)
+            self.assertIn("백틱(`)", stderr_buf.getvalue())
+            self.assertIn('"decision":"allow"', stdout_buf.getvalue())
 
 
 if __name__ == "__main__":

@@ -86,6 +86,9 @@ def main() -> int:
             st["read_streak"] = 0
             st["delegated_in_turn"] = True
             _save_session_state(session_id, st)
+            if "worker-start" in cmd_line and ("`" in cmd_line or "$(" in cmd_line):
+                sys.stderr.write("[⚠️ MAESTRO HARNESS] --spec에 백틱(`) 또는 $(...)이 포함되어 쉘 명령어 치환으로 프로세스가 행(hang)되거나 충돌할 수 있습니다. 작은따옴표 Heredoc(<<'EOF' ... EOF) 또는 --spec-file을 사용하세요.\n")
+                sys.stderr.flush()
         elif tool_name in SOLO_READ_TOOLS:
             st["read_streak"] = int(st.get("read_streak", 0)) + 1
             _save_session_state(session_id, st)

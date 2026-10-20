@@ -13,6 +13,7 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
   - Codex 서브 워커(`parent_pool == 'codex'`)는 Codex 워커(`--pool codex`, `gpt-6-astra` 또는 `gpt-6.1-sol`)로만 하위 위임한다 (Claude 호출 금지).
   - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`를 자유롭게 지정할 수 있으나, `ultra`는 `high`로 강제 조정되며 속도 티어(`fast`, `ultrafast`, `priority`)는 `default`로 강제 고정되어 불필요한 쿼터 낭비를 방지한다.
   - 최대 깊이 가드: `MAESTRO_WORKER_DEPTH >= 2`인 리프 워커는 추가 하위 위임(Depth 3)이 차단되며 직접 태스크를 완수해야 한다.
+- **Shell Backtick Crash Guard (`--spec` 백틱 폭발 방지)**: `maestro worker-start` 호출 시 프롬프트 안에 백틱(`` ` ``), `$`, `()`, 따옴표가 포함될 경우 절대 큰따옴표(`--spec "..."`) 안에 그냥 넣지 않는다(Bash가 백틱 안의 `` `ssh orin` ``이나 `` `func()` ``를 쉘 명령어로 실행해 크래시·무한 행이 발생함). 반드시 **작은따옴표 Heredoc (`<<'EOF' ... EOF`)** 또는 `--spec '...'` / `--spec-file`을 사용한다!
 
 ## 1. Task-Domain + Live Benchmark-Driven Routing & Speed Tier Policy (`maestro`)
 - Task-Domain + Live Benchmark-Driven Routing with Low-Quota Guard (`LOW_QUOTA_THRESHOLD = 20.0%`):

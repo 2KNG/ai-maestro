@@ -3644,6 +3644,8 @@
       return String(html || '')
         .replace(/<!--__[A-Z_]+__-->/g, '')
         .replace(/data-sub-age="\d+"/g, '')
+        .replace(/data-idle-age="\d+"/g, '')
+        .replace(/<span class="ctx-time-txt"[^>]*>[\s\S]*?<\/span>/g, '')
         .replace(/title="[^"]*후 증발\)"/g, '')
         .replace(/status-dot age-(?:green|yellow|orange|red)/g, 'status-dot age-any')
         .replace(/ctx-pill age-(?:green|yellow|orange|red)/g, 'ctx-pill age-any')
@@ -3904,12 +3906,17 @@
         }
       });
 
-      // Re-order oldBr children to match exact order of newChildren
+      // Re-order oldBr children to match exact order of newChildren only if position changed
+      let targetIdx = 0;
       newChildren.forEach(nc => {
         const nid = nc.getAttribute('data-node-id') || nc.dataset.nodeId;
         if (!nid) return;
         const oc = oldBr.querySelector(`:scope > [data-node-id="${nid}"]`);
-        if (oc) oldBr.appendChild(oc);
+        if (!oc) return;
+        if (oldBr.children[targetIdx] !== oc) {
+          oldBr.insertBefore(oc, oldBr.children[targetIdx] || null);
+        }
+        targetIdx++;
       });
 
       // Update .tree-branch text (├─ for non-last, └─ for last visible child)
@@ -4011,7 +4018,7 @@
 
     async function initLiveBridge() {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 600);
+      const timeout = setTimeout(() => controller.abort(), 3500);
       try {
         const r = await fetch(`${BRIDGE_URL}/api/status`, { signal: controller.signal });
         const j = await r.json();

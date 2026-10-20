@@ -4,6 +4,7 @@
   - Depth 1 Claude 서브 워커(`parent_pool == 'claude'`)가 대규모 독립 모듈 분할 시 분할 계획(`[SUB-ORCHESTRATION REPORT]`)을 보고하고 오직 Claude 계열(`--pool claude`, `Opus 5.5`)로만 Depth 2 리프 워커(`MAESTRO_WORKER_DEPTH=2`)를 분기 기동한다 (Codex 호출 금지).
   - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`로 자유 지정 가능하나 `ultra`는 `high`로 자동 조정되며, 속도 티어는 `default`로 고정된다.
   - 최대 깊이 가드: `MAESTRO_WORKER_DEPTH >= 2`인 리프 워커는 추가 위임(Depth 3)이 차단되며 직접 실행해야 한다.
+- **Shell Backtick Crash Guard (`--spec` 백틱 폭발 방지)**: `maestro worker-start` 호출 시 프롬프트 안에 백틱(`` ` ``), `$`, `()`, 따옴표가 포함될 경우 절대 큰따옴표(`--spec "..."`) 안에 그냥 넣지 않는다(Bash가 백틱 안의 `` `ssh orin` ``이나 `` `func()` ``를 쉘 명령어로 실행해 크래시·무한 행이 발생함). 반드시 **작은따옴표 Heredoc (`<<'EOF' ... EOF`)** 또는 `--spec '...'` / `--spec-file`을 사용한다!
 
 ## Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 

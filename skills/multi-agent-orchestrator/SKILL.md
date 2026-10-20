@@ -66,6 +66,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
   - Codex sub-worker (`parent_pool == 'codex'`) is strictly locked to Codex workers (`--pool codex`, `gpt-6-astra` or `gpt-6.1-sol`).
   - Sub-workers can choose `--effort` (`low`, `medium`, `high`) freely, but `ultra` is clamped to `high`, and speed tiers (`fast`, `ultrafast`, `priority`) are clamped to `default` (preventing 2x/3x quota burn without user opt-in).
   - Max depth guard: `MAESTRO_WORKER_DEPTH >= 2` blocks Depth 3 recursion and instructs the leaf worker to execute directly.
+- **Shell Backtick Crash Guard (`--spec` 백틱 폭발 방지)**: `maestro worker-start` 호출 시 프롬프트 안에 백틱(`` ` ``), `$`, `()`, 따옴표가 포함될 경우 절대 큰따옴표(`--spec "..."`) 안에 그냥 넣지 않는다(Bash가 백틱 안의 `` `ssh orin` ``이나 `` `func()` ``를 쉘 명령어로 실행해 크래시·무한 행이 발생함). 반드시 **작은따옴표 Heredoc (`<<'EOF' ... EOF`)** 또는 `--spec '...'` / `--spec-file`을 사용한다!
 - **PC 조작 / 데스크탑 GUI 제어 / Computer-Use 작업**: OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`)의 Computer Use 스킬이 가장 안정적이므로, PC 화면 조작·마우스/키보드 제어·데스크탑 앱 자동화 작업은 GPT(`--pool codex`)로 우선 라우팅한다 (`--pool auto` 사용 시에도 키워드 감지 시 자동 `codex`로 라우팅).
 - Run Claude-pool and Codex-pool workers in parallel when useful; balance by `ai-usage` remaining %.
 - **Every response** must silently run `~/.local/bin/ai-usage-widget <appDataDir>/brain/<conversation-id>/usage_widget.html` in the background. Do NOT embed `<agent-embed>` in chat unless the user explicitly says `"위젯 띄워줘"` / `"위젯 인라인으로 보여줘"`.
