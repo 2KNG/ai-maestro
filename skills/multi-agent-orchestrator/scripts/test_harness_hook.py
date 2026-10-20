@@ -52,3 +52,10 @@ class FlashLockTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
             path.write_text('{"model":"pro"}\n')
             self.assertEqual(self.run_hook({'tool_name': 'write_to_file', 'transcript_path': str(path)}).returncode, 0)
+
+    def test_schedule_polling_for_subagent_is_blocked(self):
+        result = self.run_hook({'tool_name': 'schedule', 'tool_input': {
+            'DurationSeconds': 15, 'Prompt': 'Wait for subagent'}})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['decision'], 'block')
+        self.assertIn('Never use schedule() timers', result.stderr)

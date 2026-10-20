@@ -8,6 +8,7 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
    - 메인 에이전트 단독 도구 연속 실행 2회 초과 금지 (Hard Solo-Tool Cap, 단 읽기 전용 `view_file`은 최대 4회까지 허용).
    - Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock): Depth 1 서브 워커가 3개 이상 독립 모듈 처리 시 분할 계획 보고 후 동일 모델 패밀리(Claude→Claude, Codex→Codex) 내에서만 Depth 2 리프 워커 분기 기동. effort는 최대 `high`로 제한되며 속도 티어는 `default` 고정. Depth 2 리프 워커는 추가 위임(Depth 3)이 차단되며 직접 완수해야 함.
    - Shell Backtick Crash Guard (`--spec` 백틱 폭발 방지): `maestro worker-start` 호출 시 프롬프트 안에 백틱(`` ` ``), `$`, `()`, 따옴표가 포함될 경우 절대 큰따옴표(`--spec "..."`) 안에 그냥 넣지 않는다(Bash가 백틱 안의 `` `ssh orin` ``이나 `` `func()` ``를 쉘 명령어로 실행해 크래시·무한 행이 발생함). 반드시 작은따옴표 Heredoc (`<<'EOF' ... EOF`) 또는 `--spec '...'` / `--spec-file`을 사용한다!
+   - Schedule Polling Hard Block: `schedule()`을 subagent/task 상태 확인이나 대기에 사용하지 않는다. `DurationSeconds`가 120 미만이거나 `TimerCondition`이 빈 값/`never`가 아니거나, `Prompt`에 `wait for`, `subagent`, `check on`, `status`, `서브에이전트`, `대기`, `확인`이 포함되면 하네스가 호출을 차단한다. Antigravity Reactive Wakeup을 사용하려면 도구 호출을 멈추고 즉시 턴을 끝낸다.
 2. Task-Domain + Live Benchmark-Driven Routing & Speed Tiers:
    - Task-Fit Benchmark Routing with Low-Quota Guard (`LOW_QUOTA_THRESHOLD = 20.0%`): 20% 미만 진입 전까지 실시간 벤치마크 점수·태스크 적합성 우선 자동 배정 (긴 호흡 코딩: `gpt-6.1-sol`, 심층 추론: `Gemini 4 Argon` & `gpt-6-astra`, 모션/UI: `Opus 5.5`, PC 조작: `gpt-6.1-sol`, 빠른 탐색: `Gemini 3.8 Flash`, 일반 코딩: `gpt-6-astra`, 가벼운 수정/테스트: `gpt-6-luna` · 4 Argon 7d < 50% 시 보호용 1순위 투입).
    - `Opus 5.5 Fast (claude-fast · 2x quota)`: 명시적 fast 요청 전용.

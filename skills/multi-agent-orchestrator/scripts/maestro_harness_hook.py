@@ -85,6 +85,16 @@ def main() -> int:
     if not isinstance(tool_input, dict):
         tool_input = {}
     if event in ("PreToolUse", "BeforeTool"):
+        if tool_name == "schedule":
+            dur = tool_input.get("DurationSeconds")
+            cond = str(tool_input.get("TimerCondition") or "").strip().lower()
+            prompt_txt = str(tool_input.get("Prompt") or "").strip().lower()
+            if dur is not None and (
+                int(dur) < 120
+                or cond not in ("", "never")
+                or any(k in prompt_txt for k in ("wait for", "subagent", "check on", "status", "서브에이전트", "대기", "확인"))
+            ):
+                _block("BLOCKED BY MAESTRO HARNESS: Never use schedule() timers to poll or wait for subagents/tasks! Antigravity has native Reactive Wakeup — stop calling tools and end your turn immediately; the system will automatically wake you when the subagent or background task finishes.")
         if tool_name == "invoke_subagent":
             for entry in tool_input.get("Subagents", tool_input.get("subagents", [])) or []:
                 if not isinstance(entry, dict):
