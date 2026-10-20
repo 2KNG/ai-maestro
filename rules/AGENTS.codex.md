@@ -1,6 +1,6 @@
 # Codex Orchestration Rules (`ai-maestro`)
 - Default tier: `service_tier = "default"` (standard) for background / cron / long autonomous work. Use `"priority"` (`Fast` ⚡) only for live interactive ping-pong, and `"ultrafast"` (`⚡⚡⚡`) only when urgent real-time turnaround is explicitly requested (see Speed Tier Policy below).
-- For parallel sub-tasks, spawn child workers or use `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-ultra|claude-fast|agy-argon|agy-claude|agy-flash`; `claude-ultra` / `opus-ultra` / `opus-5.5-ultra` = Opus 5.5 `--effort max` + `ultrathink`, 3x quota; `--model gpt-6-astra` for parallel submodules; `--effort low|medium|high|xhigh|max|ultra`, `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- For parallel sub-tasks, spawn child workers or use `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|codex-luna|claude|claude-ultra|claude-fast|agy-argon|agy-claude|agy-flash`; `claude-ultra` / `opus-ultra` / `opus-5.5-ultra` = Opus 5.5 `--effort max` + `ultrathink`, 3x quota; `--model gpt-6-astra` for parallel submodules; `--effort low|medium|high|xhigh|max|ultra`, `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
 - **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
   - Depth 1 Codex 서브 워커(`parent_pool == 'codex'`)가 대규모 독립 모듈 분할 시 분할 계획(`[SUB-ORCHESTRATION REPORT]`)을 보고하고 오직 Codex 계열(`--pool codex`, `gpt-6-astra` 또는 `gpt-6.1-sol`)로만 Depth 2 리프 워커(`MAESTRO_WORKER_DEPTH=2`)를 분기 기동한다 (Claude 호출 금지).
   - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`로 자유 지정 가능하나 `ultra`는 `high`로 자동 조정되며, 속도 티어는 `default`로 고정된다.
@@ -11,6 +11,8 @@
 | Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
 |---|---|
 | Gemini 3.8 Flash (low · fast) | `⏱ 40초 · 2만 토큰 (5백원)` |
+| gpt-6-luna (low · default) | `⏱ 35초 · 2만5천 토큰 (5백원)` |
+| gpt-6-luna (medium · default) | `⏱ 1분 · 4만 토큰 (8백원)` |
 | Sonnet 5.5 (high) | `⏱ 1분 · 4만 토큰 (1천원)` |
 | Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
 | Opus 5.5 (high · default) | `⏱ 3분 · 16만 토큰 (5천원)` |
@@ -47,6 +49,7 @@
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
 | Fast code / log search (읽기 전용 조사) | Gemini 3.8 Flash (`low`, `fast`) (코딩/수정 시 Flash 금지) |
+| Lightweight fast coding / small fixes | gpt-6-luna (`low`/`medium`, `default` · `--pool codex-luna`) |
 
 ## Natural Developer Communication Style
 - 장황한 서두나 AI 클리셰 없이 핵심 내용 위주로 간결하게 보고한다.

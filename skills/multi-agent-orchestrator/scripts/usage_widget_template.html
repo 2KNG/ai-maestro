@@ -2478,8 +2478,15 @@
           const score = fh !== null ? Math.min(fh, wk * 2.5) : wk;
           return { id, name, shortName, fh, wk, score, mode: 'weekly_conserve', tag: `${shortName}(5h ${fmtPct(fh)}·7d ${fmtPct(wk)} 절약)`, pref };
         }
-        const score = fh !== null ? fh : (wk !== null ? wk : 0);
-        const winLbl = fh !== null ? `5h ${fmtPct(fh)}` : `7d ${fmtPct(wk)}`;
+        let score = 0;
+        if (fh !== null && wk !== null) {
+          score = Math.round((0.25 * fh + 0.75 * Math.min(fh, wk)) * 10) / 10;
+        } else if (fh !== null) {
+          score = fh;
+        } else if (wk !== null) {
+          score = wk;
+        }
+        const winLbl = (fh !== null && wk !== null) ? `5h ${fmtPct(fh)}·7d ${fmtPct(wk)}` : (fh !== null ? `5h ${fmtPct(fh)}` : `7d ${fmtPct(wk)}`);
         return { id, name, shortName, fh, wk, score, mode: 'normal', tag: `${shortName}(${winLbl})`, pref };
       }
 
@@ -3894,6 +3901,24 @@
           if (newChild.getAttribute('data-idle-age') !== null) {
             oldChild.setAttribute('data-idle-age', newChild.getAttribute('data-idle-age'));
           }
+        }
+      });
+
+      // Re-order oldBr children to match exact order of newChildren
+      newChildren.forEach(nc => {
+        const nid = nc.getAttribute('data-node-id') || nc.dataset.nodeId;
+        if (!nid) return;
+        const oc = oldBr.querySelector(`:scope > [data-node-id="${nid}"]`);
+        if (oc) oldBr.appendChild(oc);
+      });
+
+      // Update .tree-branch text (├─ for non-last, └─ for last visible child)
+      const visibleChildren = Array.from(oldBr.querySelectorAll(':scope > .tree-node')).filter(c => c.dataset.exiting !== '1' && c.style.display !== 'none');
+      visibleChildren.forEach((child, idx) => {
+        const branchEl = child.querySelector(':scope > .agent-row .tree-branch');
+        if (branchEl) {
+          const isLast = (idx === visibleChildren.length - 1);
+          branchEl.textContent = isLast ? '└─ ' : '├─ ';
         }
       });
     }

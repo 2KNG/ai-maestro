@@ -1180,6 +1180,7 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
         last_mod = summary.get("lastModifiedTime", "")
         t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
         t_age_sec = None
+        last_step = None
         if os.path.exists(t_path):
             try:
                 t_mtime = os.path.getmtime(t_path)
@@ -1187,12 +1188,33 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
                 t_iso = datetime.datetime.fromtimestamp(t_mtime, timezone.utc).isoformat()
                 if not last_mod or t_iso > last_mod:
                     last_mod = t_iso
+                try:
+                    with open(t_path, "rb") as f:
+                        f.seek(-min(8192, os.path.getsize(t_path)), os.SEEK_END)
+                        tail = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+                        if tail:
+                            last_step = json.loads(tail[-1])
+                except Exception:
+                    pass
             except OSError:
                 pass
         workspaces = [w.get("workspaceFolderAbsoluteUri", "") for w in summary.get("workspaces", [])]
 
         is_subagent = bool(parent_id or depth > 0 or spec)
         is_running_agy = (str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"))
+
+        if is_subagent and is_running_agy:
+            if last_step and isinstance(last_step, dict):
+                step_type = str(last_step.get("type", "")).upper()
+                step_status = str(last_step.get("status", "")).upper()
+                tool_calls = last_step.get("tool_calls")
+                if step_type == "PLANNER_RESPONSE" and step_status == "DONE" and not tool_calls and t_age_sec is not None and t_age_sec > 15:
+                    is_running_agy = False
+                    status = "CASCADE_RUN_STATUS_DONE"
+            if is_running_agy and t_age_sec is not None and t_age_sec > 300:
+                is_running_agy = False
+                status = "CASCADE_RUN_STATUS_DONE"
+
         stale_threshold = 1800 if is_running_agy else 180
         if is_subagent and t_age_sec is not None and t_age_sec > stale_threshold:
             is_running_agy = False
@@ -1862,7 +1884,12 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
     gem_pool = agy_pools.get("Gemini Pool (Argon / Flash)") or {}
     if agy.get("error") or agy.get("stale"):
         cl_pool = gem_pool = agy
-    codex_model = "gpt-6-astra" if difficulty == "medium" else "gpt-6.1-sol"
+    if difficulty == "low":
+        codex_model = "gpt-6-luna"
+    elif difficulty == "medium":
+        codex_model = "gpt-6-astra"
+    else:
+        codex_model = "gpt-6.1-sol"
     specs = [
         ("antigravity_claude", "antigravity", "Claude & GPT-OSS Pool (Antigravity)", cl_pool, agy_model(cl_pool, "claude")),
         ("antigravity_gemini", "antigravity", "Gemini Pool (Argon / Flash)", gem_pool, agy_model(gem_pool, "gemini")),
@@ -1892,6 +1919,10 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
         unavailable = (provider == "claude" and usage.get("authenticated") is False) or (provider == "codex" and usage.get("model_available") is False)
         status = "unavailable" if unavailable else "unknown" if remaining is None else "exhausted" if remaining <= 0 else "available"
         b_meta = bench_scores.get(pool_id) or {}
+        cand_score = round(remaining * weight, 2) if status == "available" else 0.0
+        # Protect Antigravity Gemini (4 Argon) pool for parent IDE sessions when 7d < 50%
+        if pool_id == "antigravity_gemini" and wk_rem is not None and wk_rem < 50.0:
+            cand_score = round(cand_score * 0.35, 2)
         candidate = {
             "pool": pool_id,
             "provider": provider,
@@ -1903,7 +1934,7 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
             "routing_mode": routing_mode,
             "window_basis": "5h+7d_guard" if (fh_rem is not None and wk_rem is not None and wk_rem <= WEEKLY_CONSERVE_THRESHOLD) else ("5h+7d_blend" if (fh_rem is not None and wk_rem is not None) else ("5h" if fh_rem is not None else "7d")),
             "status": status,
-            "score": round(remaining * weight, 2) if status == "available" else 0.0,
+            "score": cand_score,
             "swe_bench_verified": b_meta.get("swe_bench_verified"),
         }
         if provider == "codex":

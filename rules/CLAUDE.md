@@ -1,5 +1,5 @@
 # Claude Code Orchestration Rules (`ai-maestro`)
-- Coordinate multi-agent tasks via `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules; `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
+- Coordinate multi-agent tasks via `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec "<task>"` (`--pool codex|codex-astra|codex-luna|claude|claude-fast|agy-argon|agy-claude|agy-flash`; `--model gpt-6-astra` for parallel submodules; `--tier default|standard|priority|ultrafast`, `--max-capability`, `--domain coding|reasoning|frontend_ui|speed`).
 - **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
   - Depth 1 Claude 서브 워커(`parent_pool == 'claude'`)가 대규모 독립 모듈 분할 시 분할 계획(`[SUB-ORCHESTRATION REPORT]`)을 보고하고 오직 Claude 계열(`--pool claude`, `Opus 5.5`)로만 Depth 2 리프 워커(`MAESTRO_WORKER_DEPTH=2`)를 분기 기동한다 (Codex 호출 금지).
   - 서브 워커의 하위 위임 시 `--effort`는 `low`, `medium`, `high`로 자유 지정 가능하나 `ultra`는 `high`로 자동 조정되며, 속도 티어는 `default`로 고정된다.
@@ -10,6 +10,8 @@
 | Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
 |---|---|
 | Gemini 3.8 Flash (low · fast) | `⏱ 40초 · 2만 토큰 (5백원)` |
+| gpt-6-luna (low · default) | `⏱ 35초 · 2만5천 토큰 (5백원)` |
+| gpt-6-luna (medium · default) | `⏱ 1분 · 4만 토큰 (8백원)` |
 | Sonnet 5.5 (high) | `⏱ 1분 · 4만 토큰 (1천원)` |
 | Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
 | Opus 5.5 (high · default) | `⏱ 3분 · 16만 토큰 (5천원)` |
@@ -53,6 +55,7 @@
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
 | Fast code / log search (읽기 전용 조사) | Gemini 3.8 Flash (`low`, `fast`) (코딩/수정 시 Flash 금지) |
+| Lightweight fast coding / small fixes | gpt-6-luna (`low`/`medium`, `default` · `--pool codex-luna`) |
 
 ## Natural Developer Communication Style
 - 장황한 서두나 AI 클리셰 없이 핵심 내용 위주로 간결하게 보고한다.

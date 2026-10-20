@@ -49,7 +49,8 @@ CLAUDE_FAST_POOLS = ("claude-fast", "opus-5.5-fast", "opus-fast")
 CLAUDE_ULTRA_POOLS = ("claude-ultra", "opus-ultra", "opus-5.5-ultra")
 CLAUDE_POOLS = ("claude", "opus-5.5-xhigh") + CLAUDE_ULTRA_POOLS + CLAUDE_FAST_POOLS
 CODEX_ASTRA_POOLS = ("codex-astra", "astra", "gpt-6-astra")
-CODEX_POOLS = ("codex",) + CODEX_ASTRA_POOLS
+CODEX_LUNA_POOLS = ("codex-luna", "luna", "gpt-6-luna")
+CODEX_POOLS = ("codex",) + CODEX_ASTRA_POOLS + CODEX_LUNA_POOLS
 
 COMPUTER_USE_KEYWORDS = (
     "pc 조작", "pc조작", "컴퓨터 조작", "computer use", "computer-use",
@@ -238,6 +239,30 @@ def make_agy_title(spec: str, cwd: str) -> str:
     return f"{AGY_PREFIX} {short}"
 
 
+def assemble_worker_prompt(spec: str, title: str, effort: str | None, handover: str | None = None) -> str:
+    """Ensure line 1 is ALWAYS '✦ <title>', line 2 is 'ultrathink' (if ultra), followed by rest of prompt."""
+    body = (spec or "").strip()
+    spec_lines = body.splitlines()
+    first_line = spec_lines[0].strip() if spec_lines else ""
+
+    if first_line.startswith(AGY_PREFIX):
+        title_line = first_line
+        rest = "\n".join(spec_lines[1:]).strip()
+    else:
+        title_line = title
+        rest = body
+
+    parts = [title_line]
+    if effort == "ultra":
+        parts.append("ultrathink")
+    if rest:
+        parts.append(rest)
+    if handover and handover.strip():
+        parts.append(handover.strip())
+
+    return "\n\n".join(parts)
+
+
 def record_spawned_session(session_id: str, info: dict, *, replace_session_id: str | None = None) -> None:
     """Merge under a stable lock; atomically publish for lock-free readers."""
     import fcntl
@@ -276,17 +301,23 @@ def stamp_codex_db_titles(since_ts: int, agy_title: str, abs_cwd: str) -> list[s
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
         rows = conn.execute(
-            "SELECT id, name, title FROM threads WHERE created_at >= ? AND cwd = ? AND source = 'exec' ORDER BY created_at DESC LIMIT 3",
+            "SELECT id, name, title FROM threads WHERE created_at >= ? AND cwd = ? AND source IN ('exec', 'vscode') ORDER BY created_at DESC LIMIT 5",
             (since_ts - 5, abs_cwd),
         ).fetchall()
         for tid, name, title in rows:
-            name = name.replace("\U0001fa90", "").strip() if name else name
-            title = title.replace("\U0001fa90", "").strip() if title else title
-            new_name = name if (name and name.startswith(AGY_PREFIX)) else agy_title
-            new_title = title if (title and title.startswith(AGY_PREFIX)) else f"{agy_title} — {title or ''}".strip(" —")
-            conn.execute("UPDATE threads SET name = ?, title = ? WHERE id = ?", (new_name, new_title, tid))
+            name = (name or "").replace("\U0001fa90", "").strip()
+            title = (title or "").replace("\U0001fa90", "").strip()
+            while name.lower().startswith("ultrathink"):
+                name = name[10:].strip()
+            while title.lower().startswith("ultrathink"):
+                title = title[10:].strip()
+            if not name.startswith(AGY_PREFIX):
+                name = f"{AGY_PREFIX} {name or agy_title}".strip()
+            if not title.startswith(AGY_PREFIX):
+                title = f"{agy_title} — {title}".strip(" —")
+            conn.execute("UPDATE threads SET name = ?, title = ? WHERE id = ?", (name, title, tid))
             stamped.append(tid)
-            record_spawned_session(tid, {"provider": "codex", "title": new_name, "cwd": abs_cwd})
+            record_spawned_session(tid, {"provider": "codex", "title": name, "cwd": abs_cwd})
         conn.commit()
         conn.close()
     except Exception:
@@ -435,9 +466,6 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     title = make_agy_title(spec, abs_cwd)
     session_id = str(uuid.uuid4())
     handover = maestro_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
-    prompt = spec
-    if handover:
-        prompt += f"\n\n{handover}"
     selected_effort = effort or ("xhigh" if max_capability else "high")
     if selected_effort in ("ultra", "xhigh", "max") and not max_capability and effort is None:
         selected_effort = "high"
@@ -467,8 +495,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
             effective_tier = "default"
 
     model = "claude-opus-5-fast" if fast else "claude-opus-5-5"
-    if selected_effort == "ultra":
-        prompt = "ultrathink\n\n" + prompt
+    prompt = assemble_worker_prompt(spec, title, selected_effort, handover)
     started = time.monotonic()
 
     current_depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
@@ -584,10 +611,20 @@ def resolve_codex_settings(pool, model=None, effort=None, tier=None, *,
                            max_capability=False, interactive=False, urgent=False,
                            background=False):
     """Apply spend guards even when a caller bypasses the argument parser."""
-    model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
-    astra = model == "gpt-6-astra"
-    effort = effort or ("medium" if astra else "high")
+    if pool in CODEX_LUNA_POOLS or model in ("gpt-6-luna", "luna"):
+        model = "gpt-6-luna"
+    elif pool in CODEX_ASTRA_POOLS or model in ("gpt-6-astra", "astra"):
+        model = "gpt-6-astra"
+    else:
+        model = model or "gpt-6.1-sol"
+
+    luna = (model == "gpt-6-luna")
+    astra = (model == "gpt-6-astra")
+
+    effort = effort or ("low" if luna else ("medium" if astra else "high"))
     if astra and effort == "xhigh":
+        effort = "high"
+    if luna and effort in ("ultra", "max"):
         effort = "high"
     if not max_capability:
         if astra and effort in ("high", "xhigh", "ultra"):
@@ -600,7 +637,7 @@ def resolve_codex_settings(pool, model=None, effort=None, tier=None, *,
     elif tier in ("default", "standard"):
         tier = "default"
     elif urgent:
-        tier = "ultrafast"
+        tier = "priority" if luna else "ultrafast"
     else:
         tier = "priority"
     return model, effort, tier
@@ -609,10 +646,12 @@ def resolve_codex_settings(pool, model=None, effort=None, tier=None, *,
 def _benchmark_pools(pool):
     if pool == "auto":
         return None
+    if pool in CODEX_LUNA_POOLS:
+        return {"codex-luna"}
     if pool in CODEX_ASTRA_POOLS:
         return {"codex-astra"}
     if pool in CODEX_POOLS:
-        return {"codex", "codex-astra"}
+        return {"codex", "codex-astra", "codex-luna"}
     if pool in CLAUDE_FAST_POOLS:
         return {"claude-fast"}
     if pool in CLAUDE_POOLS:
@@ -634,7 +673,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     import uuid
     import maestro_memory
     abs_cwd = os.path.abspath(cwd)
-    model = model or ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol")
+    model = model or ("gpt-6-luna" if pool in CODEX_LUNA_POOLS else ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol"))
     model, effort, tier = resolve_codex_settings(
         pool, model, effort, tier, max_capability=max_capability,
         interactive=interactive, urgent=urgent, background=background)
@@ -643,9 +682,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         timeout = max(int(timeout or min_timeout), min_timeout)
     agy_title = make_agy_title(spec, abs_cwd)
     handover_ctx = maestro_memory.format_handover_context_for_prompt(abs_cwd, max_age_seconds=7200)
-    tagged_spec = spec if spec.lstrip().startswith(AGY_PREFIX) else f"{agy_title}\n\n{spec}"
-    if handover_ctx:
-        tagged_spec = f"{tagged_spec}\n\n{handover_ctx}"
+    tagged_spec = assemble_worker_prompt(spec, agy_title, effort, handover_ctx)
     temporary_sid = f"codex-{uuid.uuid4()}"
     current_depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
     env = os.environ.copy()
@@ -956,7 +993,12 @@ def main():
             if requested_pool not in ("auto", *CODEX_POOLS):
                 parser.error("--model is supported only with auto or a Codex pool")
             if requested_pool == "auto":
-                requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
+                if args.model in ("gpt-6-luna", "luna"):
+                    requested_pool = "codex-luna"
+                elif args.model in ("gpt-6-astra", "astra"):
+                    requested_pool = "codex-astra"
+                else:
+                    requested_pool = "codex"
         if requested_pool == "auto":
             if is_computer_use_task(args.spec):
                 requested_pool = "codex-astra" if args.model == "gpt-6-astra" else "codex"
@@ -1013,7 +1055,13 @@ def main():
             speed_flags = dict(max_capability=args.max_capability, interactive=args.interactive,
                                urgent=args.urgent, background=args.background)
             if target_pool in CODEX_POOLS:
-                effort = effort or ("medium" if target_pool in CODEX_ASTRA_POOLS or model == "gpt-6-astra" else "high")
+                if target_pool in CODEX_LUNA_POOLS or model in ("gpt-6-luna", "luna"):
+                    default_eff = "low"
+                elif target_pool in CODEX_ASTRA_POOLS or model in ("gpt-6-astra", "astra"):
+                    default_eff = "medium"
+                else:
+                    default_eff = "high"
+                effort = effort or default_eff
                 model, effort, tier = resolve_codex_settings(target_pool, model, effort, args.tier, **speed_flags)
                 result = start_codex_worker(args.spec, args.cwd, effort, tier, args.timeout,
                                            pool=target_pool, model=model, **speed_flags)

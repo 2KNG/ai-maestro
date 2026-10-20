@@ -587,6 +587,8 @@ BASELINE_ETA_TABLE: dict[tuple[str, str, str], tuple[float, int, int]] = {
     ("claude-opus-5-5", "xhigh", "default"): (165.0, 150000, 6000),
     ("claude-opus-5-5", "ultra", "default"): (165.0, 140000, 12000),
     ("claude-ultra", "ultra", "default"): (165.0, 140000, 12000),
+    ("gpt-6-luna", "low", "default"): (35.0, 25000, 500),
+    ("gpt-6-luna", "medium", "default"): (60.0, 40000, 800),
     ("gpt-6-astra", "medium", "default"): (210.0, 65000, 1500),
     ("gpt-6.1-sol", "medium", "default"): (40.0, 65000, 1500),
     ("gpt-6.1-sol", "medium", "priority"): (40.0, 65000, 1500),
@@ -680,6 +682,8 @@ def normalize_telemetry_model(model: str, tier: str = "default") -> str:
         return "claude-opus-5-5"
     if "mini" in m or "spark" in m or "astra" in m or "gpt-5.4-mini" in m or "gpt-5.3" in m:
         return "gpt-6-astra"
+    if "luna" in m:
+        return "gpt-6-luna"
     if "sol" in m or "gpt-6.1" in m or "gpt-5.4" in m:
         return "gpt-6.1-sol"
     return m
@@ -719,6 +723,8 @@ def lookup_baseline_eta(model: str, effort: str = "high", tier: str = "default")
         return BASELINE_ETA_TABLE[(m_norm, e_norm, "default")]
 
     # Generic fallbacks
+    if "luna" in m_norm:
+        return (35.0, 25000, 500)
     if "astra" in m_norm:
         return (210.0, 65000, 1500)
     if "sol" in m_norm:

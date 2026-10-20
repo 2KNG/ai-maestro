@@ -38,13 +38,14 @@ class BenchmarkTests(unittest.TestCase):
         result = bench.get_daily_benchmark_and_models()
         self.assertFalse(result['online_verified'])
         matrix = result['benchmark_matrix']
-        self.assertEqual(len(matrix), 12)
+        self.assertEqual(len(matrix), 14)
         expected = [
             (83.8,94.2,87.5,62,3.5), (80.2,89,85,74,1), (82.4,92.5,86.5,68,4),
             (79.4,88.5,85,78,1), (76.8,84,82.5,84,.5), (83.2,93.8,93.2,65,3),
             (81.2,91.5,92,72,1.2),
             (79.5,89.5,91.5,76,1), (77.5,86,90.5,96,2), (78,85,89.5,88, .6),
-            (77.2,88,88.5,82,1), (73.5,79,83,98.5,.1)]
+            (77.2,88,88.5,82,1), (73.5,79,83,98.5,.1),
+            (78.5,82,80,96,.35), (75,79,78,98,.2)]
         for profile, values in zip(matrix.values(), expected):
             self.assertEqual(tuple(profile[k] for k in (*bench.DOMAINS,'quota_multiplier')), values)
         self.assertEqual(bench.get_max_capability_recommendation()['model'], 'gpt-6-astra')
@@ -114,7 +115,7 @@ class BenchmarkTests(unittest.TestCase):
             with self.subTest(data=data):
                 self.http.reset_mock()
                 self.cache.write_text(json.dumps(data))
-                self.assertEqual(len(bench.get_daily_benchmark_and_models()['benchmark_matrix']),12)
+                self.assertEqual(len(bench.get_daily_benchmark_and_models()['benchmark_matrix']),14)
                 self.http.assert_called_once()
 
     def test_legacy_cache_fallback_and_new_cache_precedence(self):
@@ -198,7 +199,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
                                      ('claude', 'claude-opus-5-5', 'ultra', 'default'))
                     self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
                     self.assertEqual(command[command.index('--effort') + 1], 'max')
-                    self.assertTrue(command[-1].startswith('ultrathink\n\n'))
+                    self.assertTrue(command[-1].startswith('✦ task\n\nultrathink'))
         for flags in ([], ['--interactive'], ['--urgent']):
             with self.subTest(explicit_ultra_flags=flags):
                 result = self.cli('--pool', 'claude', '--effort', 'ultra', *flags)
@@ -207,7 +208,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
                                  ('claude-opus-5-5', 'ultra', 'default'))
                 self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
                 self.assertEqual(command[command.index('--effort') + 1], 'max')
-                self.assertTrue(command[-1].startswith('ultrathink\n\n'))
+                self.assertTrue(command[-1].startswith('✦ task\n\nultrathink'))
         for effort in ('ultra', 'max', 'xhigh', 'high'):
             with self.subTest(effort=effort):
                 result = self.cli('--pool', 'claude', '--effort', effort)
@@ -215,7 +216,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
                 self.assertEqual(result['effort'], effort)
                 self.assertEqual(command[command.index('--effort') + 1],
                                  'max' if effort in ('ultra', 'max') else effort)
-                self.assertEqual(command[-1].startswith('ultrathink\n\n'), effort == 'ultra')
+                self.assertEqual(command[-1].startswith('✦ task\n\nultrathink'), effort == 'ultra')
                 if effort == 'max':
                     self.assertNotIn('ultrathink', command[-1].lower())
 
@@ -230,7 +231,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
                                      ('claude-opus-5-5', 'ultra', 'default'))
                     self.assertEqual(command[command.index('--model') + 1], 'claude-opus-5-5')
                     self.assertEqual(command[command.index('--effort') + 1], 'max')
-                    self.assertTrue(command[-1].startswith('ultrathink\n\n✦ Explain how ultrathink and ULTRATHINK work'))
+                    self.assertTrue(command[-1].startswith('✦ Explain how ultrathink and ULTRATHINK work\n\nultrathink'))
                     self.assertEqual(command[-1].lower().count('ultrathink'), 3)
 
     def test_max_capability_domain_and_model_override(self):

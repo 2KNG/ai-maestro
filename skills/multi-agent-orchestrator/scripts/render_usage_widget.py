@@ -1744,8 +1744,19 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
     """Returns (icon_svg_html, model_pill_html, sub_badge_html) with Speedometer Effort Gauge and 4-A / 3.8-F short codes."""
     if provider == "codex":
         m_full = (model_str or "gpt-6.1-sol").replace("gpt-", "")
-        m_short = "6.1-s" if "6.1" in m_full else m_full[:5]
-        eff_svg = _effort_gauge_svg(effort or "high")
+        if "luna" in m_full:
+            m_short = "6-luna"
+            extra_style = ' style="border-color:rgba(16,185,129,0.4);background:rgba(16,185,129,0.12);color:#10b981;"'
+        elif "astra" in m_full:
+            m_short = "6-astra"
+            extra_style = ""
+        elif "6.1" in m_full:
+            m_short = "6.1-s"
+            extra_style = ""
+        else:
+            m_short = m_full[:5]
+            extra_style = ""
+        eff_svg = _effort_gauge_svg(effort or ("low" if "luna" in m_full else "high"))
         if service_tier == "ultrafast":
             bolt_svg = '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Codex service_tier: ultrafast</title><use href="#ico-bolt-3"/></svg>'
         elif service_tier in ("priority", "fast"):
@@ -1754,7 +1765,7 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
             bolt_svg = ""
         return (
             '<svg class="brand-icon" width="15" height="15" style="color:var(--green)"><use href="#ico-codex"/></svg>',
-            f'<span class="model-pill codex" title="Codex {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
+            f'<span class="model-pill codex"{extra_style} title="Codex {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
             f'<span class="mp-full">{_html_esc(m_full)}</span>'
             f'<span class="mp-short">{_html_esc(m_short)}</span>'
             f'{eff_svg}{bolt_svg}</span>',
@@ -2646,15 +2657,36 @@ def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
     )
     if is_sub:
         age_sec = None
+        last_step = None
         if cid:
             t_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
             if os.path.exists(t_path):
                 try:
                     age_sec = max(0.0, time.time() - os.path.getmtime(t_path))
+                    try:
+                        with open(t_path, "rb") as f:
+                            f.seek(-min(8192, os.path.getsize(t_path)), os.SEEK_END)
+                            tail = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+                            if tail:
+                                last_step = json.loads(tail[-1])
+                    except Exception:
+                        pass
                 except OSError:
                     pass
         if age_sec is None and node.get("last_modified_time"):
             age_sec = _age_sec_from_iso(node.get("last_modified_time") or "")
+
+        # Check if subagent already returned final response without tools
+        if last_step and isinstance(last_step, dict):
+            step_type = str(last_step.get("type", "")).upper()
+            step_status = str(last_step.get("status", "")).upper()
+            tool_calls = last_step.get("tool_calls")
+            if step_type == "PLANNER_RESPONSE" and step_status == "DONE" and not tool_calls and age_sec is not None and age_sec > 15:
+                return False
+
+        if age_sec is not None and age_sec > 300:
+            return False
+
         stale_threshold = 1800 if str(node.get("status") or "").upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING") else 180
         if age_sec is not None and age_sec > stale_threshold:
             return False

@@ -56,6 +56,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 | Hardest reasoning / architecture → Local Claude Code Ultra (Opus 5.5 `ultra` → `--effort max` + `ultrathink`, standard, 3x quota) | `~/.local/bin/maestro worker-start --pool claude-ultra --cwd <dir> --wait --spec "..."` (aliases `opus-ultra` / `opus-5.5-ultra`, or `--pool claude --effort ultra`; no `--max-capability` needed) |
 | Max-capability by domain (12-profile benchmark) | `~/.local/bin/maestro worker-start --pool auto --max-capability --domain coding\|reasoning\|frontend_ui\|speed --cwd <dir> --wait --spec "..."` |
 | Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `~/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
+| Lightweight fast coding / small fixes → OpenAI Codex Luna Pool (`gpt-6-luna`, `low`/`medium`, default tier) | `~/.local/bin/maestro worker-start --pool codex-luna --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-luna`) |
 | PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `~/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
 | Low / read-only lookup (읽기 전용 탐색·조사) | `invoke_subagent(TypeName='research', Model='flash')` only (코딩/수정 시 Flash 금지) |
 
@@ -105,12 +106,15 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 | Backend / system / test verification | gpt-6.1-sol (`high`, `standard`; `priority` interactive/urgent only, `ultrafast` urgent only) |
 | PC control / Desktop GUI / Computer-Use (컴퓨터 조작) | gpt-6.1-sol (`high`, `standard` · `--pool codex`) |
 | Fast code / log search | Gemini 3.8 Flash (`low`, `fast`) |
+| Lightweight fast coding / small fixes | gpt-6-luna (`low`/`medium`, `default` · `--pool codex-luna`) |
 
 ## 2.7. Model & Effort Single-Value ETA Table (모델·노력별 단일 수치 소요시간 · 한글 토큰 · 원화)
 
 | Model & Effort (모델 · 노력 · 속도 티어) | ETA (단일 값) |
 |---|---|
 | Gemini 3.8 Flash (low · fast) | `⏱ 40초 · 2만 토큰 (5백원)` |
+| gpt-6-luna (low · default) | `⏱ 35초 · 2만5천 토큰 (5백원)` |
+| gpt-6-luna (medium · default) | `⏱ 1분 · 4만 토큰 (8백원)` |
 | Sonnet 5.5 (high) | `⏱ 1분 · 4만 토큰 (1천원)` |
 | Opus 5.5 Fast (claude-fast · interactive only · 2x quota) | `⏱ 45초 · 16만 토큰 (4천원)` |
 | Opus 5.5 (high · default) | `⏱ 3분 · 16만 토큰 (5천원)` |

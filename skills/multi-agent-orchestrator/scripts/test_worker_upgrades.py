@@ -128,13 +128,12 @@ class WorkerDispatchTests(unittest.TestCase):
                     self.assertEqual((result["model"], result["effort"], result["tier"]),
                                      ("claude-opus-5-5", "ultra", "default"))
                     self.assertEqual(command[command.index("--model") + 1], "claude-opus-5-5")
-                    self.assertEqual(command[command.index("--effort") + 1], "max")
-                    self.assertTrue(command[-1].startswith("ultrathink\n\n"))
+                    self.assertTrue(command[-1].startswith("✦ patch ultrathink files\n\nultrathink\n\n"))
         result = workers.start_claude_worker("claude", "max effort task", "/tmp", "max", True, 30)
         command = self.run.call_args.args[0]
         self.assertEqual(result["effort"], "max")
         self.assertEqual(command[command.index("--effort") + 1], "max")
-        self.assertFalse(command[-1].startswith("ultrathink\n\n"))
+        self.assertNotIn("\n\nultrathink\n\n", command[-1])
 
     def test_fast_fallback_only_for_model_errors(self):
         for failure, count in (("unknown model claude-opus-5-fast", 2), ("HTTP 429 rate limit", 1), ("task failed", 1)):
@@ -343,6 +342,58 @@ class WorkerDispatchTests(unittest.TestCase):
                 self.assertEqual(env_passed_codex["MAESTRO_WORKER_DEPTH"], "1")
                 self.assertEqual(env_passed_codex["MAESTRO_WORKER_POOL"], "codex")
 
+    def test_codex_luna_pool_dispatch(self):
+        with mock.patch.object(workers.sys, "argv", ["maestro", "worker-start", "--pool", "codex-luna", "--spec", "fix small typo", "--wait"]), \
+             mock.patch.object(usage, "collect_usage", return_value={}), \
+             mock.patch.object(workers, "is_pool_exhausted", return_value=(False, "")), \
+             mock.patch.object(workers, "start_codex_worker", return_value={"ok": True}) as codex, \
+             redirect_stdout(io.StringIO()):
+            workers.main()
+            codex.assert_called_once()
+            self.assertEqual(codex.call_args.kwargs.get("pool"), "codex-luna")
+            self.assertEqual(codex.call_args.kwargs.get("model"), "gpt-6-luna")
+            self.assertEqual(codex.call_args.args[2], "low")
+            self.assertEqual(codex.call_args.args[3], "default")
+
+    def test_codex_luna_effort_and_tier_clamping(self):
+        model, effort, tier = workers.resolve_codex_settings("codex-luna", None, "ultra", "ultrafast", urgent=True)
+        self.assertEqual(model, "gpt-6-luna")
+        self.assertEqual(effort, "high")
+        self.assertEqual(tier, "priority")
+
+    def test_argon_protection_under_50_percent(self):
+        usage_data = {
+            "antigravity_gemini": {
+                "remaining_percent": 60.0,
+                "weekly": {"remaining_percent": 45.0, "status": "active"},
+                "status": "active"
+            },
+            "claude_local": {
+                "remaining_percent": 80.0,
+                "weekly": {"remaining_percent": 70.0, "status": "active"},
+                "status": "available"
+            },
+            "codex": {
+                "remaining_percent": 80.0,
+                "weekly": {"remaining_percent": 65.0, "status": "active"},
+                "status": "available"
+            }
+        }
+        res = usage.select_best_pool(usage_data, difficulty="high")
+        # Claude should win because gemini 45% gets 0.35 multiplier -> 15.75%
+        self.assertEqual(res["pool"], "claude")
+
+    def test_diamond_title_prefix_and_ultrathink_placement(self):
+        with mock.patch("subprocess.run") as sub_run:
+            sub_run.return_value = mock.Mock(returncode=0, stdout="done", stderr="")
+            workers.start_codex_worker("implement feature", "/tmp", "ultra", "default", 1800, max_capability=True)
+            cmd = sub_run.call_args.args[0]
+            prompt = cmd[-1]
+            lines = prompt.splitlines()
+            self.assertTrue(lines[0].startswith("✦ implement feature"))
+            self.assertEqual(lines[2], "ultrathink")
+
 
 if __name__ == "__main__":
     unittest.main()
+

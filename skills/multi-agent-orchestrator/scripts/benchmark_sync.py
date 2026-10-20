@@ -37,6 +37,7 @@ BASELINE_MODELS = {
     "codex": {
         "gpt-6.1-sol",
         "gpt-6-astra",
+        "gpt-6-luna",
         "gpt-5.4",
         "gpt-5.3-codex",
         "gpt-5.2-codex",
@@ -165,6 +166,24 @@ DEFAULT_BENCHMARK_MATRIX = {
         computer_use=70.0, general_coding=74.2,
         weekly_quota_burn_pct=0.02, avg_net_tokens="40k", avg_duration_sec=40.0, avg_cost_krw=500,
         citations="Gemini 3.8 Flash · Fast Explore & Scanning (98.5)"
+    ),
+    "gpt-6-luna (medium)": _profile(
+        "gpt-6-luna", "codex-luna", "medium", 78.5, 82.0, 80.0, 96.0, 0.35,
+        swe_bench_verified=78.0, terminal_bench=55.0, swe_lancer=62.0, long_horizon_coding=84.0,
+        webdev_elo=1710, frontend_ui_motion=80.0,
+        gpqa_diamond=88.5, arc_agi=86.0, research_orchestration=83.0, fast_explore=95.0,
+        osworld=68.0, computer_use=85.0, general_coding=78.5,
+        weekly_quota_burn_pct=0.08, avg_net_tokens="40k", avg_duration_sec=60.0, avg_cost_krw=800,
+        citations="Codex Luna Medium · High Speed & Low Quota"
+    ),
+    "gpt-6-luna (low)": _profile(
+        "gpt-6-luna", "codex-luna", "low", 75.0, 79.0, 78.0, 98.0, 0.20,
+        swe_bench_verified=75.0, terminal_bench=52.0, swe_lancer=58.0, long_horizon_coding=80.0,
+        webdev_elo=1680, frontend_ui_motion=78.0,
+        gpqa_diamond=85.0, arc_agi=82.0, research_orchestration=80.0, fast_explore=97.0,
+        osworld=65.0, computer_use=82.0, general_coding=75.0,
+        weekly_quota_burn_pct=0.05, avg_net_tokens="25k", avg_duration_sec=35.0, avg_cost_krw=500,
+        citations="Codex Luna Low · Fast Fixes & Lightweight Tests"
     ),
 }
 
@@ -429,10 +448,11 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
     matrix = get_daily_benchmark_and_models(usage_data)["benchmark_matrix"]
 
     quotas = {
-        "codex": 61.0, "codex-astra": 61.0,
+        "codex": 61.0, "codex-astra": 61.0, "codex-luna": 61.0,
         "claude": 80.0, "claude-fast": 80.0,
         "agy-argon": 46.5, "agy-sonnet": 0.0, "agy-flash": 90.0,
     }
+    gem_7d_val = 50.0
     if isinstance(usage_data, dict):
         cl = usage_data.get("claude_local") or {}
         cl_5h = (cl.get("five_hour") or {}).get("remaining_percent")
@@ -448,16 +468,18 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
         cdx_5h = (cdx.get("five_hour") or {}).get("remaining_percent")
         cdx_7d = (cdx.get("weekly") or {}).get("remaining_percent")
         if cdx_5h is not None and cdx_7d is not None:
-            quotas["codex"] = quotas["codex-astra"] = min(float(cdx_5h), float(cdx_7d))
+            quotas["codex"] = quotas["codex-astra"] = quotas["codex-luna"] = min(float(cdx_5h), float(cdx_7d))
         elif cdx_7d is not None:
-            quotas["codex"] = quotas["codex-astra"] = float(cdx_7d)
+            quotas["codex"] = quotas["codex-astra"] = quotas["codex-luna"] = float(cdx_7d)
         elif cdx_5h is not None:
-            quotas["codex"] = quotas["codex-astra"] = float(cdx_5h)
+            quotas["codex"] = quotas["codex-astra"] = quotas["codex-luna"] = float(cdx_5h)
 
         pools = (usage_data.get("antigravity") or {}).get("pools") or {}
         gem = pools.get("Gemini Pool (Argon / Flash)") or {}
         gem_5h = (gem.get("five_hour") or {}).get("remaining_percent")
         gem_7d = (gem.get("weekly") or {}).get("remaining_percent")
+        if gem_7d is not None:
+            gem_7d_val = float(gem_7d)
         gem_rem = min(float(gem_5h), float(gem_7d)) if (gem_5h is not None and gem_7d is not None) else float(gem_7d if gem_7d is not None else (gem_5h or 50.0))
         quotas["agy-argon"] = gem_rem
         quotas["agy-flash"] = float(gem_5h) if gem_5h is not None else 90.0
@@ -483,7 +505,7 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
         rem = quotas.get(pool, 50.0)
 
         if difficulty == "low":
-            diff_match = 1.0 if (effort == "low" or pool == "agy-flash") else 0.7
+            diff_match = 1.0 if (effort == "low" or prof.get("model") == "gpt-6-luna") else 0.7
         elif difficulty == "medium":
             diff_match = 1.0 if effort == "medium" else (0.95 if effort == "high" else 0.8)
         elif difficulty in ("high", "xhigh"):
@@ -517,7 +539,11 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
 
         final_score = round(quota_score * diff_match, 2)
 
-        if pool in ("codex", "codex-astra"):
+        # Protect Antigravity Gemini (4 Argon) pool for parent IDE sessions when 7d < 50%
+        if gem_7d_val < 50.0 and pool in ("agy-argon", "agy-flash"):
+            final_score = round(final_score * 0.35, 2)
+
+        if pool in ("codex", "codex-astra", "codex-luna"):
             canonical = "codex"
         elif pool in ("claude", "claude-fast"):
             canonical = "claude"

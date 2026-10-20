@@ -30,6 +30,7 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
   - `gpt-6.1-sol (high · standard)`: 백엔드·시스템·정밀 유닛테스트 검증 루프 (`priority`는 `--interactive`/`--urgent`, `ultrafast`는 `--urgent` 전용)
   - `gpt-6.1-sol (medium · standard)`: 일반 멀티파일 수정 및 기능 구현
   - `gpt-6-astra (medium · default)`: 전반적인 일반 코딩 및 모션그래픽 구현 (Astra는 항상 default tier, medium 상한 — `--max-capability`로만 `high`/`ultra` 해제)
+  - `gpt-6-luna (low/medium · default)`: 초경량 빠른 수정, 테스트 실행, 가벼운 구현 (4 Argon 7d < 50% 시 보호용 1순위 투입)
   - `Gemini 3.8 Flash (low · fast)`: 초고속 코드베이스·로그 탐색 및 리서치
 - Domain & Task Specific Routing:
   - **모션그래픽 / UI·UX / 프론트엔드 인터랙션**: Claude Opus 5.5 (`--pool claude`) 우선 배정 (`--pool auto` 시 `is_motion_or_ui_task()` 자동 감지).
@@ -45,12 +46,14 @@ You are Maestro (지휘자), not a solo worker. Never spend turns solo-thinking 
 
 ## 2. Subscription 5h / 7d Total Token Capacities & Single-Value ETA Rule
 - 4대 구독 풀 5h / 7d 100% 총 토큰 한도 (실측 로그 역산 기준 — 순수 실효 토큰 / 캐시 포함 총 처리 토큰):
-  1. OpenAI Codex ProMax (`gpt-6.1-sol` / `gpt-6-astra`): 5h 무제한 / 7d 순수 실효 3,124만 토큰 (캐시 포함 10.4억 토큰)
+  1. OpenAI Codex ProMax (`gpt-6.1-sol` / `gpt-6-astra` / `gpt-6-luna`): 5h 무제한 / 7d 순수 실효 3,124만 토큰 (캐시 포함 10.4억 토큰)
   2. Claude Code Team 5x (`claude_local` — `Opus 5.5` / `Opus 5.5 Fast`): 5h 순수 실효 3,570만 토큰 / 7d 순수 실효 9,783만 토큰
   3. Antigravity Claude & GPT-OSS Pool (`Opus 5.5` / `Sonnet 5.5`): 5h 순수 실효 212만 토큰 / 7d 순수 실효 394만 토큰
   4. Antigravity Gemini Pool (`Gemini 4 Argon` / `Gemini 3.8 Flash`): 5h 순수 실효 1억 9,300만 토큰 / 7d 순수 실효 6억 2,100만 토큰
 - Single-Value ETA Table (순수 실효 토큰 단일 수치 · `~` 범위 및 금지어 제외):
   - `Gemini 3.8 Flash (low · fast)`: `⏱ 40초 · 2만 토큰 (5백원)`
+  - `gpt-6-luna (low · default)`: `⏱ 35초 · 2만5천 토큰 (5백원)`
+  - `gpt-6-luna (medium · default)`: `⏱ 1분 · 4만 토큰 (8백원)`
   - `Sonnet 5.5 (high)`: `⏱ 1분 · 4만 토큰 (1천원)`
   - `Opus 5.5 Fast (claude-fast · interactive only · 2x quota)`: `⏱ 45초 · 16만 토큰 (4천원)`
   - `Opus 5.5 (high · default)`: `⏱ 3분 · 16만 토큰 (5천원)`
