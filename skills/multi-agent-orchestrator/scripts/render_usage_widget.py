@@ -2129,13 +2129,7 @@ def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, 
     return "JOB", "Job", el_short, f"Job (일회성 작업) · {start_ko}"
 
 
-def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
-    """Extract and classify active background tasks into daemon, timer, cron, or job."""
-    if not cid:
-        return []
-    tpath = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
-    if not os.path.exists(tpath):
-        return []
+def _parse_render_background_tasks(tpath):
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
     step_cron_hints: dict[int, str] = {}
@@ -2243,6 +2237,22 @@ def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
                         if tv["kind"] == "timer" or "exited with code" in c or "terminated" in c:
                             tv["done"] = True
     except Exception:
+        return {}
+
+    return tasks
+
+
+def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
+    """Extract and classify active background tasks into daemon, timer, cron, or job."""
+    if not cid:
+        return []
+    tpath = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
+    if not os.path.exists(tpath):
+        return []
+    from spawn_evidence import cached
+    try:
+        tasks = cached(tpath, "render-background-tasks", _parse_render_background_tasks)
+    except OSError:
         return []
 
     out = []
@@ -2391,7 +2401,7 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
     for by_id in (True, False):
         matches = [p for p in candidates if any(
             value in transcripts.get(identity(p), "")
-            for value in (ids if by_id else [title] if len(title) >= 8 else []))]
+            for value in (ids if by_id else [title[:200]] if len(title) >= 8 else []))]
         if matches:
             if len(matches) == 1:
                 return identity(matches[0])
@@ -2651,11 +2661,8 @@ def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
                 try:
                     age_sec = max(0.0, time.time() - os.path.getmtime(t_path))
                     try:
-                        with open(t_path, "rb") as f:
-                            f.seek(-min(8192, os.path.getsize(t_path)), os.SEEK_END)
-                            tail = f.read().decode("utf-8", errors="ignore").strip().splitlines()
-                            if tail:
-                                last_step = json.loads(tail[-1])
+                        from spawn_evidence import last_step_state
+                        last_step = last_step_state(t_path)
                     except Exception:
                         pass
                 except OSError:
@@ -2900,38 +2907,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         paths.extend(glob.glob(os.path.join(system_dir, "tasks", "task-*.log")))
         for path in paths:
             try:
-                with open(path, encoding="utf-8", errors="ignore") as tf:
-                    content = tf.read()
-                evidence = []
-                result_ids = _maestro_result_ids(content)
+                from spawn_evidence import task_evidence
+                from agy_transcript_state import transcript_summary
                 if path.endswith("transcript.jsonl"):
-                    for line in content.splitlines():
-                        try:
-                            step = json.loads(line)
-                        except ValueError:
-                            continue
-                        if not isinstance(step, dict):
-                            continue
-                        for call in step.get("tool_calls") or []:
-                            if isinstance(call, dict) and call.get("name") == "run_command":
-                                from agy_transcript_state import decode
-                                args = decode(call.get("args") or {})
-                                if isinstance(args, dict):
-                                    command = str(decode(args.get("CommandLine") or ""))
-                                    if "maestro" in command and "worker-start" in command:
-                                        evidence.append(command)
-                        if step.get("type") not in ("GENERIC", "SYSTEM_MESSAGE"):
-                            continue
-                        output = str(step.get("content") or "").partition("Output:\n")[2]
-                        result_ids.update(_maestro_result_ids(output))
-                        if output:
-                            evidence.append(output)
+                    _, _, evidence, result_ids, activity = transcript_summary(path)
                 else:
-                    evidence.append(content)
-                evidence_by_root.setdefault(root_cid, []).extend(evidence)
+                    evidence, result_ids, activity = task_evidence(path)
+                evidence_by_root.setdefault(root_cid, []).append(evidence)
                 for wid in result_ids:
                     launch_owners.setdefault(wid, set()).add(root_cid)
-                if "maestro" in content:
+                if activity:
                     maestro_activity[root_cid] = max(maestro_activity.get(root_cid, 0), os.path.getmtime(path))
             except OSError:
                 pass
@@ -2961,8 +2946,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         path = parent.get("rollout_path") or rollout_paths.get(parent.get("thread_id"))
         if path:
             try:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    maestro_specs_by_cid[parent["thread_id"]] = f.read()
+                from spawn_evidence import rollout_evidence
+                maestro_specs_by_cid[parent["thread_id"]] = rollout_evidence(path)
             except OSError:
                 pass
     attached_cdx_workers_by_parent: dict[str, list[dict]] = {}

@@ -515,10 +515,20 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
     )
     for r in rollouts[:10]:
         try:
-            with open(r) as f:
-                for line in reversed(f.readlines()):
-                    if '"rate_limits"' in line:
-                        d = json.loads(line)
+            # Quota events are small; bound even a rollout containing giant tool-output lines.
+            with open(r, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                start = max(0, f.tell() - 1024 * 1024)
+                f.seek(start)
+                tail = f.read(1024 * 1024)
+                if start:
+                    tail = tail.partition(b"\n")[2]
+                for line in reversed(tail.splitlines()):
+                    if b'"rate_limits"' in line:
+                        try:
+                            d = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            continue  # A writer may still be appending the last event.
                         rl = d.get("payload", {}).get("rate_limits")
                         if rl and rl.get("primary"):
                             primary, secondary = _codex_windows(rl.get("primary"), rl.get("secondary"))
@@ -949,6 +959,34 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
     tpath = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
     if not os.path.exists(tpath):
         return []
+    from spawn_evidence import cached
+    try:
+        tasks = cached(tpath, "background-tasks", _parse_background_tasks)
+    except OSError:
+        return []
+
+    out = []
+    for tv in tasks.values():
+        if tv["done"]:
+            continue
+        desc = tv["desc"]
+        age_s = max(0, int(now_sec - (_timing_timestamp(tv.get("created_at") or 0) or now_sec))) if tv.get("created_at") else 0
+        if tv["kind"] == "timer":
+            dur_m = re.search(r"Timer:\s*(\d+)s", desc)
+            dur_s = int(dur_m.group(1)) if dur_m else 90
+            if age_s > dur_s + 15:
+                continue
+        elif tv["kind"] == "job":
+            if age_s > 900:
+                continue
+        elif tv["kind"] == "daemon":
+            if age_s > 43200:
+                continue
+        out.append(tv)
+    return out
+
+
+def _parse_background_tasks(tpath):
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
     step_cron_hints: dict[int, str] = {}
@@ -1056,27 +1094,9 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
                         if tv["kind"] == "timer" or "exited with code" in c or "terminated" in c or "completed" in c or "finished" in c:
                             tv["done"] = True
     except Exception:
-        return []
+        return {}
 
-    out = []
-    for tv in tasks.values():
-        if tv["done"]:
-            continue
-        desc = tv["desc"]
-        age_s = max(0, int(now_sec - (_timing_timestamp(tv.get("created_at") or 0) or now_sec))) if tv.get("created_at") else 0
-        if tv["kind"] == "timer":
-            dur_m = re.search(r"Timer:\s*(\d+)s", desc)
-            dur_s = int(dur_m.group(1)) if dur_m else 90
-            if age_s > dur_s + 15:
-                continue
-        elif tv["kind"] == "job":
-            if age_s > 900:
-                continue
-        elif tv["kind"] == "daemon":
-            if age_s > 43200:
-                continue
-        out.append(tv)
-    return out
+    return tasks
 
 
 def _agy_transcript_parent_ids(cids) -> dict[str, str]:
@@ -1196,11 +1216,8 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
                 if not last_mod or t_iso > last_mod:
                     last_mod = t_iso
                 try:
-                    with open(t_path, "rb") as f:
-                        f.seek(-min(8192, os.path.getsize(t_path)), os.SEEK_END)
-                        tail = f.read().decode("utf-8", errors="ignore").strip().splitlines()
-                        if tail:
-                            last_step = json.loads(tail[-1])
+                    from spawn_evidence import last_step_state
+                    last_step = last_step_state(t_path)
                 except Exception:
                     pass
             except OSError:

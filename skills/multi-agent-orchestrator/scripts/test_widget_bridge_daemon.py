@@ -1,4 +1,5 @@
 """Isolated bridge checks; never open the user's database or provider sessions."""
+import concurrent.futures
 import contextlib
 import http.server
 import json
@@ -136,7 +137,12 @@ class RouteTests(unittest.TestCase):
                 bridge.ruw, "build_accounts", return_value=[]
             ), mock.patch.object(bridge.ruw, "codex_archive_counts", return_value={}), mock.patch.object(
                 bridge, "load_state", return_value={}
-            ), running_bridge() as base:
+            ), mock.patch.object(bridge.ruw, "pick_template", return_value=("template", "test")), mock.patch.object(
+                bridge.ruw, "inject_live_data", return_value="html"
+            ), mock.patch.object(bridge.ruw, "build_active_and_closed_trees_html", return_value=("active", "closed", 1, 2)), mock.patch.object(
+                bridge.ruw, "build_optional_pc_telemetry_html", return_value="pc"
+            ), mock.patch.object(bridge, "_http_snapshot", None), running_bridge() as base:
+                bridge.refresh_http_snapshot(force=True)
                 for path in ("/api/status", "/api/refresh"):
                     status, body = get_json(base, path)
                     self.assertEqual(status, 200)
@@ -163,6 +169,92 @@ class RouteTests(unittest.TestCase):
             self.assertTrue(body["ok"])
             self.assertEqual(body["cascadeId"], "casc-1")
             popen.assert_called_once()
+
+
+class SnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        for name, value in (("_http_snapshot", None), ("_cached_usage_data", None), ("_cached_usage_ts", 0.0)):
+            self.stack.enter_context(mock.patch.object(bridge, name, value))
+        self.collect = self.stack.enter_context(mock.patch.object(bridge.cau, "collect_usage", return_value={"timestamp_kst": "first"}))
+        self.load = self.stack.enter_context(mock.patch.object(bridge, "load_state", return_value={"scope": "all", "closedDays": 30, "pinned": ["x"]}))
+        self.template = self.stack.enter_context(mock.patch.object(bridge.ruw, "pick_template", return_value=("template", "test")))
+        self.render = self.stack.enter_context(mock.patch.object(bridge.ruw, "inject_live_data", return_value="cached html"))
+        self.trees = self.stack.enter_context(mock.patch.object(bridge.ruw, "build_active_and_closed_trees_html", return_value=("active", "closed", 1, 2)))
+        self.stack.enter_context(mock.patch.object(bridge.ruw, "build_accounts", return_value=[]))
+        self.stack.enter_context(mock.patch.object(bridge.ruw, "build_optional_pc_telemetry_html", return_value="pc"))
+
+    def test_cached_routes_and_filters_do_no_collection_render_or_disk_reads(self):
+        bridge.refresh_http_snapshot(force=True)
+        with running_bridge() as base:
+            for _ in range(3):
+                for path in ("/", "/widget"):
+                    with urllib.request.urlopen(base + path) as response:
+                        self.assertEqual(response.read(), b"cached html")
+                status, body = get_json(base, "/api/status?scope=current&closedDays=7")
+                self.assertEqual(status, 200)
+                self.assertEqual(body["state"], {"scope": "current", "closedDays": 7, "pinned": ["x"]})
+                _, body = get_json(base, "/api/status")
+                self.assertEqual(body["state"]["closedDays"], 30)
+                self.assertEqual(body["state"]["scope"], "all")
+        for operation in (self.collect, self.load, self.template, self.render, self.trees):
+            self.assertEqual(operation.call_count, 1)
+
+    def test_concurrent_refresh_singleflight_and_stale_http_during_rebuild(self):
+        old = bridge.refresh_http_snapshot(force=True)
+        entered, release = threading.Event(), threading.Event()
+        def slow_collect(**kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {"timestamp_kst": "second"}
+        self.collect.side_effect = slow_collect
+        with running_bridge() as base, concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            first = pool.submit(bridge.refresh_http_snapshot, True)
+            self.assertTrue(entered.wait(2))
+            # Hold every follower behind the same in-progress render lock.
+            barrier = threading.Barrier(5)
+            original_lock = bridge._refresh_lock
+            class ObservedLock:
+                def __enter__(self):
+                    barrier.wait(timeout=3)
+                    return original_lock.__enter__()
+                def __exit__(self, *args):
+                    return original_lock.__exit__(*args)
+            with mock.patch.object(bridge, "_refresh_lock", ObservedLock()):
+                followers = [pool.submit(bridge.refresh_http_snapshot, True) for _ in range(4)]
+                barrier.wait(timeout=3)
+                _, body = get_json(base, "/api/status")
+                self.assertEqual(body["timestamp_kst"], "first")
+                self.assertIs(bridge._http_snapshot, old)
+                release.set()
+                results = [first.result(3)] + [f.result(3) for f in followers]
+            self.assertTrue(all(item is results[0] for item in results))
+        self.assertEqual(self.collect.call_count, 2)
+        self.assertEqual(self.render.call_count, 2)
+
+    def test_failed_refresh_retains_snapshot_and_bootstrap_is_available(self):
+        with running_bridge() as base:
+            status, body = get_json(base, "/api/status")
+            self.assertEqual(status, 200)
+            self.assertTrue(body["warmingUp"])
+            with urllib.request.urlopen(base + "/widget") as response:
+                self.assertIn(b"warming up", response.read())
+            old = bridge.refresh_http_snapshot(force=True)
+            self.render.side_effect = RuntimeError("render failed")
+            with self.assertRaises(RuntimeError):
+                bridge.refresh_http_snapshot(force=True)
+            self.assertIs(bridge._http_snapshot, old)
+            status, body = get_json(base, "/api/refresh")
+            self.assertEqual(status, 200)
+            self.assertEqual(body["timestamp_kst"], "first")
+
+    def test_disconnected_clients_are_silent_at_handle_and_finish(self):
+        handler = object.__new__(bridge.BridgeHandler)
+        for method in ("handle", "finish"):
+            for error in (BrokenPipeError, ConnectionResetError):
+                with mock.patch.object(http.server.BaseHTTPRequestHandler, method, side_effect=error):
+                    getattr(handler, method)()
 
 
 if __name__ == "__main__":

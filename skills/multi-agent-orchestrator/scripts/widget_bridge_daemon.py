@@ -56,6 +56,60 @@ _cached_usage_data: dict | None = None
 _cached_usage_ts = 0.0
 HOT_CACHE_TTL_SEC = 8.0
 
+_refresh_lock = threading.RLock()
+_collect_lock = threading.Lock()
+_refresh_requested = threading.Event()
+_http_snapshot = None
+_bootstrap_html = b'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>AOH</title><p>Dashboard warming up...</p>'
+_bootstrap_status = b'{"ok":true,"warmingUp":true,"accounts":[],"activeTreeHtml":"","closedTreeHtml":"","activeCount":0,"closedCount":0,"state":{}}'
+
+
+def refresh_http_snapshot(force=False):
+    """Singleflight build with atomic publication and lock-free stale readers."""
+    global _http_snapshot
+    observed = _http_snapshot
+    with _refresh_lock:
+        current = _http_snapshot
+        if current is not observed:
+            return current
+        if not force and current and time.monotonic() - current["built_at"] < HOT_CACHE_TTL_SEC:
+            return current
+        data = fetch_usage_data(force=force)
+        st = load_state()
+        template, _ = ruw.pick_template(WIDGET_HTML, SCRIPT_DIR)
+        html = ruw.inject_live_data(template, data) if template else ruw.build_widget_html(data)
+        active, closed, active_count, closed_count = ruw.build_active_and_closed_trees_html(data, st)
+        body = {
+            "ok": True, "timestamp_kst": data.get("timestamp_kst"),
+            "recommended_routing": data.get("recommended_routing"),
+            "accounts": ruw.build_accounts(data),
+            "pcTelemetryHtml": ruw.build_optional_pc_telemetry_html(open_drawer=bool(st.get("pcMonOpen", False))) if hasattr(ruw, "build_optional_pc_telemetry_html") else "",
+            "activeTreeHtml": active, "closedTreeHtml": closed,
+            "activeCount": active_count, "closedCount": closed_count,
+        }
+        # Scope/age filtering is client-side; trees contain all scope/age attributes.
+        variants = {}
+        for scope in ("current", "all"):
+            for days in ALLOWED_CLOSED_DAYS:
+                body["state"] = dict(st, scope=scope, closedDays=days)
+                variants[(scope, days)] = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        snapshot = {"html": html.encode("utf-8"), "status": variants,
+                    "scope": st.get("scope", "current"),
+                    "closedDays": st.get("closedDays", DEFAULT_CLOSED_DAYS),
+                    "data": data, "built_at": time.monotonic()}
+        _http_snapshot = snapshot
+        return snapshot
+
+
+def status_snapshot_payload(snapshot, query):
+    if snapshot is None:
+        return _bootstrap_status
+    scope = query.get("scope", [snapshot["scope"]])[0]
+    if scope not in ("current", "all"):
+        scope = snapshot["scope"]
+    days = _normalize_closed_days(query.get("closedDays", [snapshot["closedDays"]])[0])
+    return snapshot["status"][(scope, days)]
+
 
 def list_conversation_dirs() -> list[str]:
     """All non-hidden directories directly under BRAIN_DIR (conversation IDs are UUID-like)."""
@@ -74,16 +128,19 @@ def list_conversation_dirs() -> list[str]:
 
 
 def fetch_usage_data(force: bool = False) -> dict:
-    """Collect usage in-process and maintain an in-memory hot cache for <1ms /api/status responses."""
+    """Collect once per concurrent refresh wave and cache data for background work."""
     global _cached_usage_data, _cached_usage_ts
-    now = time.time()
-    if not force and _cached_usage_data is not None and (now - _cached_usage_ts) <= HOT_CACHE_TTL_SEC:
-        return _cached_usage_data
-    data = cau.collect_usage(include_agent_trees=True)
-    with _sync_lock:
+    observed_ts = _cached_usage_ts
+    with _collect_lock:
+        now = time.time()
+        if _cached_usage_data is not None and (
+            _cached_usage_ts != observed_ts or (not force and now - _cached_usage_ts <= HOT_CACHE_TTL_SEC)
+        ):
+            return _cached_usage_data
+        data = cau.collect_usage(include_agent_trees=True)
         _cached_usage_data = data
         _cached_usage_ts = time.time()
-    return data
+        return data
 
 
 def _atomic_write(target: str, content: str) -> None:
@@ -116,7 +173,7 @@ def write_widget_to_all_conversations(data: dict, target_dirs: list[str] | None 
         ensure_ascii=False,
         indent=2,
     )
-    with _sync_lock:
+    with _refresh_lock:
         rendered_cache: dict[str, str] = {}
         written = 0
         dirs_to_write = target_dirs if target_dirs is not None else list_conversation_dirs()
@@ -140,16 +197,17 @@ def write_widget_to_all_conversations(data: dict, target_dirs: list[str] | None 
 
 
 def widget_sync_loop() -> None:
-    """Background loop: keep in-memory hot cache warm and provision widgets ONLY for new conversations lacking usage_widget.html."""
+    """Refresh immutable HTTP snapshots and provision widgets for new conversations."""
     global _last_failure
     while True:
         try:
+            requested = _refresh_requested.is_set()
+            _refresh_requested.clear()
             now = time.time()
-            if _cached_usage_data is None or (now - _cached_usage_ts) >= 6.0:
-                try:
-                    fetch_usage_data(force=True)
-                except Exception:
-                    pass
+            try:
+                refresh_http_snapshot(force=requested)
+            except Exception as e:
+                sys.stderr.write(f"[widget-sync] snapshot refresh failed: {e}\n")
             dirs = list_conversation_dirs()
             missing = [d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))]
             backing_off = (now - _last_failure) < FAILURE_BACKOFF_SEC
@@ -165,7 +223,7 @@ def widget_sync_loop() -> None:
                     sys.stderr.write(f"[widget-sync] sync failed: {e}\n")
         except Exception as e:
             sys.stderr.write(f"[widget-sync] loop error: {e}\n")
-        time.sleep(SCAN_INTERVAL_SEC)
+        _refresh_requested.wait(SCAN_INTERVAL_SEC)
 
 
 def _unique_str_list(value) -> list[str]:
@@ -219,6 +277,7 @@ def save_state(st: dict) -> None:
     with _sync_lock:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         _atomic_write(STATE_FILE, json.dumps(_normalize_state(st), ensure_ascii=False, indent=2) + "\n")
+        _refresh_requested.set()
 
 
 def get_codex_thread_summary(thread_id: str) -> dict:
@@ -340,6 +399,18 @@ def create_antigravity_left_sidebar_cascade(thread_id: str, label: str, cmd_text
 
 
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def finish(self):
+        try:
+            super().finish()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _set_cors(self, status=200, content_type="application/json; charset=utf-8"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -355,17 +426,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/index.html", "/widget", "/usage_widget.html"):
-            try:
-                data = fetch_usage_data(force=False)
-                template, _ = ruw.pick_template(WIDGET_HTML, SCRIPT_DIR)
-                html = ruw.inject_live_data(template, data) if template else ruw.build_widget_html(data)
-                payload = html.encode("utf-8")
-            except Exception as e:
-                self._set_cors(500)
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
-                return
+            snapshot = _http_snapshot
             self._set_cors(200, "text/html; charset=utf-8")
-            self.wfile.write(payload)
+            self.wfile.write(snapshot["html"] if snapshot else _bootstrap_html)
             return
 
         if parsed.path == "/api/route":
@@ -378,7 +441,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 )
                 return
             try:
-                data = cau.collect_usage(include_agent_trees=False)
+                with _collect_lock:
+                    data = cau.collect_usage(include_agent_trees=False)
                 routing = cau.select_best_pool(data, difficulty=difficulty)
                 self._set_cors(200)
                 self.wfile.write(
@@ -397,46 +461,24 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if parsed.path in ("/api/refresh", "/api/status"):
-            try:
-                is_refresh = parsed.path == "/api/refresh"
-                qs = urllib.parse.parse_qs(parsed.query)
-                write_disk = qs.get("write_disk", ["0"])[0] == "1"
-                data = fetch_usage_data(force=is_refresh)
-                accounts = ruw.build_accounts(data)
-                st = load_state()
-                active_html, closed_html, act_cnt, cls_cnt = ruw.build_active_and_closed_trees_html(data, st)
-                pc_html = ruw.build_optional_pc_telemetry_html(open_drawer=bool(st.get("pcMonOpen", False))) if hasattr(ruw, "build_optional_pc_telemetry_html") else ""
-                # Only write missing directories on /api/refresh unless write_disk=1 is explicitly requested,
-                # so open artifact iframes are updated in-place via JSON without triggering IDE file-watcher reloads.
-                if is_refresh:
-                    try:
-                        dirs = list_conversation_dirs()
-                        targets = dirs if write_disk else [d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))]
-                        if targets:
-                            write_widget_to_all_conversations(data, target_dirs=targets)
-                    except Exception as e:
-                        sys.stderr.write(f"[widget-sync] refresh write failed: {e}\n")
-                self._set_cors(200)
-                self.wfile.write(
-                    json.dumps(
-                        {
-                            "ok": True,
-                            "timestamp_kst": data.get("timestamp_kst"),
-                            "recommended_routing": data.get("recommended_routing"),
-                            "accounts": accounts,
-                            "pcTelemetryHtml": pc_html,
-                            "activeTreeHtml": active_html,
-                            "closedTreeHtml": closed_html,
-                            "activeCount": act_cnt,
-                            "closedCount": cls_cnt,
-                            "state": st,
-                        },
-                        ensure_ascii=False,
-                    ).encode("utf-8")
-                )
-            except Exception as e:
-                self._set_cors(500)
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+            qs = urllib.parse.parse_qs(parsed.query)
+            snapshot = _http_snapshot
+            if parsed.path == "/api/refresh":
+                try:
+                    snapshot = refresh_http_snapshot(force=True)
+                    dirs = list_conversation_dirs()
+                    targets = dirs if qs.get("write_disk", ["0"])[0] == "1" else [
+                        d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))]
+                    if targets:
+                        write_widget_to_all_conversations(snapshot["data"], target_dirs=targets)
+                except Exception as e:
+                    sys.stderr.write(f"[widget-sync] refresh failed: {e}\n")
+                    if snapshot is None:
+                        self._set_cors(503)
+                        self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+                        return
+            self._set_cors(200)
+            self.wfile.write(status_snapshot_payload(snapshot, qs))
             return
 
         if parsed.path == "/api/pc":

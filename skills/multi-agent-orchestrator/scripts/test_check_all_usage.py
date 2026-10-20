@@ -224,7 +224,7 @@ class CollectorTests(unittest.TestCase):
                 with mock.patch.object(usage.os.path, "exists", return_value=False), mock.patch.object(
                     usage.glob, "glob", return_value=["/fake/rollout.jsonl"]
                 ), mock.patch.object(usage.os.path, "getmtime", return_value=0), mock.patch(
-                    "builtins.open", mock.mock_open(read_data=json.dumps(event) + "\n")
+                    "builtins.open", side_effect=lambda path, mode="r", **kw: io.BytesIO((json.dumps(event) + "\n").encode()) if "b" in mode else io.StringIO()
                 ), mock.patch.object(usage, "_codex_model_metadata", return_value={"service_tiers": ["priority"]}):
                     result = usage.get_codex_usage()
                 self.assertEqual(result["stale"], stale)
