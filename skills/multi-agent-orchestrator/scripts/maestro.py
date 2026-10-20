@@ -301,23 +301,32 @@ def stamp_codex_db_titles(since_ts: int, agy_title: str, abs_cwd: str) -> list[s
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
         rows = conn.execute(
-            "SELECT id, name, title FROM threads WHERE created_at >= ? AND cwd = ? AND source IN ('exec', 'vscode') ORDER BY created_at DESC LIMIT 5",
+            "SELECT id, name, title, preview, first_user_message FROM threads WHERE created_at >= ? AND cwd = ? AND source IN ('exec', 'vscode') ORDER BY created_at DESC LIMIT 5",
             (since_ts - 5, abs_cwd),
         ).fetchall()
-        for tid, name, title in rows:
-            name = (name or "").replace("\U0001fa90", "").strip()
-            title = (title or "").replace("\U0001fa90", "").strip()
-            while name.lower().startswith("ultrathink"):
-                name = name[10:].strip()
-            while title.lower().startswith("ultrathink"):
-                title = title[10:].strip()
-            if not name.startswith(AGY_PREFIX):
-                name = f"{AGY_PREFIX} {name or agy_title}".strip()
-            if not title.startswith(AGY_PREFIX):
-                title = f"{agy_title} — {title}".strip(" —")
-            conn.execute("UPDATE threads SET name = ?, title = ? WHERE id = ?", (name, title, tid))
+        for tid, name, title, prev, fum in rows:
+            def _clean(val: str, fallback: str) -> str:
+                s = (val or "").replace("\U0001fa90", "").strip()
+                if s.lower().startswith("ultrathink"):
+                    s = s[10:].strip()
+                    if s.startswith(AGY_PREFIX):
+                        s = s[len(AGY_PREFIX):].strip()
+                    return f"{AGY_PREFIX} [Ultra] {s or fallback}".strip()
+                if not s.startswith(AGY_PREFIX):
+                    return f"{AGY_PREFIX} {s or fallback}".strip()
+                return s
+
+            new_name = _clean(name, agy_title)
+            new_title = _clean(title, agy_title)
+            new_prev = _clean(prev, agy_title)
+            new_fum = _clean(fum, agy_title)
+
+            conn.execute(
+                "UPDATE threads SET name = ?, title = ?, preview = ?, first_user_message = ? WHERE id = ?",
+                (new_name, new_title, new_prev, new_fum, tid),
+            )
             stamped.append(tid)
-            record_spawned_session(tid, {"provider": "codex", "title": name, "cwd": abs_cwd})
+            record_spawned_session(tid, {"provider": "codex", "title": new_name, "cwd": abs_cwd})
         conn.commit()
         conn.close()
     except Exception:

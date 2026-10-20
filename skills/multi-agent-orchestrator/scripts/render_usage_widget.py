@@ -2465,9 +2465,11 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     cost = node.get("cost_usd", node.get("total_cost_usd", tokens.get("cost_usd", 0))) or 0
 
     raw_title = node.get("display_name") or node.get("title") or node.get("spec_preview") or node.get("spec") or "Claude worker"
-    raw_title = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", raw_title)
+    raw_title = re.sub(r"^🪐\s*", "", raw_title)
     raw_title = re.sub(r"^ultrathink\s+", "", raw_title).strip()
     title_line = (raw_title.splitlines() or ["Claude worker"])[0].strip()
+    if not title_line.startswith("✦"):
+        title_line = f"✦ {title_line}".strip()
     title = _html_esc(title_line)
 
     badge = " Ultra Fast" if (is_ultra and is_fast) else (" Ultra" if is_ultra else (" Fast" if is_fast else ""))

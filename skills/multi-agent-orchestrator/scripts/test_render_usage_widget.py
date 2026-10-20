@@ -391,6 +391,28 @@ class RenderingTests(unittest.TestCase):
             html = widget.build_static_quota_grid_html(accs)
         self.assertIn("토큰 용량: 잔여 약 2,500만 / 총 5,000만 토큰", html)
 
+    def test_claude_worker_row_preserves_and_prepends_diamond(self):
+        node = {
+            "session_id": "claude-test-sid",
+            "title": "Clean codebase and add tests",
+            "model": "claude-opus-5-5",
+            "effort": "high",
+            "updated_at": 1000,
+        }
+        html = widget._claude_worker_row(node, set(), 1005)
+        self.assertIn("✦ Clean codebase and add tests", html)
+
+        node2 = {
+            "session_id": "claude-test-sid-2",
+            "title": "✦ Already diamond",
+            "model": "claude-opus-5-5",
+            "effort": "high",
+            "updated_at": 1000,
+        }
+        html2 = widget._claude_worker_row(node2, set(), 1005)
+        self.assertIn("✦ Already diamond", html2)
+        self.assertNotIn("✦ ✦", html2)
+
 
 if __name__ == '__main__':
     unittest.main()
