@@ -96,11 +96,20 @@ def main() -> int:
             ):
                 _block("BLOCKED BY MAESTRO HARNESS: Never use schedule() timers to poll or wait for subagents/tasks! Antigravity has native Reactive Wakeup — stop calling tools and end your turn immediately; the system will automatically wake you when the subagent or background task finishes.")
         if tool_name == "invoke_subagent":
-            for entry in tool_input.get("Subagents", tool_input.get("subagents", [])) or []:
-                if not isinstance(entry, dict):
-                    continue
-                if str(entry.get("Model") or "").lower() in ("flash", "flash_lite") and str(entry.get("TypeName") or "self").lower() != "research":
-                    _block("BLOCKED BY MAESTRO HARNESS: Gemini Flash (Model='flash') is strictly READ-ONLY. You MUST set TypeName='research' when invoking Flash. Never allow Flash to touch or edit code! Use maestro worker-start (gpt-6-astra / Opus 5.5 / gpt-6.1-sol) or Model='pro' for any coding.")
+            type_reason = "BLOCKED BY MAESTRO HARNESS: invoke_subagent(TypeName='self') is strictly forbidden to protect 4 Argon quota! You MUST delegate all coding, implementation, and architecture tasks via run_command -> ~/.local/bin/maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna)."
+            entries = tool_input.get("Subagents") or tool_input.get("subagents") or []
+            if isinstance(entries, str):
+                try:
+                    entries = json.loads(entries)
+                except ValueError:
+                    _block(type_reason)
+            if not isinstance(entries, list):
+                _block(type_reason)
+            for entry in entries:
+                if not isinstance(entry, dict) or str(entry.get("TypeName") or "self").strip().lower() != "research":
+                    _block(type_reason)
+                if str(entry.get("Model") or "inherit").strip().lower() not in ("flash", "flash_lite"):
+                    _block("BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='inherit' or 'pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups.")
         if tool_name in SOLO_WRITE_TOOLS and _flash_session(payload, session_id):
             _block("BLOCKED BY MAESTRO HARNESS: Gemini Flash is strictly READ-ONLY and forbidden from modifying any file!")
 

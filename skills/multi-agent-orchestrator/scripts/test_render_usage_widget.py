@@ -18,7 +18,7 @@ class RenderingTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
 
-    def test_unmatched_active_workers_remain_top_level(self):
+    def test_unmatched_active_workers_never_become_roots(self):
         now = datetime.now(timezone.utc)
         parent = dict(conversation_id='parent-test', status='RUNNING',
                       last_modified_time=now.isoformat(), workspaces=['file:///home/u24c9g5090r64/dev'])
@@ -29,11 +29,10 @@ class RenderingTests(unittest.TestCase):
                       updated_at=now.timestamp(), cwd='/home/u24c9g5090r64/dev')
         with mock.patch.object(widget, '_worker_parent', return_value=None), \
              mock.patch.object(widget, '_running_worker_sessions', return_value=({'standalone-codex'}, set(), {'standalone-claude'})):
-            active, _, _, _ = widget.build_active_and_closed_trees_html(
+            active, closed, _, _ = widget.build_active_and_closed_trees_html(
                 {'agent_trees': {'antigravity': [parent], 'codex': [codex], 'claude': [claude]}}, {})
-        self.assertIn('data-node-id="node-cdx-standalone-codex"', active)
-        self.assertIn('data-running="1" data-node-id="node-sub-claude-standalone-claude"', active)
-        self.assertIn('claude --resume standalone-claude', active)
+        self.assertNotIn('node-cdx-standalone-codex', active + closed)
+        self.assertNotIn('node-sub-claude-standalone-claude', active + closed)
 
     def test_closed_sessions_use_exact_recency_and_stop_at_eight(self):
         # Sessions older than seven days are closed; all share age_days, in oldest-first input order.
@@ -50,10 +49,11 @@ class RenderingTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         iso = now.isoformat()
         parent = dict(conversation_id='521b781e-43da-4647-b411-585e65e5f002',
+                      workspaces=['file:///home/u24c9g5090r64/dev'],
                       status='RUNNING', last_modified_time=iso, children=[
                           dict(conversation_id=f'{i:08x}-child', role=f'Child {i}', last_modified_time=iso)
                           for i in range(20)])
-        worker = dict(thread_id='12345678-worker', title='worker', cwd='/home/u24c9g5090r64/dev',
+        worker = dict(parent_id=parent['conversation_id'], thread_id='12345678-worker', title='worker', cwd='/home/u24c9g5090r64/dev',
                       status='closed', source='exec', updated_at=now.timestamp() - 5)
         active, _, _, _ = widget.build_active_and_closed_trees_html(
             {'agent_trees': {'antigravity': [parent], 'codex': [worker]}}, {})
@@ -62,15 +62,15 @@ class RenderingTests(unittest.TestCase):
         self.assertIn('Child 4</span>', active)
         self.assertNotIn('Child 5</span>', active)
 
-    def test_origin_mark_is_text_prefix_only_for_agy_origin(self):
-        # AGY-origin roots are internal workers unless pinned; the mark is a leading "✦" in the name.
+    def test_pinned_agy_origin_workers_cannot_become_roots(self):
+        # Pinning does not turn an unattached AGY-origin worker into a root.
         now = datetime.now(timezone.utc).timestamp()
         nodes = [dict(thread_id=f'{i:08x}-thread', title='Agent', updated_at=now - i,
                       status='running', source='cli', agy_origin=origin)
                  for i, origin in enumerate((True, False), 1)]
         active, _, _, _ = widget.build_active_and_closed_trees_html(
             {'agent_trees': {'codex': nodes}}, {'pinned': ['node-cdx-00000001-thread']})
-        self.assertEqual(active.count('<span class="agent-name">✦ Agent</span>'), 1)
+        self.assertEqual(active.count('<span class="agent-name">✦ Agent</span>'), 0)
         self.assertEqual(active.count('<span class="agent-name">Agent</span>'), 1)
         self.assertNotIn('agy-origin-badge', active)
         self.assertNotIn(chr(0x1fa90), active)

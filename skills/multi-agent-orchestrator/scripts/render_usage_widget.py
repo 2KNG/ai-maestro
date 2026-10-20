@@ -2352,7 +2352,22 @@ def _merge_registry_workers(nodes: list[dict], provider: str) -> list[dict]:
     return merged
 
 
-def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str], now_sec: float) -> str | None:
+def _maestro_result_ids(content: str) -> set[str]:
+    """Recognize actual CLI result objects, not quoted IDs in investigation text."""
+    try:
+        result, _ = json.JSONDecoder().raw_decode(content.lstrip())
+    except ValueError:
+        return set()
+    if not isinstance(result, dict) or not (result.get("pool") or result.get("provider")):
+        return set()
+    ids = {result[k] for k in ("session_id", "thread_id") if isinstance(result.get(k), str)}
+    ids.update(tid for tid in (result.get("thread_ids") or []) if isinstance(tid, str))
+    return ids
+
+
+def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str], now_sec: float,
+                   maestro_activity: dict[str, float] | None = None,
+                   launch_owners: dict[str, set[str]] | None = None) -> str | None:
     """Prefer explicit evidence; ties never resolve by list order or repo basename."""
     def identity(n):
         return n.get("conversation_id") or n.get("thread_id") or n.get("session_id")
@@ -2360,11 +2375,18 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
     ids = {worker.get(k) for k in ("thread_id", "session_id", "registry_id")} - {None, ""}
     candidates = [p for p in parents if identity(p) not in ids]
     explicit = [p for p in candidates if identity(p) in
-                (worker.get("parent_id"), worker.get("parent_session_id"), worker.get("parent_thread_id"))
+                (worker.get("parent_id"), worker.get("parent_cid"), worker.get("parent_conversation_id"),
+                 worker.get("parent_session_id"), worker.get("parent_thread_id"))
                 or any(ids.intersection({c.get("thread_id"), c.get("session_id"), c.get("registry_id")})
                        for c in (p.get("children") or []))]
     if explicit:
         return identity(explicit[0]) if len(explicit) == 1 else None
+    owners = set().union(*((launch_owners or {}).get(wid, set()) for wid in ids))
+    launches = [p for p in candidates if identity(p) in owners]
+    if launches:
+        if len(launches) == 1:
+            return identity(launches[0])
+        candidates = launches
     title = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", worker.get("spec") or worker.get("title") or "").strip()
     for by_id in (True, False):
         matches = [p for p in candidates if any(
@@ -2375,52 +2397,10 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
                 return identity(matches[0])
             candidates = matches
             break
-    cwd = worker.get("cwd")
-    if cwd and os.path.isabs(cwd):
-        ranked = []
-        w_repo, _ = _repo_from_uris_or_cwd(None, cwd)
-        for p in candidates:
-            paths = p.get("workspaces") or ([p.get("cwd")] if p.get("cwd") else [])
-            p_repo, _ = _repo_from_uris_or_cwd(p.get("workspaces"))
-            if not p_repo and identity(p) == "521b781e-43da-4647-b411-585e65e5f002":
-                p_repo = "dev"
-            matched_path = False
-            for path in paths:
-                path = path.removeprefix("file://")
-                if not path or not os.path.isabs(path):
-                    continue
-                path, child = os.path.realpath(path), os.path.realpath(cwd)
-                if path != "/" and os.path.commonpath([path, child]) == path:
-                    ranked.append((len(path), p))
-                    matched_path = True
-            if not matched_path and not paths and p_repo and w_repo and p_repo == w_repo:
-                ranked.append((1, p))
-        if ranked:
-            best = max(rank for rank, _ in ranked)
-            candidates = list({identity(p): p for rank, p in ranked if rank == best}.values())
-            if len(candidates) == 1:
-                return identity(candidates[0])
-        else:
-            candidates = []
-    start = _parse_any_ts(worker.get("started_at") or worker.get("created_at") or worker.get("updated_at"))
-    end = _parse_any_ts(worker.get("completed_at") or worker.get("updated_at")) or now_sec
-    overlaps = []
-    if start:
-        for p in candidates:
-            p_start = _parse_any_ts(p.get("started_at") or p.get("created_at") or p.get("created_time"))
-            p_end = _parse_any_ts(p.get("updated_at") or p.get("last_modified_time"))
-            if p_start and p_end and p_start <= end and start <= p_end:
-                overlaps.append(p)
-    if len(overlaps) == 1:
-        return identity(overlaps[0])
-    pool = overlaps if overlaps else candidates
-    for p in pool:
-        if identity(p) == "521b781e-43da-4647-b411-585e65e5f002":
-            return identity(p)
     return None
 
 
-def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float, *, root: bool = False) -> str:
+def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     sid = _html_esc(str(node.get("session_id") or node.get("id") or ""))
     model = node.get("model") or "claude-opus-5-5"
     effort = node.get("effort") or node.get("reasoning_effort") or "high"
@@ -2479,7 +2459,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float, *, root: 
     pct = float(tokens.get("percent") or 0.0)
 
     c_ts = int(_parse_any_ts(node.get("updated_at")) or 0)
-    row_class = "tree-node" if root else "tree-node sub-node sub-ripening"
+    row_class = "tree-node sub-node sub-ripening"
     scope = _repo_from_uris_or_cwd(None, node.get("cwd") or "")[1]
     return (
         f'<div class="{row_class}" data-scope="{scope}" data-running="{int(running)}" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}" data-idle-age="{int(age)}" data-done-ts="{c_ts}">'
@@ -2653,6 +2633,8 @@ def _codex_worker_is_active(node: dict, live_ids: set[str], paths: dict[str, str
 
 
 def _agy_worker_is_active(node: dict, live_ids: set[str]) -> bool:
+    if node.get("killed"):
+        return False
     cid = node.get("conversation_id", "")
     is_sub = bool(
         node.get("is_subagent")
@@ -2731,6 +2713,47 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     """Builds (active_html, closed_html, active_curr_count, closed_7d_curr_count) from live data."""
     trees_raw = data.get("agent_trees", {})
     ag_list = [n for n in trees_raw.get("antigravity", []) if isinstance(n, dict) and "error" not in n]
+    # Accept both nested collector trees and flat trajectories. Parent identity wins
+    # over titles, pins and imports, including for descendants of descendants.
+    ag_by_cid: dict[str, dict] = {}
+    ag_parent_ids: dict[str, str] = {}
+
+    def collect_ag(nodes, enclosing_cid=None):
+        for node in nodes:
+            cid = node.get("conversation_id")
+            if not cid:
+                continue
+            parent = node.get("parent_id") or node.get("parent_conversation_id") or enclosing_cid
+            if parent:
+                ag_parent_ids[cid] = parent
+            if cid in ag_by_cid:
+                continue
+            ag_by_cid[cid] = dict(node)
+            collect_ag(node.get("children") or [], cid)
+
+    collect_ag(ag_list)
+    from agy_transcript_state import transcript_state
+    transcript_parents, transcript_killed = transcript_state(ag_by_cid)
+    ag_parent_ids.update(transcript_parents)
+    for cid, node in ag_by_cid.items():
+        if transcript_killed.get(cid, node.get("killed", False)):
+            node.update(killed=True, is_running=False, status="TERMINATED")
+    sub_to_root_cid: dict[str, str] = {}
+    for cid, node in ag_by_cid.items():
+        root_cid, seen = cid, set()
+        while root_cid in ag_parent_ids and root_cid not in seen:
+            seen.add(root_cid)
+            root_cid = ag_parent_ids[root_cid]
+        if cid in ag_parent_ids or node.get("is_subagent"):
+            sub_to_root_cid[cid] = root_cid
+    # Rebuild root membership from authoritative edges. This also keeps an old
+    # root visible when a flat descendant is running, without duplicate owners.
+    ag_by_cid = {
+        cid: ({**node, "children": [child for child_id, child in ag_by_cid.items()
+                                   if sub_to_root_cid.get(child_id) == cid and not child.get("killed")]}
+              if cid not in sub_to_root_cid else node)
+        for cid, node in ag_by_cid.items()
+    }
     cdx_list = [n for n in trees_raw.get("codex", []) if isinstance(n, dict) and "error" not in n]
     dismissed = set(state.get("dismissed") or [])
     pinned = set(state.get("pinned") or [])
@@ -2796,8 +2819,11 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     closed_ag = []
     internal_ag_workers = []
     seen_active_repos = set()
-    for n in ag_list:
+    for n in ag_by_cid.values():
         cid = n.get("conversation_id", "")
+        if cid in sub_to_root_cid:
+            internal_ag_workers.append(n)
+            continue
         cid8 = cid[:8]
         node_id = f"node-agy-{cid8}"
         children = n.get("children") or []
@@ -2848,10 +2874,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_pinned = (node_id in pinned or tid in pinned or f"closed-cdx-{tid8}" in pinned)
         is_imported = (node_id in imported or tid in imported)
         is_dismissed = not is_pinned and (node_id in dismissed or tid in dismissed or f"closed-cdx-{tid8}" in dismissed)
-        if is_internal_cdx and not is_pinned and not is_imported:
+        if c.get("source") == "exec" or c.get("agy_origin") or (is_internal_cdx and not is_pinned and not is_imported):
             if is_live_running or age_sec_cdx <= SUB_IDLE_RETENTION_SEC:
                 internal_cdx_workers.append(c)
-            if not c.get("registry_only"):
+            if not c.get("registry_only") and c.get("source") != "exec":
                 closed_cdx.append(c)
         elif (is_live_running or is_pinned or is_imported or age_days_cdx <= 7) and not is_dismissed:
             active_cdx.append(c)
@@ -2860,53 +2886,74 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         elif not c.get("registry_only"):
             closed_cdx.append(c)
 
-    # Map maestro worker-start specs in each active parent AGY transcript so cross-repo workers (e.g. Task 3 in cockpit spawned by tag_gcdual) attach to their true parent!
+    # Aggregate descendant evidence under its root, including asynchronous command
+    # output that appears only in task logs rather than in the parent transcript.
     maestro_specs_by_cid: dict[str, str] = {}
-    repo_to_parent_cid: dict[str, str] = {}
-    for ag_p in sorted(active_ag, key=lambda x: _age_sec_from_iso(x.get("last_modified_time") or "")):
-        p_cid = ag_p.get("conversation_id", "")
-        p_repo, _ = _repo_from_uris_or_cwd(ag_p.get("workspaces"))
-        if p_repo and p_repo not in repo_to_parent_cid:
-            repo_to_parent_cid[p_repo] = p_cid
-        t_path = os.path.join(
-            os.path.expanduser("~/.gemini/antigravity/brain"),
-            p_cid,
-            ".system_generated",
-            "logs",
-            "transcript.jsonl",
-        )
-        if os.path.exists(t_path):
+    maestro_activity: dict[str, float] = {}
+    launch_owners: dict[str, set[str]] = {}
+    evidence_by_root: dict[str, list[str]] = {}
+    brain_dir = os.path.expanduser("~/.gemini/antigravity/brain")
+    for cid in ag_by_cid:
+        root_cid = sub_to_root_cid.get(cid, cid)
+        system_dir = os.path.join(brain_dir, cid, ".system_generated")
+        paths = [os.path.join(system_dir, "logs", "transcript.jsonl")]
+        paths.extend(glob.glob(os.path.join(system_dir, "tasks", "task-*.log")))
+        for path in paths:
             try:
-                with open(t_path, encoding="utf-8", errors="ignore") as tf:
-                    maestro_lines = list(tf)
-                if maestro_lines:
-                    maestro_specs_by_cid[p_cid] = "\n".join(maestro_lines)
+                with open(path, encoding="utf-8", errors="ignore") as tf:
+                    content = tf.read()
+                evidence = []
+                result_ids = _maestro_result_ids(content)
+                if path.endswith("transcript.jsonl"):
+                    for line in content.splitlines():
+                        try:
+                            step = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(step, dict):
+                            continue
+                        for call in step.get("tool_calls") or []:
+                            if isinstance(call, dict) and call.get("name") == "run_command":
+                                from agy_transcript_state import decode
+                                args = decode(call.get("args") or {})
+                                if isinstance(args, dict):
+                                    command = str(decode(args.get("CommandLine") or ""))
+                                    if "maestro" in command and "worker-start" in command:
+                                        evidence.append(command)
+                        if step.get("type") not in ("GENERIC", "SYSTEM_MESSAGE"):
+                            continue
+                        output = str(step.get("content") or "").partition("Output:\n")[2]
+                        result_ids.update(_maestro_result_ids(output))
+                        if output:
+                            evidence.append(output)
+                else:
+                    evidence.append(content)
+                evidence_by_root.setdefault(root_cid, []).extend(evidence)
+                for wid in result_ids:
+                    launch_owners.setdefault(wid, set()).add(root_cid)
+                if "maestro" in content:
+                    maestro_activity[root_cid] = max(maestro_activity.get(root_cid, 0), os.path.getmtime(path))
             except OSError:
                 pass
+    maestro_specs_by_cid = {cid: "\n".join(parts) for cid, parts in evidence_by_root.items()}
 
     attached_ag_workers_by_parent: dict[str, list[dict]] = {}
     for w_ag in internal_ag_workers:
+        if w_ag.get("killed"):
+            continue
         w_raw = re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", ((w_ag.get("title") or "").splitlines() or [""])[0]).strip()
-        w_key = w_raw[:24].strip()
-        w_repo, _ = _repo_from_uris_or_cwd(w_ag.get("workspaces"))
         target_p = None
         # 1. Direct parent_conversation_id if it exists in active_ag
-        p_direct = w_ag.get("parent_conversation_id")
+        p_direct = sub_to_root_cid.get(w_ag.get("conversation_id")) or w_ag.get("parent_id") or w_ag.get("parent_conversation_id")
         if p_direct and any(ag.get("conversation_id") == p_direct for ag in active_ag):
             target_p = p_direct
-        # 2. Spec match in parent's transcript
-        if not target_p and len(w_key) >= 8:
-            for p_cid, specs_txt in maestro_specs_by_cid.items():
-                if w_key in specs_txt:
-                    target_p = p_cid
-                    break
-        # 3. Match active parent in the exact same workspace repo
-        if not target_p and w_repo:
-            target_p = repo_to_parent_cid.get(w_repo)
+        if w_ag.get("conversation_id") in sub_to_root_cid and not target_p:
+            # Missing/cyclic explicit parents must not attach to an unrelated repo.
+            continue
         if target_p:
             attached_ag_workers_by_parent.setdefault(target_p, []).append({
                 **w_ag,
-                "role": w_raw or "maestro worker",
+                "role": w_ag.get("role") or w_raw or "maestro worker",
             })
 
     parents = active_ag + active_cdx
@@ -2920,19 +2967,20 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 pass
     attached_cdx_workers_by_parent: dict[str, list[dict]] = {}
     attached_claude_workers_by_parent: dict[str, list[dict]] = {}
-    unattached_claude = []
     for provider, workers, attached in (
         ("codex", internal_cdx_workers, attached_cdx_workers_by_parent),
         ("claude", claude_list, attached_claude_workers_by_parent),
     ):
         for worker in workers:
-            target = _worker_parent(worker, parents, maestro_specs_by_cid, now_sec)
+            if worker.get("killed"):
+                continue
+            worker = dict(worker)
+            for key in ("parent_id", "parent_cid", "parent_conversation_id", "parent_session_id", "parent_thread_id"):
+                if worker.get(key) in sub_to_root_cid:
+                    worker[key] = sub_to_root_cid[worker[key]]
+            target = _worker_parent(worker, parents, maestro_specs_by_cid, now_sec, maestro_activity, launch_owners)
             if target:
-                attached.setdefault(target, []).append(worker)
-            elif provider == "claude":
-                unattached_claude.append(worker)
-            elif worker not in active_cdx:
-                active_cdx.append(worker)
+                attached.setdefault(target, []).append({**worker, "parent_cid": target})
 
     active_parts = ["<!--__ACTIVE_TREE_HTML_START__-->"]
     active_entries = []
@@ -3124,7 +3172,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     bt_desc = clean_desc.strip('"\'')
             bt_tag, bt_kind_lbl, bt_time_str, bt_timing_ko = _fmt_bg_badge_and_timing(bgt, now_sec)
             is_dmn_or_tmr = bt_kind in ("daemon", "timer")
-            node_cls = "tree-node bg-daemon-node" if is_dmn_or_tmr else "tree-node"
+            node_cls = "tree-node sub-node bg-daemon-node"
             if is_dmn_or_tmr and not show_bg_daemons:
                 node_cls += " hidden"
             bt_dot = "busy" if bt_kind == "job" else "idle-fresh"
@@ -3238,6 +3286,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
     active_cdx_sorted = sorted(active_cdx, key=lambda x: 0 if x.get("source") == "vscode" else 1)
     for cdx in active_cdx_sorted:
+        if cdx.get("source") == "exec" or cdx.get("agy_origin"):
+            continue
         tid = cdx.get("thread_id", "")
         if tid in rendered_codex_child_ids:
             continue
@@ -3318,7 +3368,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 child_dot = "busy" if c_live_child else "idle-fresh"
                 child_ts = float(ch.get("updated_at") or 0.0)
                 row_html = (
-                    f'<div class="tree-node" data-node-id="{child_node_id}">'
+                    f'<div class="tree-node sub-node" data-node-id="{child_node_id}">'
                     f'<div class="agent-row child" onclick="toggleDetail(\'{child_det_id}\')">'
                     f'<div class="agent-left">{_sub_prefix_html(child_dot)}'
                     f'{child_icon}'
@@ -3375,13 +3425,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "html": parent_html,
         })
 
-    for worker in unattached_claude:
-        sid = worker["session_id"]
-        if sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
-            continue
-        active_entries.append({"is_main_orch": False, "is_live_running": sid in live_claude_ids,
-                               "updated_ts": _parse_any_ts(worker.get("updated_at")) or 0,
-                               "html": _claude_worker_row(worker, live_claude_ids, now_sec, root=True)})
     active_entries.sort(key=lambda item: (
         0 if item["is_main_orch"] else 1,
         0 if item["is_live_running"] else 1,
@@ -3409,6 +3452,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         closed_items.append(("antigravity", age_d, ag))
 
     for cdx in closed_cdx:
+        if cdx.get("source") == "exec" or cdx.get("agy_origin"):
+            continue
         age_d = int(cdx.get("age_days", 0) or 0)
         if age_d > 30:
             continue

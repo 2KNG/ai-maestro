@@ -3,8 +3,9 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
 
 1. `<MAESTRO_DISPATCH_GATE>`:
    - `<thought>` 3~4줄 이내 작성 후 첫 툴로 즉시 위임:
-     * 읽기 전용 탐색·조사: `invoke_subagent(TypeName='research', Model='flash')` 전용 (research 타입만 허용).
-     * 코딩·구현·수정·설계: Flash 사용 절대 금지! `maestro worker-start --pool auto --difficulty <high|medium> --cwd <dir> --wait --spec "<task>"` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`) 또는 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 허용.
+     * 읽기 전용 탐색·조사: `invoke_subagent(TypeName='research', Model='flash')` 전용 (`flash_lite`도 허용, research 타입만 허용).
+     * 모든 코딩·구현·파일 수정·리팩토링·아키텍처 위임은 `run_command`에서 `~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec-file <path>`로 수행한다 (`Opus 5.5`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`).
+     * `invoke_subagent`는 `TypeName='research'`와 `Model='flash'` 또는 `'flash_lite'` 조합만 허용한다. `self`와 사용자 정의 타입, `pro`/`inherit` 및 모델 생략은 4 Argon 쿼터 보호를 위해 하네스가 강제 차단한다 (`decision: block`, 종료 코드 2).
    - 메인 에이전트 단독 도구 연속 실행 2회 초과 금지 (Hard Solo-Tool Cap, 단 읽기 전용 `view_file`은 최대 4회까지 허용).
    - Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock): Depth 1 서브 워커가 3개 이상 독립 모듈 처리 시 분할 계획 보고 후 동일 모델 패밀리(Claude→Claude, Codex→Codex) 내에서만 Depth 2 리프 워커 분기 기동. effort는 최대 `high`로 제한되며 속도 티어는 `default` 고정. Depth 2 리프 워커는 추가 위임(Depth 3)이 차단되며 직접 완수해야 함.
    - Shell Backtick Crash Guard (`--spec` 백틱 폭발 방지): `maestro worker-start` 호출 시 프롬프트 안에 백틱(`` ` ``), `$`, `()`, 따옴표가 포함될 경우 절대 큰따옴표(`--spec "..."`) 안에 그냥 넣지 않는다(Bash가 백틱 안의 `` `ssh orin` ``이나 `` `func()` ``를 쉘 명령어로 실행해 크래시·무한 행이 발생함). 반드시 작은따옴표 Heredoc (`<<'EOF' ... EOF`) 또는 `--spec '...'` / `--spec-file`을 사용한다!

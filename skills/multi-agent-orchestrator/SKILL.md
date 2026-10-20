@@ -26,26 +26,26 @@ python3 ~/.gemini/config/skills/multi-agent-orchestrator/scripts/check_all_usage
 
 To trigger/start the 5-hour rolling reset timer on any untouched Antigravity model pool, send a lightweight 1-turn `StartCascade` + `SendUserCascadeMessage` ("Reply OK") and `DeleteCascadeTrajectory` via `$ANTIGRAVITY_LS_ADDRESS`.
 
-## 2. Launching Local Codex & Claude in the Subagents Panel
+## 2. Launching Local Codex & Claude Workers
 
-To ensure delegated tasks appear live as cards in the right-hand **Subagents** panel:
+Delegate coding, implementation, and architecture through `run_command` using
+`~/.local/bin/maestro worker-start --pool auto --difficulty <high|medium|low> --cwd <dir> --wait --spec-file <path>`.
+The worker pool selects Opus 5.5, gpt-6-astra, gpt-6.1-sol, or gpt-6-luna.
+Use `--spec-file` for prompts containing shell-sensitive text.
 
-1. Define (if not yet defined in the current conversation) `codex-worker` and/or `claude-worker` using `define_subagent` with `enable_write_tools: true`.
-2. Call `invoke_subagent` with `Subagents`:
-   - **`codex-worker`**:
-     - Executes `/home/u24c9g5090r64/.config/nvm/versions/node/v24.21.0/bin/codex exec -C <dir> "<prompt>"`
-     - Or runs code review: `/home/u24c9g5090r64/.config/nvm/versions/node/v24.21.0/bin/codex review -C <dir>`
-     - Or queues follow-up into an active desktop/CLI thread: `codex queue --thread <uuid> --message "<prompt>"`
-   - **`claude-worker`**:
-     - Executes `/home/u24c9g5090r64/.local/bin/claude -p "<prompt>"`
-     - Has direct access to `claude.ai` cloud MCPs including **Mobbin** (`https://api.mobbin.com/mcp`), **Context7**, **Mermaid Chart**, **Google Drive**, **Gmail**, and **Google Calendar**.
+Do not define or invoke `codex-worker` / `claude-worker` wrappers through
+`invoke_subagent`. Every `invoke_subagent` entry must explicitly use
+`TypeName='research'` with `Model='flash'` or `Model='flash_lite'` for read-only
+lookups. The harness blocks every other type (including missing type, which
+means `self`) and every other model (including missing model, which means
+`inherit`) to protect 4 Argon quota.
 
 ## 2.5. Maestro Multi-Pool Dispatch (`maestro`)
 
 > [!IMPORTANT]
-> - **`Gemini 3.8 Flash (Model='flash')`는 오직 읽기 전용 탐색·로그/파일 조사(`TypeName='research', Model='flash'`)에만 사용한다.**
-> - **코드 작성·수정·리팩토링·UI/모션·알고리즘·아키텍처 작업에 `invoke_subagent(TypeName='self', Model='flash')`를 사용하는 것을 절대 금지한다!**
-> - **코딩 및 구현 위임은 반드시 `~/.local/bin/maestro worker-start --pool auto ...` (`gpt-6-astra`, `Opus 5.5`, `gpt-6.1-sol`)를 사용하거나, Antigravity 내부 서브에이전트가 꼭 필요한 경우 `Model='pro'`/`'inherit'`(`Gemini 4 Argon`)만 사용한다.**
+> - `invoke_subagent`는 읽기 전용 탐색·로그/파일 조사에만 사용하며, 모든 항목에 `TypeName='research'`와 `Model='flash'` 또는 `'flash_lite'`를 지정한다.
+> - `TypeName='self'`, 사용자 정의 타입, `Model='pro'`/`'inherit'`, 타입 또는 모델 생략은 4 Argon 쿼터 보호를 위해 하네스가 강제 차단한다 (`decision: block`, 종료 코드 2).
+> - 모든 코딩·구현·리팩토링·UI/모션·알고리즘·아키텍처 위임은 `run_command`에서 `~/.local/bin/maestro worker-start --pool auto ...` (`Opus 5.5`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`)로 수행한다.
 
 | Difficulty | Dispatch command |
 |---|---|
@@ -58,7 +58,7 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 | Parallel submodules → OpenAI Codex Astra Pool (`gpt-6-astra`, `medium`, default tier) | `~/.local/bin/maestro worker-start --pool codex-astra --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-astra`) |
 | Lightweight fast coding / small fixes → OpenAI Codex Luna Pool (`gpt-6-luna`, `low`/`medium`, default tier) | `~/.local/bin/maestro worker-start --pool codex-luna --cwd <dir> --wait --spec "..."` (or `--pool codex --model gpt-6-luna`) |
 | PC 조작 / 데스크탑 GUI 제어 / Computer-Use → OpenAI Codex (`gpt-6.1-sol` / `gpt-6-astra`) | `~/.local/bin/maestro worker-start --pool codex --cwd <dir> --spec "..."` |
-| Low / read-only lookup (읽기 전용 탐색·조사) | `invoke_subagent(TypeName='research', Model='flash')` only (코딩/수정 시 Flash 금지) |
+| Low / read-only lookup (읽기 전용 탐색·조사) | `invoke_subagent(TypeName='research', Model='flash')` (`flash_lite` also allowed; 코딩/수정 금지) |
 
 - **Hierarchical Same-Family Sub-Orchestration (`MAESTRO_WORKER_DEPTH <= 2` & Same-Pool Lock)**:
   - When a Depth 1 sub-worker receives an oversized task (3+ independent modules or large implementation + verification), it reports its split plan (`[SUB-ORCHESTRATION REPORT]`) and spawns Depth 2 leaf workers (`MAESTRO_WORKER_DEPTH=2`) within its own model family only.
@@ -141,5 +141,5 @@ To ensure delegated tasks appear live as cards in the right-hand **Subagents** p
 
 When coordinating across multiple agents in `/home/u24c9g5090r64/dev`:
 - Always check `STATE.md`, `CLAUDE.md`, and `AGENTS.md` in the target repository before dispatching subagents.
-- Assign strict, disjoint file ownership boundaries to each agent (`codex-worker`, `claude-worker`, or internal Gemini subagents).
+- Assign strict, disjoint file ownership boundaries to each agent (Maestro Codex/Claude workers or read-only Flash research subagents).
 - Never revert or overwrite dirty files owned by other active sessions.

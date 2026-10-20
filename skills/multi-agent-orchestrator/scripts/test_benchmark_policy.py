@@ -144,6 +144,9 @@ class SpeedAndDispatchTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.dict(workers.os.environ, {
+            'MAESTRO_WORKER_DEPTH': '0', 'MAESTRO_WORKER_POOL': '',
+        }))
         for name, value in [('format_handover_context_for_prompt',''),('save_handover_note',None),
                             ('notify_long_task_completion',None)]:
             self.stack.enter_context(mock.patch.object(maestro_memory,name,return_value=value))

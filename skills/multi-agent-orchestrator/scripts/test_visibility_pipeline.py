@@ -30,7 +30,7 @@ class VisibilityPipelineTests(unittest.TestCase):
             sessions = {"claude": "claude-worker", "codex": "codex-worker"}
             for provider, sid in sessions.items():
                 maestro.record_spawned_session(sid, {
-                    "provider": provider, "pool": provider, "model": "claude-opus-5-5" if provider == "claude" else "gpt-6-astra",
+                    "parent_id": parent["conversation_id"], "provider": provider, "pool": provider, "model": "claude-opus-5-5" if provider == "claude" else "gpt-6-astra",
                     "effort": "medium", "title": f"✦ {provider} delegated task", "spec_preview": "Fix worker visibility",
                     "cwd": dev + "/ai-maestro", "started_at": int(time.time()),
                     "status": "running", "pid": os.getpid(),

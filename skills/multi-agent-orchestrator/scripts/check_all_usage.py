@@ -1079,6 +1079,11 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
     return out
 
 
+def _agy_transcript_parent_ids(cids) -> dict[str, str]:
+    from agy_transcript_state import transcript_state
+    return transcript_state(cids)[0]
+
+
 def _fetch_antigravity_agent_tree() -> list[dict]:
     addr, token = discover_ls_credentials()
     if not addr:
@@ -1162,12 +1167,14 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
 
     selected_root_model = get_last_selected_agy_model()
     spawn_reg = _load_agy_spawn_registry()
+    from agy_transcript_state import transcript_state
+    transcript_parents, transcript_killed = transcript_state(trajs)
 
     nodes = {}
     for cid, summary in trajs.items():
         meta = summary.get("trajectoryMetadata", {})
         spec = meta.get("subagentSpec", {})
-        parent_id = meta.get("parentConversationId")
+        parent_id = transcript_parents.get(cid) or meta.get("parentConversationId")
         depth = meta.get("nestingDepth", 0)
         reg_info = spawn_reg.get(cid, {})
         if not isinstance(reg_info, dict):
@@ -1221,6 +1228,10 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             if str(status).upper() in ("CASCADE_RUN_STATUS_RUNNING", "RUNNING"):
                 status = "CASCADE_RUN_STATUS_DONE"
 
+        killed = transcript_killed.get(cid, False)
+        if killed:
+            is_running_agy = False
+            status = "TERMINATED"
         gm_info = fetch_generator_metadata(cid, last_mod, status)
         model_id = gm_info.get("model_id") or reg_info.get("plan_model") or spec.get("model")
         if not model_id and depth == 0 and selected_root_model and selected_root_model in ANTIGRAVITY_MODEL_MAP:
@@ -1237,6 +1248,7 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "model_id": model_id,
             "status": status,
             "is_running": is_running_agy,
+            "killed": killed,
             "is_subagent": is_subagent,
             "created_time": created_time,
             "last_modified_time": last_mod,
@@ -1246,6 +1258,7 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
             "agy_origin": True,
             "nesting_depth": depth,
             "parent_conversation_id": parent_id,
+            "parent_id": parent_id,
             "context_usage": gm_info.get("context_usage", {
                 "used_tokens": 0, "max_tokens": 1000000, "percent": 0.0
             }),

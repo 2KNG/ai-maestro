@@ -38,7 +38,7 @@ class SubworkerRenderingTests(unittest.TestCase):
             return widget.build_active_and_closed_trees_html({'agent_trees': trees}, {})[0]
 
     def test_registry_claude_usage_badges_and_no_truncation(self):
-        workers = {f'claude-{i}': dict(provider='claude', cwd='/home/mjserver/dev/ai-maestro',
+        workers = {f'claude-{i}': dict(provider='claude', parent_id='parent', cwd='/home/mjserver/dev/ai-maestro',
                    title=f'Worker {i}', model='claude-opus-5-5', effort='ultra' if i == 0 else 'high',
                    tier='fast' if i == 1 else 'default', updated_at=self.now) for i in range(8)}
         self.registry(workers)
@@ -51,7 +51,7 @@ class SubworkerRenderingTests(unittest.TestCase):
             self.assertIn(text, html)
 
     def test_codex_placeholder_merges_final_session(self):
-        self.registry({'early': dict(provider='codex', session_id='final', cwd='/home/mjserver/dev/ai-maestro',
+        self.registry({'early': dict(provider='codex', parent_id='parent', session_id='final', cwd='/home/mjserver/dev/ai-maestro',
                                     title='delegated', updated_at=self.now)})
         nodes = widget._merge_registry_workers([
             dict(thread_id='early', registry_id='early'),
@@ -67,7 +67,7 @@ class SubworkerRenderingTests(unittest.TestCase):
         narrow = self.parent('narrow', '/home/mjserver/dev/ai-maestro')
         worker = dict(session_id='worker', cwd='/home/mjserver/dev/ai-maestro/sub',
                       spec='Implement the distinct task', updated_at=self.now)
-        self.assertEqual(widget._worker_parent(worker, [broad, narrow], {}, self.now), 'narrow')
+        self.assertIsNone(widget._worker_parent(worker, [broad, narrow], {}, self.now))
         self.assertEqual(widget._worker_parent(worker, [broad, narrow],
                          {'parent': 'worker'}, self.now), 'parent')
         self.assertEqual(widget._worker_parent(worker, [broad, narrow],
@@ -75,11 +75,11 @@ class SubworkerRenderingTests(unittest.TestCase):
         twin = self.parent('twin', narrow['cwd'])
         self.assertIsNone(widget._worker_parent(worker, [narrow, twin], {}, self.now))
         twin['created_at'] = self.now + 10
-        self.assertEqual(widget._worker_parent(worker, [narrow, twin], {}, self.now), 'narrow')
+        self.assertIsNone(widget._worker_parent(worker, [narrow, twin], {}, self.now))
         worker['cwd'] = '/home/mjserver/dev/ai-maestro-other'
         self.assertIsNone(widget._worker_parent(worker, [narrow], {}, self.now))
         worker['cwd'] = '/home/mjserver/dev/mjmaterial'
-        self.assertEqual(widget._worker_parent(worker, [broad], {}, self.now), 'parent')
+        self.assertIsNone(widget._worker_parent(worker, [broad], {}, self.now))
 
     def test_multiple_parents_do_not_duplicate_worker(self):
         worker = dict(thread_id='worker', source='exec', cwd='/home/mjserver/dev/repo',
@@ -88,7 +88,7 @@ class SubworkerRenderingTests(unittest.TestCase):
                            ({'worker'}, set(), set()))
         self.assertNotIn('node-sub-cdx-one-worker', html)
         self.assertNotIn('node-sub-cdx-two-worker', html)
-        self.assertEqual(html.count('data-node-id="node-cdx-worker"'), 1)
+        self.assertNotIn('data-node-id="node-cdx-worker"', html)
 
     def test_live_claude_sessions_and_dead_pid(self):
         directory = Path(self.temp.name) / '.claude/sessions'
