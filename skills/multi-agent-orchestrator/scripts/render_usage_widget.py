@@ -1716,18 +1716,18 @@ def _agy_badge_html(is_agy: bool = True) -> str:
 
 
 def _effort_gauge_svg(effort_raw: str) -> str:
-    """Render native Antigravity IDE SpeedIcon/Speed2Icon gauge SVG color-coded by effort level."""
+    """Render the v6 5-stage effort speedometer (Low 25% < Med 50% < High 75% < Max 86% < Ultra 95%)."""
     e = (effort_raw or "high").strip().lower()
     if e in ("low", "minimal"):
-        lvl, lbl = "low", "Low (경량 추론 · 하늘색)"
+        lvl, lbl = "low", "Low 25% (경량 추론 · 하늘색)"
     elif e in ("med", "medium"):
-        lvl, lbl = "med", "Medium (표준 추론 · 에메랄드)"
+        lvl, lbl = "med", "Medium 50% (표준 추론 · 에메랄드)"
     elif e == "max":
-        lvl, lbl = "max", "Max (최대 추론 · 레드라인)"
+        lvl, lbl = "max", "Max 86% (최대 추론 · 레드라인)"
     elif e in ("ultra", "xhigh"):
-        lvl, lbl = "ultra", "Ultra (오버드라이브 · 퍼플✦)"
+        lvl, lbl = "ultra", "Ultra 95% (오버드라이브 · 마젠타✦✦)"
     else:
-        lvl, lbl = "high", "High (고난도 추론 · 앰버)"
+        lvl, lbl = "high", "High 75% (고난도 추론 · 앰버)"
     return (
         f'<svg class="eff-gauge eff-{lvl}" width="13.5" height="13.5" aria-label="Effort {lvl}">'
         f'<title>추론 강도 (Effort): {lbl}</title><use href="#ico-eff-{lvl}"/></svg>'

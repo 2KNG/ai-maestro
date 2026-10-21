@@ -1606,12 +1606,12 @@
     .eff-gauge.eff-med { color: #10b981; }
     .eff-gauge.eff-high { color: #f59e0b; }
     .eff-gauge.eff-max { color: #f43f5e; filter: drop-shadow(0 0 2.5px rgba(244, 63, 94, 0.32)); }
-    .eff-gauge.eff-ultra { color: #c084fc; filter: drop-shadow(0 0 3px rgba(192, 132, 252, 0.42)); }
+    .eff-gauge.eff-ultra { color: #e879f9; filter: drop-shadow(0 0 3px rgba(217, 70, 239, 0.55)); }
     html.light .eff-gauge.eff-low { color: #0284c7; }
     html.light .eff-gauge.eff-med { color: #059669; }
     html.light .eff-gauge.eff-high { color: #d97706; }
     html.light .eff-gauge.eff-max { color: #e11d48; }
-    html.light .eff-gauge.eff-ultra { color: #9333ea; }
+    html.light .eff-gauge.eff-ultra { color: #c026d3; }
     @container (max-width: 640px) {
       .agent-row .model-pill { width: 68px !important; flex: 0 0 68px !important; padding: 1.5px 4px; }
       .model-pill .mp-full { display: none !important; }
@@ -2117,32 +2117,46 @@
         <path transform="translate(4.1, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill" opacity="0.88"/>
         <path transform="translate(8.2, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill"/>
       </symbol>
-      <!-- Native Antigravity IDE SpeedIcon / Speed2Icon Geometry (viewBox="0 -960 960 960", flat bottom H756..H204 + teardrop needle) -->
-      <!-- Low Effort: Native Antigravity Speed2Icon (#38bdf8 Sky Blue, needle upper-left -45°) -->
+      <!-- Effort speedometer v6 (viewBox="0 -960 960 960", flat bottom + teardrop needle, open ring gap at needle tip) -->
+      <!-- Sweep trails run from the 0% start (bottom-left) to the needle tip -->
+      <linearGradient id="grad-max-sweep" x1="180" y1="-220" x2="780" y2="-450" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.03"/>
+        <stop offset="45%" stop-color="#f43f5e" stop-opacity="0.16"/>
+        <stop offset="100%" stop-color="#f43f5e" stop-opacity="0.42"/>
+      </linearGradient>
+      <linearGradient id="grad-ultra-sweep" x1="180" y1="-220" x2="800" y2="-380" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#a855f7" stop-opacity="0.04"/>
+        <stop offset="40%" stop-color="#c084fc" stop-opacity="0.20"/>
+        <stop offset="100%" stop-color="#f472b6" stop-opacity="0.48"/>
+      </linearGradient>
+      <!-- Low 25%: needle -48 deg, open ring gap at the needle tip (#38bdf8 sky) -->
       <symbol id="ico-eff-low" viewBox="0 -960 960 960">
-        <path fill="currentColor" d="M532.15-348q22.54-22.54 20.73-52.88t-26.73-49.27q-75.92-57.77-156.31-110.96T212.08-667.77q52.85,78 106.42,158.08T428-352q18.08,25.54 49.65,26.23T532.15-348ZM204.62-180q-16.55,0-30.47-7t-22.61-21q-26.08-45.51-39.12-95.3T99.39-405.23q0.62-50.23 15.04-97.85t40.42-91.38l37.61,55.23q-16.62,32-24.85,66.12T159.38-404q0,44 11.12,85.5T204.64-240H756q21-36 32.5-76.5T800-400q0-133-93.5-226.5T480-720q-37,0-72.31,8.62T340-686.77l-56-36.85Q328.16-751 377.65-765.5T480-780q78.94,0 147.89,29.96t120.57,81.58t81.58,120.57T860-400q0,51.07-13.04,99.3t-37.88,91.16q-8.34,14.77-22.75,22.15T756-180H204.62Z"/>
+        <path fill="currentColor" d="M 204 -240 A 320 320 0 0 1 189.98 -535.24 A 30 30 0 0 1 135.60 -560.59 A 380 380 0 0 0 150.9 -209.5 Q 164 -180 204 -180 L 756 -180 Q 796 -180 809.1 -209.5 A 380 380 0 0 0 284.29 -725.72 A 30 30 0 0 0 315.19 -674.29 A 320 320 0 0 1 756 -240 Z"/>
+        <path fill="currentColor" transform="rotate(-96.8 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
       </symbol>
-      <!-- Medium Effort: Native Antigravity SpeedIcon dial + needle straight up 0° (#10b981 Emerald) -->
+      <!-- Med 50%: needle straight up, symmetrical ring gap (#10b981 emerald) -->
       <symbol id="ico-eff-med" viewBox="0 -960 960 960">
-        <path fill="currentColor" d="M204-180q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85Q262.38-720 331.5-752.5T390-768l16,58q-48,14-88,43.5T253.5-598Q160-512 160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-400q0-112-93.5-198-24.5-22.5-64.5-52t-88-43.5l16-58q58.5,15.5 127.62,48t120.57,81.58Q830.26-547.38 860-400q0,51.07-13.04,99.3t-37.88,91.16q-8.34,14.77-22.75,22.15T756-180H204Z"/>
-        <path fill="currentColor" transform="rotate(-45 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
+        <path fill="currentColor" d="M 204 -240 A 320 320 0 0 1 386.44 -706.02 A 30 30 0 0 1 368.90 -763.40 A 380 380 0 0 0 150.9 -209.5 Q 164 -180 204 -180 L 756 -180 Q 796 -180 809.1 -209.5 A 380 380 0 0 0 591.10 -763.40 A 30 30 0 0 0 573.56 -706.02 A 320 320 0 0 1 756 -240 Z"/>
+        <path fill="currentColor" transform="rotate(-48.8 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
       </symbol>
-      <!-- High Effort: Exact Native Antigravity SpeedIcon (#f59e0b Amber Gold, needle upper-right +45°) -->
+      <!-- High 75%: needle +48 deg (#f59e0b amber) -->
       <symbol id="ico-eff-high" viewBox="0 -960 960 960">
-        <path fill="currentColor" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23ZM480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
+        <path fill="currentColor" d="M 204 -240 A 320 320 0 0 1 644.81 -674.29 A 30 30 0 0 1 675.71 -725.72 A 380 380 0 0 0 150.9 -209.5 Q 164 -180 204 -180 L 756 -180 Q 796 -180 809.1 -209.5 A 380 380 0 0 0 824.40 -560.59 A 30 30 0 0 0 770.02 -535.24 A 320 320 0 0 1 756 -240 Z"/>
+        <path fill="currentColor" transform="rotate(-0.8 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
       </symbol>
-      <!-- Max Effort: Red (#f43f5e) Native Antigravity SpeedIcon + Redline Zone Fill & Deeper Redline Needle -->
+      <!-- Max 86% redline: 0% to needle full-sweep gradient trail (#f43f5e) -->
       <symbol id="ico-eff-max" viewBox="0 -960 960 960">
-        <path fill="currentColor" fill-opacity="0.24" d="M480-400L695-615A310 310 0 0 1 800-400L756-240H480Z"/>
-        <path fill="currentColor" d="M480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
-        <path fill="currentColor" transform="rotate(16 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
+        <path fill="url(#grad-max-sweep)" d="M 480.0 -400.0 L 213.3 -246.0 A 308.0 308.0 0 1 1 769.4 -505.3 Z"/>
+        <path fill="currentColor" d="M 204 -240 A 320 320 0 0 1 742.13 -583.54 A 30 30 0 0 1 791.28 -617.96 A 380 380 0 0 0 150.9 -209.5 Q 164 -180 204 -180 L 756 -180 Q 796 -180 809.1 -209.5 A 380 380 0 0 0 859.94 -406.63 A 30 30 0 0 0 799.95 -405.58 A 320 320 0 0 1 756 -240 Z"/>
+        <path fill="currentColor" transform="rotate(23.2 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
       </symbol>
-      <!-- Ultra Effort: Purple/Violet (#c084fc) Native Antigravity SpeedIcon + Overdrive Sparkle Star (✦) & Boost Arc -->
+      <!-- Ultra 95% overdrive: 0% to needle full-sweep trail + double sparkle (#e879f9) -->
       <symbol id="ico-eff-ultra" viewBox="0 -960 960 960">
-        <path fill="currentColor" fill-opacity="0.22" d="M235-400A245 245 0 0 1 655-575L480-400Z"/>
-        <path fill="currentColor" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23ZM480-780q39.46,0 75.42,7.15t70.12,22.08q12.15,4.85 24.19,17.31t6.15,23.61q-5.88,11.15-25.42,14.81t-32.31-1.19q-28.08-12.08-57.23-17.92T480-720q-133,0-226.5,93.5T160-400q0,42 11.5,83T204-240H756q23-38 33.5-79T800-404q0-28.31-5.65-58.12t-17.73-57.27q-4.85-12.77-2-24.92t13.46-20.13q9.85-7.25 21.51-4.02t16.5,14.15q17.31,37.69 25.31,74.19T860-405.23q0.62,54.31-12.23,102.65T809.08-208q-7.92,13-22.31,20.5T756-180H204q-16,0-30.19-7.69t-22.88-21.85Q128-249.54 114-296.77T100-400q0-78.38 29.74-147.37t81.19-120.85t120.99-81.82T480-780Z"/>
-        <!-- Overdrive 4-Point Sparkle Star (✦) at upper-right needle apex for instant visual distinction from High/Max -->
-        <path fill="currentColor" d="M775-850C775-775 720-720 645-720C720-720 775-665 775-590C775-665 830-720 905-720C830-720 775-775 775-850Z"/>
+        <path fill="url(#grad-ultra-sweep)" d="M 480.0 -400.0 L 213.3 -246.0 A 308.0 308.0 0 1 1 788.0 -400.0 Z"/>
+        <path fill="currentColor" d="M 204 -240 A 320 320 0 1 1 789.10 -482.82 A 30 30 0 0 1 847.05 -498.35 A 380 380 0 1 0 150.9 -209.5 Q 164 -180 204 -180 L 756 -180 Q 786 -180 786 -210 Q 786 -240 756 -240 Z"/>
+        <path fill="currentColor" transform="rotate(43.2 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
+        <path fill="currentColor" d="M815-880C815-795 752-732 667-732C752-732 815-669 815-584C815-669 878-732 960-732C878-732 815-795 815-880Z"/>
+        <path fill="currentColor" fill-opacity="0.88" d="M625-935C625-892 592-859 549-859C592-859 625-826 625-783C625-826 658-859 701-859C658-859 625-892 625-935Z"/>
       </symbol>
       <!-- 5-Hour Rolling Session Stopwatch Icon (크라운 + 우측 푸셔 + 5시간 섹터 웨지 & 시침) -->
       <symbol id="ico-win-5h" viewBox="0 0 24 24">
