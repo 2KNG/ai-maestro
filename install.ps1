@@ -6,7 +6,7 @@
 #   git clone https://github.com/2KNG/ai-maestro.git $HOME\dev\ai-maestro
 #   powershell -ExecutionPolicy Bypass -File $HOME\dev\ai-maestro\install.ps1
 #
-# After installing, runs the 3-step onboarding (`maestro setup`):
+# After installing, runs onboarding (`maestro setup`; remote hub is optional):
 #   [1/3] Antigravity / Codex / Claude CLIs  [2/3] Orca  [3/3] remote hub address
 # Extra arguments are passed to `maestro setup`, e.g.:
 #   .\install.ps1 --yes --hub <your-server-domain-or-ip>
@@ -138,5 +138,5 @@ Write-Host ""
 Write-Host "[ai-maestro] Installation complete"
 Write-Host "   Live dashboard : http://127.0.0.1:18765"
 Write-Host "   Usage check    : ai-usage"
-Write-Host "   Onboarding     : maestro setup  (CLIs, Orca, remote hub)"
+Write-Host "   Onboarding     : maestro setup  (CLIs, optional Orca, optional remote hub)"
 Write-Host "   Orca terminals : maestro orca-list ; maestro remote status"

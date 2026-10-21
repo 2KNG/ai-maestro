@@ -167,7 +167,7 @@ else
   echo "   ✓ Started background daemon: widget_bridge_daemon.py (http://127.0.0.1:18765)"
 fi
 
-# 6. 3-step onboarding: core CLIs -> Orca -> remote hub address (maestro setup)
+# 6. Onboarding: core CLIs -> optional local Orca -> optional remote hub (maestro setup)
 if [[ "${MAESTRO_SETUP:-1}" != "0" ]]; then
   if [[ -t 0 ]]; then
     python3 "$SCRIPTS_DIR/maestro.py" setup "$@" || echo "   ⚠ maestro setup did not finish; rerun: maestro setup"
@@ -176,7 +176,7 @@ if [[ "${MAESTRO_SETUP:-1}" != "0" ]]; then
     python3 "$SCRIPTS_DIR/maestro.py" setup "$@" </dev/tty || echo "   ⚠ maestro setup did not finish; rerun: maestro setup"
   else
     python3 "$SCRIPTS_DIR/maestro.py" setup --check-only "$@" || true
-    echo "   ℹ No terminal for prompts. Run 'maestro setup' (or pass --yes --hub <address>) to finish onboarding."
+    echo "   ℹ No terminal for prompts. Run 'maestro setup' for local orchestrator mode (or pass --yes --hub <address>) to add a remote hub."
   fi
 fi
 
@@ -185,5 +185,5 @@ echo "✅ [ai-maestro] Installation Complete!"
 echo "   • Live Dashboard : http://127.0.0.1:18765"
 echo "   • CLI Usage Check: ~/.local/bin/ai-usage"
 echo "   • Auto Worker CLI: ~/.local/bin/maestro worker-start --pool auto --difficulty high --cwd \"\$PWD\" --wait --spec \"...\""
-echo "   • Onboarding     : maestro setup  (CLIs · Orca · remote hub)"
+echo "   • Onboarding     : maestro setup  (CLIs · optional Orca · optional remote hub)"
 echo "   • Orca terminals : maestro orca-list · maestro remote status"

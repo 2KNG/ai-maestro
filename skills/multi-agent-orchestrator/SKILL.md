@@ -6,7 +6,7 @@ description: >-
   and inspect real-time token/quota usage across all pools. Activate when the user asks to
   delegate tasks to Claude or Codex, run multi-agent workflows, use Mobbin/Context7 MCPs,
   check quota/token usage, drive Orca terminals/worktrees, or install/set up ai-maestro
-  (CLIs, Orca, remote hub address).
+  (CLIs, optional local Orca, optional remote hub).
 ---
 
 # Multi-Agent Orchestrator (Antigravity + Codex + Claude Code)
@@ -169,7 +169,7 @@ Remote hub settings are user-local: CLI flags > `MAESTRO_REMOTE_HUB` / `MAESTRO_
 
 ## 5. AI-Assisted Setup Onboarding
 
-Use this when the user asks to install or set up `ai-maestro`, or says "설치할 때 서버 주소나 IP 물어보고 매칭해줘". Ask one question per step and act on the answer. `maestro setup` implements the same flow for terminals (`install.sh` / `install.ps1` run it last).
+Use this when the user asks to install or set up `ai-maestro`, or says "설치할 때 서버 주소나 IP 물어보고 매칭해줘". Step 3 is optional: without a server address/IP, `ai-maestro` completes in Local Orchestrator Mode with Antigravity + Codex + Claude orchestration and the local widget at `127.0.0.1:18765`; if Orca is installed, local Orca is available at `127.0.0.1:6768`. If the user provides a server address/IP during setup or later, additionally connect the remote fleet hub. A request such as "서버 안 붙이고 로컬에서만 쓸게" means skip remote setup without prompting again. `maestro setup` implements this flow for terminals (`install.sh` / `install.ps1` run it last).
 
 1. Core agent CLIs — ask exactly:
    "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?"
@@ -177,9 +177,9 @@ Use this when the user asks to install or set up `ai-maestro`, or says "설치�
 2. Orca — ask exactly:
    "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?"
    On yes run `maestro setup --yes --skip-cli --skip-remote`. If Orca is missing, give the user https://github.com/stablyai/orca/releases/latest, wait for the install, and rerun. Confirm with `maestro orca-status`.
-3. Server address — ask:
-   "서버로 사용할 주소(도메인)나 IP를 말해주세요"
-   When the user answers (for example "내 서버 주소는 hub.example.com이야, 매칭해줘"), run:
+3. Optional server address — ask:
+   "[선택] 원격 관제 허브 서버 주소(도메인)나 IP를 입력해 주세요. Enter를 누르면 로컬 오케스트레이터 모드로 완료합니다."
+   If the user presses Enter/skips or requests local-only operation, finish successfully in Local Orchestrator Mode; do not invoke `maestro remote up` or create tunnel services. When the user provides an address now or later (for example "내 서버 주소는 hub.example.com이야, 매칭해줘"), additionally run:
    ```bash
    maestro remote up --hub <address>
    ```

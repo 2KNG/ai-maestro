@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""`maestro setup`: 3-step onboarding (core CLIs -> Orca -> remote hub).
+"""`maestro setup`: local orchestration setup with optional remote hub.
 
 Run by install.sh / install.ps1 at the end of installation, by hand, or by an
 AI agent on the user's behalf (see <AI_SETUP_ONBOARDING> in SKILL.md/README.md).
 
   1. Core agent CLIs  [x] Antigravity  [x] OpenAI Codex CLI  [x] Claude Code CLI
   2. Orca install check, CLI shim and background service link
-  3. Remote hub address -> ~/.config/ai-maestro/remote.json -> `maestro remote up`
+  3. Optional remote hub address -> ~/.config/ai-maestro/remote.json -> `maestro remote up`
 
 Existing ~/.codex/config.toml and ~/.claude/settings.json are snapshotted before
 any CLI installation and restored byte-for-byte if an installer touched them.
@@ -30,8 +30,8 @@ import remote_config
 STEP1_PROMPT = ('오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] '
                 '(기본 전체 선택)를 먼저 확인하고 설치할까요?')
 STEP2_PROMPT = '이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?'
-STEP3_PROMPT = ("원격 관제 허브로 사용할 서버 주소(도메인)나 IP를 입력해 주세요 "
-                "(AI에게 '내 서버 주소는 xxx야, 매칭해줘'라고 말해도 자동 세팅됩니다):")
+STEP3_PROMPT = ("[선택] 원격 관제 허브 서버 주소(도메인)나 IP를 입력해 주세요 "
+                "(Enter를 누르면 로컬 오케스트레이터 모드로 완료; 나중에 연결할 수 있습니다):")
 
 ORCA_RELEASES = 'https://github.com/stablyai/orca/releases/latest'
 CLIS = [
@@ -242,7 +242,7 @@ class Wizard:
 
     # Step 3 ---------------------------------------------------------------
     def step_hub(self):
-        self.out('\n[3/3] 원격 관제 허브 주소 매칭')
+        self.out('\n[3/3] 선택 사항: 원격 관제 허브 연결')
         saved = remote_config.resolve()
         address = self.args.hub
         if not address and self.interactive and not self.args.skip_remote:
@@ -250,11 +250,11 @@ class Wizard:
             address = self.ask(STEP3_PROMPT + hint, '')
             if not address and saved.get('hub') and self.confirm('저장된 허브로 원격 노드를 기동할까요?', False):
                 address = saved['hub']
-        elif not address:
+        elif not address and not self.args.skip_remote:
             self.out(f'  {STEP3_PROMPT}')
         if not address or self.args.skip_remote:
             current = saved.get('hub')
-            self.out(f'  · 건너뜀{f" (저장된 허브: {current})" if current else ""}. 나중에: maestro remote up --hub <서버주소>')
+            self.out(f'  · 건너뜀{f" (저장된 허브: {current})" if current else ""}. 로컬 오케스트레이터 모드로 진행합니다. 나중에 연결: maestro remote up --hub <서버주소>')
             self.report['hub'] = 'skipped'
             return
         try:
@@ -309,11 +309,17 @@ class Wizard:
         self.report['remote_up'] = maestro_remote.main(argv)
 
     def run(self):
-        self.out('ai-maestro 설정 마법사 (Antigravity · Codex · Claude · Orca · 원격 허브)')
+        self.out('ai-maestro 설정 마법사 (Antigravity · Codex · Claude · 로컬 위젯 · 선택적 Orca/원격 허브)')
         self.step_clis()
         self.step_orca()
         self.step_hub()
-        self.out('\n완료. 상태 확인: maestro remote status · maestro orca-list · ai-usage')
+        if self.report.get('hub') == 'skipped':
+            self.out('\nLocal orchestrator mode ready. Antigravity · Codex · Claude 오케스트레이션과 로컬 위젯(127.0.0.1:18765)을 사용할 수 있습니다.')
+            if isinstance(self.report.get('orca'), dict):
+                self.out('Orca CLI 연동이 확인되었습니다. 로컬 Orca 서비스는 별도로 시작할 수 있습니다 (127.0.0.1:6768).')
+            self.out('원격 허브는 나중에 `maestro remote up --hub <서버주소>`로 연결할 수 있습니다.')
+        else:
+            self.out('\n완료. 상태 확인: maestro remote status · maestro orca-list · ai-usage')
         return 0 if self.report.get('remote_up', 0) == 0 else 1
 
 

@@ -37,6 +37,19 @@ def test_step_prompts_are_exact(home, monkeypatch):
     assert '[x] Antigravity' in out and '[x] OpenAI Codex CLI' in out and '[x] Claude Code CLI' in out
 
 
+def test_skipping_optional_hub_finishes_local_mode_without_tunnel(home, monkeypatch):
+    monkeypatch.setattr(setup, 'find_cli', lambda cli: '/bin/' + cli['key'])
+    monkeypatch.setattr(setup.orca_bridge, 'discover', lambda system=None: None)
+    monkeypatch.setattr(maestro_remote, 'main', lambda argv: pytest.fail('must not create remote tunnel'))
+    code, out, asked = run([], ['y', 'y', ''])
+    assert code == 0
+    assert asked[2].startswith('[선택]')
+    assert 'Local orchestrator mode ready' in out
+    assert '127.0.0.1:18765' in out
+    assert 'maestro remote up --hub <서버주소>' in out
+    assert remote_config.load() == {}
+
+
 def test_cli_install_restores_touched_configs(home, monkeypatch):
     codex = home / '.codex' / 'config.toml'
     claude = home / '.claude' / 'settings.json'

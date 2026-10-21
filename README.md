@@ -9,7 +9,7 @@
 ## 설치
 
 ### 방법 A. AI 에이전트(Antigravity / Claude Code / Codex)에게 지시
-채팅창에 아래 명령을 전달하면 클론, 심볼릭 링크, 데몬 등록, 글로벌 룰 설정 후 3단계 온보딩(CLI → Orca → 서버 주소 매칭)까지 대신 진행합니다.
+채팅창에 아래 명령을 전달하면 클론, 심볼릭 링크, 데몬 등록, 글로벌 룰 설정 후 온보딩(CLI → 선택적 Orca → 선택적 원격 허브 연결)까지 대신 진행합니다.
 
 > "https://github.com/2KNG/ai-maestro 설치해줘. 설치할 때 서버 주소나 IP 물어보고 매칭해줘"
 
@@ -41,7 +41,7 @@ chmod +x ~/dev/ai-maestro/install.sh
 | :--- | :--- | :--- |
 | 1. 기본 CLI | "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?" | `[x] Antigravity` `[x] OpenAI Codex CLI` `[x] Claude Code CLI`(기본 전체 선택). 설치된 `agy`·`codex`·`claude`를 확인하고 없는 것만 설치합니다. 기존 `~/.codex/config.toml`, `~/.claude/settings.json`은 설치 전 스냅샷을 떠 두고 변경되면 바이트 그대로 복원합니다. |
 | 2. Orca | "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?" | `orca`/`orca-ide`를 찾고(없으면 [Orca 릴리스](https://github.com/stablyai/orca/releases/latest) 안내), Linux에서는 화면 읽기 프로그램 `/usr/bin/orca`와 겹치지 않는 `~/.local/bin/orca` shim을 만들고, 기존 `orca-remote.service`를 연결합니다. macOS LaunchAgent와 Windows 예약 작업은 3단계 `maestro remote up`이 등록합니다. |
-| 3. 서버 주소 | "원격 관제 허브로 사용할 서버 주소(도메인)나 IP를 입력해 주세요 (AI에게 '내 서버 주소는 xxx야, 매칭해줘'라고 말해도 자동 세팅됩니다):" | 입력값을 `~/.config/ai-maestro/remote.json`에 저장하고 `maestro remote up --hub <주소>`로 SSH 터널과 페어링 엔드포인트(`wss://<도메인>/orca/<node_id>/`)를 맞춥니다. |
+| 3. 선택적 원격 허브 | "[선택] 원격 관제 허브 서버 주소(도메인)나 IP를 입력해 주세요" | 주소가 없으면 Enter로 건너뛰고 로컬 오케스트레이터 모드로 완료합니다. Antigravity + Codex + Claude 오케스트레이션과 로컬 위젯(`127.0.0.1:18765`)을 사용하며, Orca CLI가 설치된 경우 로컬 Orca 서비스를 별도로 시작해 `127.0.0.1:6768`에서 사용할 수 있습니다. 주소를 제공하면 `~/.config/ai-maestro/remote.json`에 저장하고 `maestro remote up --hub <주소>`로 원격 fleet hub를 추가 연결합니다. |
 
 비대화형 실행 예:
 
@@ -56,11 +56,11 @@ maestro setup --cli codex,claude --skip-orca --no-remote-up                 # �
 
 ### AI 에이전트용 설치 안내
 
-사용자가 설치 중 "설치할 때 서버 주소나 IP 물어보고 매칭해줘"라고 하면 에이전트는 아래 순서를 그대로 따릅니다. 각 단계는 사용자에게 한 번 묻고 답에 따라 실행합니다.
+`maestro setup`은 로컬 Multi-Agent Orchestrator로 동작하며 Step 3은 선택 사항입니다. 사용자가 서버 주소/IP를 제공하지 않거나 "서버 안 붙이고 로컬에서만 쓸게"라고 하면 원격 연결을 시도하지 말고 로컬 모드로 완료합니다. 이후 주소를 제공하면 원격 fleet hub를 추가 연결할 수 있습니다. 설치 중 "설치할 때 서버 주소나 IP 물어보고 매칭해줘"라고 하면 아래 순서를 따릅니다.
 
 1. 기본 CLI: "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?"라고 묻습니다. `[x] Antigravity` `[x] OpenAI Codex CLI` `[x] Claude Code CLI`가 기본 선택입니다. 동의하면 `maestro setup --yes --skip-orca --skip-remote` 또는 `--cli <선택>`을 실행합니다. 기존 `~/.codex/config.toml`과 `~/.claude/settings.json`은 직접 수정하지 않습니다.
 2. Orca: "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?"라고 묻고 `maestro setup --yes --skip-cli --skip-remote`를 실행합니다. Orca가 없으면 릴리스 페이지를 안내하고 설치 후 같은 명령을 다시 실행합니다. `maestro orca-status`로 연동을 확인합니다.
-3. 서버 주소: "서버로 사용할 주소(도메인)나 IP를 말해주세요"라고 묻습니다. 사용자가 "내 서버 주소는 xxx야, 매칭해줘"라고 답하면 다음을 실행합니다.
+3. 선택적 서버 주소: "[선택] 원격 관제 허브 서버 주소(도메인)나 IP를 입력해 주세요. Enter를 누르면 로컬 오케스트레이터 모드로 완료합니다."라고 묻습니다. Enter/건너뛰기 또는 로컬 전용 요청이면 성공적으로 마무리하고 터널 서비스를 만들지 않습니다. 사용자가 지금 또는 나중에 "내 서버 주소는 xxx야, 매칭해줘"라고 답하면 다음을 실행합니다.
    ```bash
    maestro remote up --hub <address>
    ```
