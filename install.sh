@@ -48,6 +48,10 @@ fi
 SCRIPTS_DIR="$INSTALL_DIR/skills/multi-agent-orchestrator/scripts"
 chmod +x "$SCRIPTS_DIR"/*.py || true
 
+# Preserve and validate existing Codex settings before any installation changes.
+# CODEX_HOME is honored; missing files stay missing and invalid files fail closed.
+python3 "$SCRIPTS_DIR/codex_config_safe.py"
+
 # 1. Create portable CLI wrappers in repo bin/
 mkdir -p "$INSTALL_DIR/bin"
 

@@ -27,6 +27,46 @@ chmod +x ~/dev/ai-maestro/install.sh
 
 `install.sh`는 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{maestro,ai-usage,ai-usage-widget,ai-usage-web}`를 `~/dev/ai-maestro` 저장소 내부로 심볼릭 링크 연결합니다. 기능 수정 후 `~/dev/ai-maestro`에서 커밋 및 푸시하여 지속 관리할 수 있습니다.
 
+## Codex 설정 보호와 복구
+
+Python 3.11 이상을 권장합니다. Python 3.10에서는 `tomli`가 필요합니다. 설치와 Codex 워커 시작 시 `CODEX_HOME/config.toml` 또는 `~/.codex/config.toml`을 검증하고 복구용 체크포인트를 만듭니다. 정상 설정은 바이트 그대로 유지합니다. 모델, 공급자, MCP 서버, 프로젝트, 프로필과 주석을 기본값으로 재작성하지 않습니다.
+
+설정을 수정하는 helper는 누락 키만 추가하며 원본 인코딩과 CRLF를 보존합니다. 변경 전 타임스탬프 백업을 만들고 기존 `config.toml.bak`도 보존합니다. UTF-8, UTF-8 BOM, CP949를 읽을 수 있습니다. 빈 파일·잘린 TOML·삭제된 파일은 유효 백업이 있으면 복구하며, 손상 원본은 `.damaged.*`로 보관합니다. 백업 없는 손상 파일은 그대로 두고 오류로 중단합니다.
+
+```bash
+maestro doctor
+maestro doctor --fix-codex-config
+```
+
+`doctor` 기본 동작은 읽기 전용입니다. 문법상 정상인 축소 설정은 사용자의 편집일 수 있으므로 자동으로 되돌리지 않습니다. 외부 프로그램의 지속적인 쓰기를 차단하는 기능은 아닙니다. [설정 쓰기 감사](docs/codex-config-audit.md)에 설치된 Orca의 시스템·관리 홈 동기화, 훅 설정, WSL 직접 쓰기 경로와 확인 범위를 기록했습니다. Codex의 사용자 설정 위치와 설정 계층은 [공식 설정 문서](https://learn.chatgpt.com/docs/config-file/config-basic)를 기준으로 합니다.
+
+## Orca와 2kng.com fleet 연결
+
+```bash
+maestro remote status --node-id pc2
+maestro remote up --node-id pc2 --dry-run
+maestro remote up --node-id pc2 --hub ubuntu@2kng.com --identity-file ~/.ssh/fleet-key
+maestro remote install-node --node-id pc3 --hub ubuntu@2kng.com --identity-file ~/.ssh/fleet-key
+```
+
+`remote-setup`, `orca-remote`, `fleet-setup`, `fleet`도 사용할 수 있습니다. `remote-setup`과 `fleet-setup`에서 동작을 생략하면 `up`을 실행합니다. `install-node`는 현재 체크아웃에서 서비스를 등록하는 크로스 플랫폼 진입점입니다. Python, Orca IDE, OpenSSH와 사용자 서비스 관리자가 먼저 설치되어 있어야 합니다. Linux에서는 GNOME 화면 읽기 프로그램과 혼동하지 않도록 `orca-ide`를 사용합니다. 별도 실행 파일은 `ORCA_CLI_COMMAND`에 전체 경로를 지정합니다.
+
+Windows에서는 Python launcher가 설치된 상태에서 다음 명령을 실행합니다. `bin`을 PATH에 추가하면 다른 폴더에서도 `maestro`로 호출할 수 있습니다.
+
+```powershell
+git clone https://github.com/2KNG/ai-maestro.git
+cd ai-maestro
+.\bin\maestro.cmd remote install-node --node-id pc2 --hub ubuntu@2kng.com --identity-file "$HOME\.ssh\fleet-key"
+```
+
+Linux는 systemd 사용자 서비스, macOS는 LaunchAgent, Windows는 로그인한 사용자의 Scheduled Task로 Orca, 위젯, SSH 터널과 heartbeat를 유지합니다. Orca는 로컬 6768, 위젯은 18765를 사용합니다. 허브 포트는 실제 `rtc2kng` Registry가 배정하는 Orca `16701–16710`, 위젯 `18701–18710`을 따릅니다. `--port`와 `--widget-port`는 배정된 값과 일치할 때만 허용합니다. 터널은 허브의 loopback에만 바인딩합니다.
+
+허브에는 fleet 기능이 배포된 `rtc2kng`, 실행 중인 `/api/orca/nodes` 및 `/api/orca/register`, 해당 Registry에 접근 가능한 SSH 계정이 필요합니다. SSH host key를 먼저 신뢰할 수 있는 경로로 등록해야 하며 자동으로 검증을 끄지 않습니다. 신규 노드 자격은 허브의 실제 `Registry.provision`으로 등록하고 로컬 비공개 파일에 저장합니다. 기존 노드는 같은 자격으로 다시 실행할 수 있습니다. 다른 자격이 소유한 노드 ID나 기존 서비스는 덮어쓰지 않습니다. SSH 키와 노드 토큰을 명령 예시나 저장소에 포함하지 마세요.
+
+기본 허브 체크아웃은 `/home/ubuntu/dev/rtc2kng`, DB는 해당 폴더의 `var/fleet.sqlite3`입니다. 별도 배포 폴더는 `--hub-project`, DB는 `--hub-db`, Python은 `--hub-python`, API 주소는 `--registry-url`과 `--hub-probe-url`로 지정합니다. 접근 제한이 있는 허브는 `RTC2KNG_FLEET_ACCESS_TOKEN`, 이미 발급된 노드 자격은 `RTC2KNG_REGISTRATION_TOKEN` 환경 변수로 전달할 수 있습니다. 다시 실행할 때 저장된 연결 설정과 자격을 재사용합니다.
+
+접속 주소는 `https://2kng.com/orca/<node_id>/`와 로컬 LAN 주소입니다. 실제 Orca pairing이 준비되면 heartbeat가 허브에 전달해 자동 연결에 사용합니다. fleet의 접근 제어는 허브 배포 설정을 따릅니다. `--show-pairing`은 로컬에 저장된 실제 pairing을 표시하므로 출력 공유에 주의하세요. `--dry-run`과 `status`는 서비스를 변경하지 않습니다. 기존에 실행 중인 다른 Orca가 포트를 사용하면 그대로 두고 충돌을 보고합니다. 서비스 시작 성공과 실제 브라우저·데스크톱 제어 검증은 별도로 표시합니다.
+
 ## 핵심 기능
 
 ### 1. 3단계 주간 쿼터 보호 및 0% 자동 조향

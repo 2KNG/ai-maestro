@@ -33,6 +33,7 @@ sys.path.insert(0, SKILL_SCRIPTS_DIR)
 import benchmark_sync
 import check_all_usage as cau
 import render_usage_widget as ruw
+from codex_config_safe import ConfigSafetyError, ensure_codex_config_safe, inspect_codex_config_safe
 
 MODEL_MAP = {
     "agy-claude": "MODEL_PLACEHOLDER_M402",      # Claude Opus 5.5 (High) - Antigravity Claude/GPT Pool
@@ -756,6 +757,10 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     import threading
     import uuid
     import maestro_memory
+    try:
+        ensure_codex_config_safe()
+    except (ConfigSafetyError, OSError, ValueError) as exc:
+        return {"ok": False, "pool": pool, "error": f"Codex config guard: {exc}"}
     abs_cwd = os.path.abspath(cwd)
     model = model or ("gpt-6-luna" if pool in CODEX_LUNA_POOLS else ("gpt-6-astra" if pool in CODEX_ASTRA_POOLS else "gpt-6.1-sol"))
     model, effort, tier = resolve_codex_settings(
@@ -776,7 +781,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     env["MAESTRO_PARENT_SESSION_ID"] = os.environ.get("MAESTRO_PARENT_SESSION_ID") or temporary_sid
     nvm_bins = sorted(glob.glob(os.path.expanduser("~/.config/nvm/versions/node/*/bin")), reverse=True)
     extra_paths = nvm_bins + [os.path.expanduser("~/.local/bin")]
-    env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
+    env["PATH"] = os.pathsep.join(extra_paths + [env.get("PATH", "")])
     codex_bin = shutil.which("codex", path=env["PATH"]) or "codex"
     cmd = [
         codex_bin,
@@ -1024,6 +1029,13 @@ def sync_all_widgets() -> dict:
 
 
 def main():
+    # Remote commands have their own portable parser and avoid quota/model discovery.
+    if len(sys.argv) > 1 and sys.argv[1] in ("remote", "remote-setup", "orca-remote", "fleet-setup", "fleet"):
+        import maestro_remote
+        argv = sys.argv[2:]
+        if sys.argv[1] in ("remote-setup", "fleet-setup") and (not argv or argv[0].startswith("-")):
+            argv = ["up", *argv]
+        raise SystemExit(maestro_remote.main(argv))
     parser = argparse.ArgumentParser(prog="maestro")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1034,6 +1046,13 @@ def main():
     p_route = sub.add_parser("route", help="Show which pool/model --pool auto would pick for a task (dry run)")
     p_route.add_argument("--task", "--spec", dest="task", required=True)
     p_route.add_argument("--difficulty", default="high", choices=["high", "medium", "low"])
+
+    p_doctor = sub.add_parser("doctor", help="Inspect or recover the Codex user configuration")
+    p_doctor.add_argument("--fix-codex-config", action="store_true", help="Checkpoint valid config or restore damaged config from a valid backup")
+    p_doctor.add_argument("--config", help="Config path override (default: CODEX_HOME/config.toml)")
+    p_doctor.add_argument("--json", action="store_true")
+    # Show discoverable help while the remote module handles these arguments above.
+    sub.add_parser("remote", aliases=["remote-setup", "orca-remote", "fleet-setup", "fleet"], help="Provision Orca and the 2kng.com fleet tunnel")
 
     p_start = sub.add_parser("worker-start")
     p_start.add_argument("--spec", default="", help="Task spec string (or '-' / empty to read from --spec-file or stdin)")
@@ -1095,6 +1114,17 @@ def main():
     p_cal.add_argument("--json", action="store_true", help="Output raw JSON calibration snapshot")
 
     args = parser.parse_args()
+
+    if args.cmd == "doctor":
+        try:
+            result = (ensure_codex_config_safe(args.config) if args.fix_codex_config
+                      else inspect_codex_config_safe(args.config))
+        except (ConfigSafetyError, OSError, ValueError) as exc:
+            result = {"ok": False, "error": str(exc)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result.get("ok"):
+            raise SystemExit(1)
+        return
 
     if args.cmd == "route":
         if is_computer_use_task(args.task):
