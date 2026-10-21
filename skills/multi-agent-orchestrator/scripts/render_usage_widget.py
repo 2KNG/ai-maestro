@@ -180,6 +180,7 @@ def convert_agy_node(node: dict) -> dict:
         "modelPill": m_info["pill"],
         "modelKind": m_info["kind"],
         "fast": m_info["fast"],
+        "serviceTier": "fast" if m_info["fast"] else "default",
         "usedTokens": fmt_k(used),
         "maxTokens": fmt_k(max_t),
         "percent": pct,
@@ -226,7 +227,7 @@ def convert_codex_node(node: dict, depth: int = 0) -> dict:
         "id": tid,
         "provider": "codex",
         "repo": _repo_from_uris_or_cwd(None, node.get("cwd"))[0],
-        "serviceTier": tctx.get("service_tier") or "default",
+        "serviceTier": resolve_speed_tier(tctx.get("service_tier"), node.get("tier")),
         "agyOrigin": bool(node.get("agy_origin", False)),
         "name": node.get("display_name") or node.get("nickname") or node.get("title") or "Codex Agent",
         "role": node.get("role") or ("Parent Coordinator" if depth == 0 else "Subagent"),
@@ -715,6 +716,20 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .model-pill.flash { color: #38bdf8; border-color: rgba(56, 189, 248, 0.32); }
     .model-pill.codex { color: #34d399; border-color: rgba(52, 211, 153, 0.32); }
     .model-pill.claude { color: var(--claude, #d97757); border-color: rgba(217, 119, 87, 0.35); }
+    .tier-bolt {
+      flex: none;
+      margin-left: 3px;
+      color: #fbbf24;
+      font-size: 10px;
+      line-height: 1;
+      letter-spacing: -2px;
+      text-shadow: 0 0 6px rgba(251, 191, 36, 0.55);
+      font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    }
+    .tier-bolt.tier-ultrafast {
+      padding-right: 2px;
+      text-shadow: 0 0 8px rgba(245, 158, 11, 0.85);
+    }
 
     .fast-badge {
       display: inline-flex;
@@ -1298,9 +1313,10 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       row.className = `agent-row depth-${Math.min(2, depth)}`;
       row.onclick = () => toggleDetail(detId);
 
-      const fastHtml = node.provider === 'codex'
-        ? `<svg width="13" height="10" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><title>${node.serviceTier}</title><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`
-        : '';
+      const fastHtml = node.serviceTier === 'ultrafast'
+        ? '<span class="tier-bolt tier-ultrafast" title="Ultrafast Tier">⚡⚡</span>'
+        : (['fast', 'priority'].includes(node.serviceTier)
+          ? `<span class="tier-bolt" title="Fast / Priority Tier · ${node.serviceTier}">⚡</span>` : '');
 
       const pctVal = Number(node.percent || 0).toFixed(1);
       const actionHtml = node.actionType === 'link'
@@ -1718,6 +1734,50 @@ def _effort_gauge_svg(effort_raw: str) -> str:
     )
 
 
+FAST_SERVICE_TIERS = ("fast", "priority", "ultrafast")
+_TIER_RANK = {"default": 0, "fast": 1, "priority": 1, "ultrafast": 2}
+_MODEL_TIER_RE = re.compile(r"\(\s*[\w.-]+\s*,\s*(default|standard|fast|priority|ultrafast)\s*\)", re.I)
+
+
+def resolve_speed_tier(*tiers, model: str = "", pool: str = "") -> str:
+    """Canonical speed tier (default|fast|priority|ultrafast) from every source a row has.
+
+    Explicit sources (registry tier, rollout service_tier, "model (effort, tier)" labels) win;
+    the fastest explicit value is kept because a rollout's missing tier falls back to
+    "default". Model/pool names are only consulted when nothing explicit exists.
+    """
+    explicit = []
+    m_tier = _MODEL_TIER_RE.search(model or "")
+    for raw in (*tiers, m_tier.group(1) if m_tier else None):
+        t = str(raw or "").strip().lower()
+        t = "default" if t == "standard" else t
+        if t in _TIER_RANK:
+            explicit.append(t)
+    if explicit:
+        return max(explicit, key=lambda t: _TIER_RANK[t])
+    m, p = (model or "").lower(), (pool or "").lower()
+    if "ultrafast" in m or "ultrafast" in p:
+        return "ultrafast"
+    if "priority" in m:
+        return "priority"
+    if re.search(r"(?<![a-z])fast(?![a-z])", f"{m} {p}"):
+        return "fast"
+    return "default"
+
+
+def _tier_bolt_html(tier: str, provider: str = "") -> str:
+    """Amber lightning next to the effort gauge: ⚡ fast/priority, ⚡⚡ ultrafast."""
+    source = {"codex": "Codex service_tier", "claude": "Claude speed",
+              "antigravity": "Antigravity Flash"}.get(provider, "tier")
+    if tier == "ultrafast":
+        return (f'<span class="tier-bolt tier-ultrafast" title="Ultrafast Tier · {source}: ultrafast" '
+                f'aria-label="ultrafast">⚡⚡</span>')
+    if tier in ("fast", "priority"):
+        return (f'<span class="tier-bolt" title="Fast / Priority Tier · {source}: {tier}" '
+                f'aria-label="{tier}">⚡</span>')
+    return ""
+
+
 def _pin_btn_html(node_id: str, label: str, is_pinned: bool) -> str:
     act = " active" if is_pinned else ""
     tip = "📌 고정 해제 (완료 정리 대상에 포함)" if is_pinned else "📌 고정 핀 (완료 정리 시에도 지워지지 않고 유지)"
@@ -1743,7 +1803,7 @@ def _open_btn_html(node_id: str, cid: str, label: str, repo: str = "") -> str:
 def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", service_tier: str = "default", effort: str = "ultra") -> tuple[str, str, str]:
     """Returns (icon_svg_html, model_pill_html, sub_badge_html) with Speedometer Effort Gauge and 4-A / 3.8-F short codes."""
     if provider == "codex":
-        m_full = (model_str or "gpt-6.1-sol").replace("gpt-", "")
+        m_full = _MODEL_TIER_RE.sub("", (model_str or "gpt-6.1-sol").replace("gpt-", "")).strip()
         if "luna" in m_full:
             m_short = "6-luna"
             extra_style = ' style="border-color:rgba(16,185,129,0.4);background:rgba(16,185,129,0.12);color:#10b981;"'
@@ -1757,12 +1817,8 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
             m_short = m_full[:5]
             extra_style = ""
         eff_svg = _effort_gauge_svg(effort or ("low" if "luna" in m_full else "high"))
-        if service_tier == "ultrafast":
-            bolt_svg = '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Codex service_tier: ultrafast</title><use href="#ico-bolt-3"/></svg>'
-        elif service_tier in ("priority", "fast"):
-            bolt_svg = '<svg width="11" height="10" style="flex-shrink:0" aria-label="priority"><title>Codex service_tier: priority (Fast)</title><use href="#ico-bolt-1"/></svg>'
-        else:
-            bolt_svg = ""
+        service_tier = resolve_speed_tier(service_tier, model=model_str or "")
+        bolt_svg = _tier_bolt_html(service_tier, "codex")
         return (
             '<svg class="brand-icon" width="15" height="15" style="color:var(--green)"><use href="#ico-codex"/></svg>',
             f'<span class="model-pill codex"{extra_style} title="Codex {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
@@ -1773,7 +1829,10 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
         )
     if provider == "claude":
         m_raw = (model_str or "claude-opus-5-5").lower()
-        is_fast = (service_tier in ("fast", "priority", "ultrafast")) or ("fast" in m_raw and "5-5" not in m_raw)
+        # Callers default to "default"; only a real tier may outrank the model name (claude-opus-5-fast).
+        service_tier = resolve_speed_tier(None if service_tier == "default" else service_tier,
+                                          model=model_str or "")
+        is_fast = service_tier in FAST_SERVICE_TIERS
         is_ultra = (effort in ("ultra", "max")) or ("ultra" in m_raw)
         if "opus" in m_raw:
             if is_ultra and is_fast:
@@ -1795,12 +1854,7 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
             m_full = model_str.replace("claude-", "")
             m_short = m_full[:6]
         eff_svg = _effort_gauge_svg("max" if is_ultra else (effort or "high"))
-        if service_tier == "ultrafast":
-            bolt_svg = '<svg width="12" height="10" style="flex-shrink:0" aria-label="ultrafast"><title>Claude service_tier: Ultra Fast (6x quota)</title><use href="#ico-bolt-3"/></svg>'
-        elif is_fast:
-            bolt_svg = '<svg width="11" height="10" style="flex-shrink:0" aria-label="fast"><title>Claude service_tier: Fast (2x quota)</title><use href="#ico-bolt-1"/></svg>'
-        else:
-            bolt_svg = ""
+        bolt_svg = _tier_bolt_html(service_tier, "claude")
         return (
             '<svg class="brand-icon" width="15" height="15" style="color:var(--claude, #d97757)"><use href="#ico-claude"/></svg>',
             f'<span class="model-pill claude" title="Claude {_html_esc(m_full)} · effort: {_html_esc(effort)} · tier: {_html_esc(service_tier)}">'
@@ -1817,12 +1871,13 @@ def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", servi
     kind = m_info.get("kind", "argon")
     brand_ico = "#ico-agy-claude" if kind == "claude" else "#ico-agy-gemini"
     long_cls = " is-long" if len(full_lbl) >= 14 else ""
+    agy_tier = resolve_speed_tier(service_tier, "fast" if m_info.get("fast") else None, model=m)
     return (
         f'<svg class="brand-icon" width="15" height="15"><use href="{brand_ico}"/></svg>',
-        f'<span class="model-pill {kind}{long_cls}" title="{_html_esc(m_info["pill"])}">'
+        f'<span class="model-pill {kind}{long_cls}" title="{_html_esc(m_info["pill"])} · tier: {agy_tier}">'
         f'<span class="mp-full">{_html_esc(full_lbl)}</span>'
         f'<span class="mp-short">{_html_esc(short_lbl)}</span>'
-        f'{eff_svg}</span>',
+        f'{eff_svg}{_tier_bolt_html(agy_tier, "antigravity")}</span>',
         "",
     )
 
@@ -2364,6 +2419,8 @@ def _merge_registry_workers(nodes: list[dict], provider: str) -> list[dict]:
                                ("service_tier", combined.get("tier"))):
                 if value:
                     ctx.setdefault(key, value)
+            # maestro passed -c service_tier explicitly; a rollout tail without settings reports "default".
+            ctx["service_tier"] = resolve_speed_tier(ctx.get("service_tier"), combined.get("tier"))
             combined["turn_context"] = ctx
         merged.append(combined)
     return merged
@@ -2409,6 +2466,13 @@ def _merge_live_process_workers(nodes: list[dict], provider: str, processes: lis
         node.update(parent_conversation_id=process["parent_conversation_id"],
                     pid=process["pid"], is_running=True, live_process=True, updated_at=now_sec,
                     status="running", turn_completed=False)
+        if process.get("tier"):
+            # The live argv is ground truth for -c service_tier / --model claude-opus-5-fast.
+            node["tier"] = resolve_speed_tier(node.get("tier"), process["tier"])
+            if provider == "codex":
+                ctx = dict(node.get("turn_context") or {})
+                ctx["service_tier"] = resolve_speed_tier(ctx.get("service_tier"), process["tier"])
+                node["turn_context"] = ctx
         node.pop("ok", None)
     return nodes
 
@@ -2475,13 +2539,15 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     sid = _html_esc(str(node.get("session_id") or node.get("id") or ""))
     model = node.get("model") or "claude-opus-5-5"
     effort = node.get("effort") or node.get("reasoning_effort") or "high"
-    tier = node.get("tier") or node.get("service_tier") or "default"
     pool = node.get("pool") or ""
 
     is_fallback = bool(node.get("fallback_from"))
-    is_fast = (tier in ("fast", "priority", "ultrafast") or pool in ("claude-fast", "fast") or ("fast" in model.lower() and "opus-5-5" not in model.lower())) and not is_fallback and tier != "default"
+    # A Fast→standard fallback reruns on claude-opus-5-5; its stale fast pool must not light the bolt.
+    service_tier = "default" if is_fallback else resolve_speed_tier(
+        node.get("tier"), node.get("service_tier"), (node.get("turn_context") or {}).get("service_tier"),
+        model=model, pool=pool)
+    is_fast = service_tier in FAST_SERVICE_TIERS
     is_ultra = (effort in ("ultra", "max")) or ("ultra" in model.lower()) or ("ultra" in pool)
-    service_tier = tier if tier in ("fast", "priority", "ultrafast") else ("fast" if is_fast else "default")
 
     m_raw = model.lower()
     if "opus" in m_raw:
@@ -3131,7 +3197,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_tctx = repo_codex.get("turn_context") or {}
             c_icon, c_pill, _ = _provider_icon_and_pill(
                 c_tctx.get("model") or "gpt-6.1-sol", "codex",
-                c_tctx.get("service_tier") or "default", c_tctx.get("reasoning_effort") or "high",
+                resolve_speed_tier(c_tctx.get("service_tier"), repo_codex.get("tier")),
+                c_tctx.get("reasoning_effort") or "high",
             )
             c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
@@ -3373,7 +3440,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         icon_svg, model_pill, _ = _provider_icon_and_pill(
             tctx.get("model") or "gpt-6.1-sol",
             "codex",
-            tctx.get("service_tier") or "default",
+            resolve_speed_tier(tctx.get("service_tier"), cdx.get("tier")),
             tctx.get("reasoning_effort") or "high",
         )
         is_live_running, updated_ts = _codex_root_activity(cdx, live_codex_ids, rollout_paths, now_sec)
@@ -3422,7 +3489,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 child_ctx = ch.get("turn_context") or {}
                 child_icon, child_pill, _ = _provider_icon_and_pill(
                     child_ctx.get("model") or "gpt-6.1-sol", "codex",
-                    child_ctx.get("service_tier") or "default", child_ctx.get("reasoning_effort") or "high",
+                    resolve_speed_tier(child_ctx.get("service_tier"), ch.get("tier")),
+                    child_ctx.get("reasoning_effort") or "high",
                 )
                 child_tokens = ch.get("token_count") or {}
                 child_used = fmt_k(child_tokens.get("total_tokens", 0))
@@ -3604,7 +3672,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             icon_svg, model_pill, _ = _provider_icon_and_pill(
                 tctx.get("model", "gpt-6.1-sol"),
                 "codex",
-                tctx.get("service_tier", "default"),
+                resolve_speed_tier(tctx.get("service_tier"), item.get("tier")),
                 tctx.get("reasoning_effort", "ultra"),
             )
             age_lbl = _age_label_from_days(age_d, item.get("updated_at"))

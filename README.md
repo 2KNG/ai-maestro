@@ -151,11 +151,13 @@ maestro worker-start --pool auto --difficulty high --worktree --verify "pytest -
 
 # 4. 특정 풀 지정 실행
 maestro worker-start --pool codex --tier standard --cwd "$PWD" --wait --spec "백엔드 로직 리팩토링"
-maestro worker-start --pool codex --interactive --tier priority --cwd "$PWD" --wait --spec "실시간 인터랙티브 수정"
+maestro worker-start --pool codex --interactive --tier priority --user-requested-fast "빠르게 고쳐줘" --cwd "$PWD" --wait --spec "실시간 인터랙티브 수정"
 maestro worker-start --pool codex-astra --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
 maestro worker-start --pool codex --model gpt-6-astra --cwd "$PWD" --wait --spec "병렬 서브모듈 구현"
 maestro worker-start --pool claude --cwd "$PWD" --wait --spec "코어 아키텍처 설계"
-maestro worker-start --pool claude-fast --interactive --cwd "$PWD" --wait --spec "반응형 UI 빠른 패치"   # 명시적 fast 요청 시 · 2x 쿼터
+maestro worker-start --pool claude-fast --interactive --user-requested-fast "빨리 해줘" --cwd "$PWD" --wait --spec "반응형 UI 빠른 패치"   # 명시적 fast 요청 시 · 2x 쿼터
+# fast/priority/ultrafast/claude-fast는 --user-requested-fast "<사용자 원문>"(또는 MAESTRO_ALLOW_FAST_TIER=1)이 없으면 default로 강등
+maestro tier-audit --since-hours 48   # 고속 티어 워커별 인가/강등/미검증 내역 + Codex 롤아웃 service_tier 집계
 maestro worker-start --pool claude-ultra --cwd "$PWD" --wait --spec "최고난도 추론"   # = opus-ultra · --effort max + ultrathink · 3x 쿼터
 maestro worker-start --pool claude --effort ultra --cwd "$PWD" --wait --spec "최고난도 추론"
 maestro worker-start --pool auto --max-capability --domain coding --cwd "$PWD" --wait --spec "고난도 코딩"

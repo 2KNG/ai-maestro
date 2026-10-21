@@ -53,6 +53,59 @@ CLAUDE_POOLS = ("claude", "opus-5.5-xhigh") + CLAUDE_ULTRA_POOLS + CLAUDE_FAST_P
 CODEX_ASTRA_POOLS = ("codex-astra", "astra", "gpt-6-astra")
 CODEX_LUNA_POOLS = ("codex-luna", "luna", "gpt-6-luna")
 CODEX_POOLS = ("codex",) + CODEX_ASTRA_POOLS + CODEX_LUNA_POOLS
+FAST_TIERS = ("fast", "priority", "ultrafast")
+# Human opt-in for a whole shell (the user's own terminal); agents pass --user-requested-fast instead.
+FAST_TIER_ENV = "MAESTRO_ALLOW_FAST_TIER"
+
+
+def guard_speed_request(args, current_depth: int) -> dict:
+    """Downgrade fast/priority/ultrafast requests unless the user explicitly asked for speed.
+
+    Orchestrating agents used to self-declare --urgent/--interactive ("URGENT ... Ultrafast"
+    specs), burning 2x-6x quota. A fast tier now needs --user-requested-fast "<user's words>"
+    or MAESTRO_ALLOW_FAST_TIER=1, and sub-workers (depth >= 1) never get one. Mutates args
+    and returns an audit record that is persisted in the spawn registry.
+    """
+    requested = {
+        "interactive": bool(args.interactive),
+        "urgent": bool(args.urgent),
+        "tier": args.tier,
+        "pool": args.pool if args.pool in CLAUDE_FAST_POOLS else None,
+        "background": bool(args.background),
+    }
+    wants_fast = bool(args.interactive or args.urgent or args.tier in FAST_TIERS
+                      or args.pool in CLAUDE_FAST_POOLS)
+    reason = " ".join((getattr(args, "user_requested_fast", None) or "").split())
+    env_opt_in = os.environ.get(FAST_TIER_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    audit = {"requested": requested, "fast_requested": wants_fast, "authorized": False,
+             "authorization": None, "downgraded": False, "downgrade_reason": None,
+             "caller_depth": current_depth}
+    if not wants_fast:
+        return audit
+    if current_depth >= 1:
+        audit["downgrade_reason"] = "sub-worker (depth >= 1) speed tier is fixed to default"
+    elif args.background:
+        audit["downgrade_reason"] = "--background overrides fast/priority/ultrafast"
+    elif reason:
+        audit.update(authorized=True, authorization=f"user: {reason[:200]}")
+    elif env_opt_in:
+        audit.update(authorized=True, authorization=f"env: {FAST_TIER_ENV}=1")
+    else:
+        audit["downgrade_reason"] = ("no explicit user fast request (pass --user-requested-fast "
+                                     "\"<user's words>\" only when the user asked for speed)")
+    if audit["authorized"]:
+        return audit
+    audit["downgraded"] = True
+    args.interactive = False
+    args.urgent = False
+    if args.tier in FAST_TIERS:
+        args.tier = "default"
+    if args.pool in CLAUDE_FAST_POOLS:
+        args.pool = "claude"
+    asked = {k: v for k, v in requested.items() if v and k != "background"}
+    print(f"[maestro] speed tier downgraded to default: {audit['downgrade_reason']}; "
+          f"requested {json.dumps(asked)}", file=sys.stderr)
+    return audit
 
 COMPUTER_USE_KEYWORDS = (
     "pc 조작", "pc조작", "컴퓨터 조작", "computer use", "computer-use",
@@ -422,6 +475,7 @@ def start_agy_worker(pool: str, spec: str, cwd: str, wait: bool, timeout: int) -
             "provider": "antigravity",
             "pool": pool,
             "plan_model": model_id,
+            "tier": "fast" if "flash" in pool.lower() or model_id == MODEL_MAP["agy-flash"] else "default",
             "title": agy_title,
             "cwd": abs_cwd,
         },
@@ -512,7 +566,7 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
                         wait: bool, timeout: int, *, tier: str | None = None,
                         max_capability: bool = False,
                         interactive: bool = False, urgent: bool = False,
-                        background: bool = False) -> dict:
+                        background: bool = False, speed_audit: dict | None = None) -> dict:
     """Run local Claude; retry only Fast model/effort availability failures."""
     import tempfile
     import uuid
@@ -578,7 +632,9 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
     def register(status, **extra):
         record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
                                            "effort": selected_effort, "spec_preview": spec[:160],
-                                           "started_at": started_at, "status": status, **extra})
+                                           "started_at": started_at, "status": status,
+                                           **({"speed_audit": speed_audit} if speed_audit else {}),
+                                           **extra})
 
     started_at = int(time.time())
     register("running")
@@ -751,7 +807,8 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
                        pool: str = "codex", model: str | None = None, *,
                        wait: bool = True,
                        max_capability: bool = False, interactive: bool = False,
-                       urgent: bool = False, background: bool = False) -> dict:
+                       urgent: bool = False, background: bool = False,
+                       speed_audit: dict | None = None) -> dict:
     import shutil
     import tempfile
     import threading
@@ -802,6 +859,8 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
                     "effort": effort, "tier": tier, "cwd": abs_cwd, "title": agy_title,
                     "spec_preview": spec[:160], "started_at": t0, "status": "running",
                     "depth": current_depth + 1}
+    if speed_audit:
+        registration["speed_audit"] = speed_audit
     record_spawned_session(temporary_sid, registration)
     registration_lock = threading.Lock()
     thread_ids = []
@@ -991,6 +1050,81 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
         timer.cancel()
 
 
+def _codex_rollout_tier(path: str) -> tuple[str, str]:
+    """(service_tier, originator) from the head of a Codex rollout; settings precede the turns."""
+    import re
+    tier = originator = ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(262144)
+    except OSError:
+        return tier, originator
+    m = re.search(r'"service_tier"\s*:\s*"([a-z]+)"', head)
+    if m:
+        tier = m.group(1)
+    m = re.search(r'"originator"\s*:\s*"([^"]+)"', head)
+    if m:
+        originator = m.group(1)
+    return tier, originator
+
+
+def tier_audit(since_hours: float = 48.0) -> dict:
+    """Explain every fast/priority/ultrafast worker: who asked, whether it was authorized."""
+    cutoff = time.time() - since_hours * 3600
+    try:
+        with open(SPAWN_REGISTRY_PATH, "r", encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        reg = {}
+    workers, counts = [], {}
+    for sid, info in reg.items():
+        if not isinstance(info, dict) or float(info.get("started_at") or info.get("updated_at") or 0) < cutoff:
+            continue
+        tier = str(info.get("tier") or "default")
+        counts[tier] = counts.get(tier, 0) + 1
+        audit = info.get("speed_audit") or {}
+        if tier not in FAST_TIERS and not audit.get("fast_requested"):
+            continue
+        if info.get("provider") == "antigravity":
+            verdict = "flash-model"  # Gemini Flash is a model choice, not a premium speed tier
+        elif audit.get("authorized"):
+            verdict = "authorized"
+        elif audit.get("downgraded"):
+            verdict = "blocked"
+        else:
+            verdict = "unaudited"  # spawned before the guard; no proof the user asked for speed
+        workers.append({
+            "session_id": sid, "provider": info.get("provider"), "pool": info.get("pool"),
+            "model": info.get("model") or info.get("plan_model"), "tier": tier,
+            "depth": info.get("depth"), "verdict": verdict,
+            "authorization": audit.get("authorization"), "requested": audit.get("requested"),
+            "started_at": info.get("started_at"),
+            "title": str(info.get("spec_preview") or info.get("title") or "").splitlines()[0][:100]
+            if (info.get("spec_preview") or info.get("title")) else "",
+        })
+    workers.sort(key=lambda w: w.get("started_at") or 0)
+    rollouts = {}
+    sessions_root = os.path.expanduser("~/.codex/sessions")
+    for path in glob.glob(os.path.join(sessions_root, "**", "*.jsonl"), recursive=True):
+        try:
+            if os.path.getmtime(path) < cutoff:
+                continue
+        except OSError:
+            continue
+        tier, originator = _codex_rollout_tier(path)
+        key = f"{originator or 'unknown'}:{tier or 'default'}"
+        rollouts[key] = rollouts.get(key, 0) + 1
+    return {
+        "ok": True, "since_hours": since_hours,
+        "registry_tier_counts": counts,
+        "fast_workers": workers,
+        "unauthorized": sum(1 for w in workers if w["verdict"] == "unaudited"),
+        "blocked": sum(1 for w in workers if w["verdict"] == "blocked"),
+        "codex_rollouts_by_originator_tier": dict(sorted(rollouts.items())),
+        "codex_config_service_tier": cau._default_codex_service_tier(),
+    }
+
+
 def sync_all_widgets() -> dict:
     data = cau.collect_usage(include_agent_trees=True)
     template_path = os.path.join(SKILL_SCRIPTS_DIR, "usage_widget_template.html")
@@ -1076,6 +1210,9 @@ def main():
     p_start.add_argument("--domain", default="coding", choices=benchmark_sync.DOMAINS,
                          help="Benchmark domain for --max-capability")
     p_start.add_argument("--urgent", action="store_true", help="Use ultrafast tier only when urgent immediate response is required")
+    p_start.add_argument("--user-requested-fast", metavar="USER_WORDS", default=None,
+                         help="Required for fast/priority/ultrafast (--interactive/--urgent/--tier/claude-fast): "
+                              "quote the user's explicit speed request. Without it the tier is downgraded to default.")
     p_start.add_argument("--wait", dest="wait", action="store_true", default=True, help="Wait synchronously for worker completion (default: True)")
     p_start.add_argument("--no-wait", "--async", dest="wait", action="store_false", help="Run worker asynchronously in background without waiting")
     p_start.add_argument("--timeout", type=int, default=3600)
@@ -1086,6 +1223,10 @@ def main():
     p_check.add_argument("--wait", action="store_true")
     p_check.add_argument("--timeout", type=int, default=3600)
     p_check.add_argument("--json", action="store_true")
+
+    p_audit = sub.add_parser("tier-audit", help="Explain fast/priority/ultrafast workers and Codex rollouts")
+    p_audit.add_argument("--since-hours", type=float, default=48.0)
+    p_audit.add_argument("--json", action="store_true")
 
     p_sync = sub.add_parser("sync-widgets")
     p_sync.add_argument("--json", action="store_true")
@@ -1154,6 +1295,22 @@ def main():
         }, ensure_ascii=False, indent=2))
         return
 
+    if args.cmd == "tier-audit":
+        report = tier_audit(args.since_hours)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return
+        print(f"Speed tier audit · last {args.since_hours:g}h · registry {report['registry_tier_counts']}")
+        print(f"Codex config service_tier = {report['codex_config_service_tier']}")
+        for w in report["fast_workers"]:
+            when = time.strftime("%m-%d %H:%M", time.localtime(w["started_at"] or 0))
+            bolt = "⚡⚡" if w["tier"] == "ultrafast" else ("⚡" if w["tier"] in FAST_TIERS else "·")
+            print(f"  {when} {bolt:<2} {w['verdict']:<10} {w['pool']:<11} {w['tier']:<9} "
+                  f"d{w['depth']} {w['title'][:70]}")
+        print(f"Unaudited fast workers: {report['unauthorized']} · blocked requests: {report['blocked']}")
+        print(f"Codex rollouts (originator:tier): {report['codex_rollouts_by_originator_tier']}")
+        return
+
     if args.cmd == "status":
         pool, data = choose_auto_pool(args.difficulty)
         out = {
@@ -1193,11 +1350,14 @@ def main():
             }, ensure_ascii=False, indent=2))
             return
 
+        # Fast-tier authorization gate; the audit keeps what was asked even when downgraded.
+        speed_audit = guard_speed_request(args, current_depth)
+
         # Depth 1 Sub-Worker Guards: Same-Family Lock & Effort/Tier Clamping
         if current_depth == 1:
             if args.effort in ("ultra", "max", "xhigh"):
                 args.effort = "high"
-            if args.tier in ("fast", "ultrafast", "priority"):
+            if args.tier in FAST_TIERS:
                 args.tier = "default"
             args.interactive = False
             args.urgent = False
@@ -1286,16 +1446,20 @@ def main():
                 effort = effort or default_eff
                 model, effort, tier = resolve_codex_settings(target_pool, model, effort, args.tier, **speed_flags)
                 result = start_codex_worker(args.spec, args.cwd, effort, tier, args.timeout,
-                                           pool=target_pool, model=model, wait=args.wait, **speed_flags)
+                                           pool=target_pool, model=model, wait=args.wait,
+                                           speed_audit=speed_audit, **speed_flags)
             elif target_pool in CLAUDE_POOLS:
                 if target_pool in CLAUDE_ULTRA_POOLS:
                     target_pool, effort = "claude", "ultra"
                 result = start_claude_worker(target_pool, args.spec, args.cwd, effort, args.wait,
-                                            args.timeout, tier=args.tier, **speed_flags)
+                                            args.timeout, tier=args.tier, speed_audit=speed_audit,
+                                            **speed_flags)
             else:
                 result = start_agy_worker(target_pool, args.spec, args.cwd, args.wait, args.timeout)
             if selected:
                 result["benchmark_recommendation"] = selected
+            if speed_audit.get("fast_requested"):
+                result["speed_audit"] = speed_audit
             return result
 
         res = _dispatch(pool)

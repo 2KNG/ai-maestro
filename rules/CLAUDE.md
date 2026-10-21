@@ -42,6 +42,7 @@
 - 속도 티어 정책:
   - Claude Opus 5.5 Fast (`claude-fast`)는 표준 `claude-opus-5-5` 대비 2배 쿼터를 소모합니다 (`⏱ 45초 · 16만 토큰 (4천원)`). 사용자가 명시적으로 빠른 응답을 요구할 때만 투입하며, 단순 "오퍼스 시켜" 지시에는 표준 `claude-opus-5-5`를 사용합니다.
   - `fast` / `priority` / `ultrafast` 티어는 라이브 인터랙티브 핑퐁이나 사용자의 명시적 고속 요청 시에만 적용합니다.
+  - `fast`/`priority`/`ultrafast`/`claude-fast`는 사용자가 직접 고속을 요청했을 때만 `--user-requested-fast "<사용자 원문>"`과 함께 지정한다. 이 인자가 없으면 maestro가 `default`로 강등하고 요청 내역을 spawned_sessions에 기록한다(`maestro tier-audit`로 확인). 에이전트가 스스로 `--urgent`/`--interactive`를 붙이지 않는다.
   - cron, watchdog, 장시간 자율 실행, 백그라운드 작업은 standard/default 티어와 표준 `claude-opus-5-5`를 사용합니다.
   - CLI `maestro worker-start`는 `--interactive` / `--urgent`가 없으면 background 속도를 기본 적용합니다. `--background`는 interactive/urgent 속도를 오버라이드합니다.
 

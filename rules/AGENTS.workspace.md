@@ -24,6 +24,7 @@ Global rules in `~/.gemini/GEMINI.md` are active. Workspace essential policies:
    - 모션그래픽 / UI·UX: Claude Opus 5.5 (`--pool claude`) 우선 라우팅 (`is_motion_or_ui_task()` 자동 감지).
    - PC 조작 / 데스크탑 GUI 제어 / Computer-Use: OpenAI Codex(`gpt-6.1-sol` / `--pool codex`) 우선 라우팅.
    - `fast`/`priority`/`ultrafast`는 대화형 인터랙티브 전용. 백그라운드/cron은 standard/default 티어 사용.
+   - `fast`/`priority`/`ultrafast`/`claude-fast`는 사용자가 직접 고속을 요청했을 때만 `--user-requested-fast "<사용자 원문>"`과 함께 지정한다. 이 인자가 없으면 maestro가 `default`로 강등하고 요청 내역을 spawned_sessions에 기록한다(`maestro tier-audit`로 확인). 에이전트가 스스로 `--urgent`/`--interactive`를 붙이지 않는다.
 3. Single-Value ETA Standard:
    - 단일 수치 형식 예: `⏱ 3분 · 13만 토큰 (3천원)`. 범위(`~`) 표기나 금지어 배제.
 4. Natural Developer Style & Zero-Chinese:

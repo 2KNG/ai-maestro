@@ -1352,10 +1352,29 @@ def _default_codex_service_tier() -> str:
 
 
 
+def _codex_settings_from_line(line: str, fallback_model: str, fallback_effort: str) -> tuple[dict | None, str | None]:
+    """(turn_context, service_tier) from one rollout line; either may be None."""
+    d = json.loads(line)
+    pl = d.get("payload") or {}
+    if d.get("type") == "turn_context":
+        src = pl
+    elif isinstance(pl.get("thread_settings"), dict):
+        src = pl["thread_settings"]
+    else:
+        return None, None
+    ctx = {
+        "model": src.get("model") or fallback_model,
+        "reasoning_effort": src.get("effort") or src.get("reasoning_effort") or fallback_effort,
+        "service_tier": src.get("service_tier"),
+    }
+    return ctx, src.get("service_tier") or None
+
+
 def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback_effort: str = "ultra") -> dict:
     default_tier = _default_codex_service_tier()
     token_count = None
     turn_context = None
+    service_tier = None  # turn_context omits it; thread_settings_applied carries the real tier
     turn_completed = False
     seen_lifecycle = False
     timing = dict.fromkeys(TURN_TIMING_KEYS)
@@ -1404,29 +1423,35 @@ def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback
                         }
                 except Exception:
                     pass
-            if not turn_context and ('"turn_context"' in line or '"thread_settings"' in line):
+            if (not turn_context or not service_tier) and ('"turn_context"' in line or '"thread_settings"' in line):
                 try:
-                    d = json.loads(line)
-                    if d.get("type") == "turn_context":
-                        pl = d.get("payload", {})
-                        turn_context = {
-                            "model": pl.get("model") or fallback_model,
-                            "reasoning_effort": pl.get("effort") or pl.get("reasoning_effort") or fallback_effort,
-                            "service_tier": pl.get("service_tier") or default_tier,
-                        }
-                    elif d.get("payload", {}).get("thread_settings"):
-                        ts = d["payload"]["thread_settings"]
-                        turn_context = {
-                            "model": ts.get("model") or fallback_model,
-                            "reasoning_effort": ts.get("reasoning_effort") or fallback_effort,
-                            "service_tier": ts.get("service_tier") or default_tier,
-                        }
+                    found, tier = _codex_settings_from_line(line, fallback_model, fallback_effort)
+                    if found and not turn_context:
+                        turn_context = found
+                    service_tier = service_tier or tier
                 except Exception:
                     pass
-            if token_count and turn_context and seen_lifecycle:
+            if token_count and turn_context and service_tier and seen_lifecycle:
                 break
+        if (not turn_context or not service_tier) and size > chunk_size:
+            # Long rollouts push thread_settings (with service_tier) out of the tail window.
+            with open(path, "rb") as f:
+                head_lines = f.read(262144).decode("utf-8", errors="ignore").splitlines()
+            for line in head_lines:
+                if '"turn_context"' not in line and '"thread_settings"' not in line:
+                    continue
+                try:
+                    found, tier = _codex_settings_from_line(line, fallback_model, fallback_effort)
+                except Exception:
+                    continue
+                turn_context = turn_context or found
+                service_tier = service_tier or tier
+                if turn_context and service_tier:
+                    break
     except Exception:
         pass
+    if turn_context:
+        turn_context["service_tier"] = service_tier or default_tier
 
     if not token_count:
         token_count = {"total_tokens": 0, "model_context_window": 475000, "percent": 0.0}

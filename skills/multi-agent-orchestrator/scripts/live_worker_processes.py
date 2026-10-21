@@ -136,6 +136,30 @@ def _prompt(provider, args):
     return positionals[-1] if positionals else ''
 
 
+_SERVICE_TIER = re.compile(r'^\s*service_tier\s*=\s*["\']?([a-z]+)')
+
+
+def _speed_tier(provider, args, env):
+    """Speed tier the worker process was launched with ('' when unknown)."""
+    if provider == 'codex':
+        tier = ''
+        for index, arg in enumerate(args):
+            if arg == '--':
+                break
+            value = args[index + 1] if arg in ('-c', '--config') and index + 1 < len(args) else (
+                arg.split('=', 1)[1] if arg.startswith('--config=') else '')
+            match = _SERVICE_TIER.match(value)
+            if match:
+                tier = match[1]  # last -c wins, as in codex
+        return tier
+    if provider == 'claude':
+        model = _option(args, '--model').lower()
+        if env.get('CLAUDE_CODE_FAST_MODE') == '1' or re.search(r'(?<![a-z])fast(?![a-z])', model):
+            return 'fast'
+        return 'default' if model else ''
+    return ''
+
+
 def _rollout_session(path):
     try:
         with os.scandir(path / 'fd') as entries:
@@ -182,9 +206,10 @@ def _scan(proc_root):
         record = dict(pid=int(pid), ppid=ppid,
                       parent_conversation_id=env.get('ANTIGRAVITY_CONVERSATION_ID', '').strip() or cid,
                       provider=provider, pool='', session_id='', registry_id='', spec='', cwd=cwd,
-                      task_id=task_id, task_log=task_log)
+                      task_id=task_id, task_log=task_log, tier='')
         if provider:
             record['pool'] = _option(args, '--pool') or env.get('MAESTRO_WORKER_POOL', '') or provider
+            record['tier'] = _speed_tier(provider, args, env)
             # CODEX_THREAD_ID may be inherited from the spawning Codex session.
             # An open rollout or explicit CLI ID identifies this process itself.
             record['session_id'] = _session(provider, args, {})

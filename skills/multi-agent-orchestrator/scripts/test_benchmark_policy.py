@@ -145,7 +145,7 @@ class SpeedAndDispatchTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(mock.patch.dict(workers.os.environ, {
-            'MAESTRO_WORKER_DEPTH': '0', 'MAESTRO_WORKER_POOL': '',
+            'MAESTRO_WORKER_DEPTH': '0', 'MAESTRO_WORKER_POOL': '', workers.FAST_TIER_ENV: '',
         }))
         for name, value in [('format_handover_context_for_prompt',''),('save_handover_note',None),
                             ('notify_long_task_completion',None)]:
@@ -169,9 +169,49 @@ class SpeedAndDispatchTests(unittest.TestCase):
                            (['--urgent'],'ultrafast'),(['--interactive','--tier','standard'],'default'),
                            (['--background','--urgent'],'default'),(['--background','--interactive'],'default')]:
             with self.subTest(flags=flags):
-                result = self.cli('--pool','codex',*flags)
+                result = self.cli('--pool','codex','--user-requested-fast','빠르게 해줘',*flags)
                 self.assertEqual(result['tier'],tier)
                 self.assertIn(f'service_tier="{tier}"',self.run.call_args.args[0])
+
+    def test_fast_tiers_without_user_request_are_downgraded_and_audited(self):
+        for pool,flags in [('codex',['--interactive']),('codex',['--urgent']),
+                           ('codex',['--interactive','--tier','ultrafast']),
+                           ('claude',['--urgent']),('claude',['--tier','fast']),('claude-fast',[])]:
+            with self.subTest(pool=pool,flags=flags), mock.patch('sys.stderr',new_callable=io.StringIO) as err:
+                result = self.cli('--pool',pool,*flags)
+                self.assertEqual(result['tier'],'default')
+                self.assertNotIn('fast',str(result.get('model')))
+                self.assertIn('service_tier="default"' if pool=='codex' else 'claude-opus-5-5',
+                              self.run.call_args.args[0])
+                audit = result['speed_audit']
+                self.assertTrue(audit['fast_requested'] and audit['downgraded'])
+                self.assertFalse(audit['authorized'])
+                self.assertIn('speed tier downgraded',err.getvalue())
+        result = self.cli('--pool','codex','--urgent','--user-requested-fast','  급해  지금 당장 ')
+        self.assertEqual(result['tier'],'ultrafast')
+        self.assertEqual(result['speed_audit']['authorization'],'user: 급해 지금 당장')
+        with mock.patch.dict(workers.os.environ,{workers.FAST_TIER_ENV:'1'}):
+            result = self.cli('--pool','claude-fast')
+        self.assertEqual((result['model'],result['tier']),('claude-opus-5-fast','fast'))
+        self.assertTrue(result['speed_audit']['authorization'].startswith('env:'))
+        self.assertNotIn('speed_audit',self.cli('--pool','codex'))
+
+    def test_registry_records_requested_and_effective_tier(self):
+        self.cli('--pool','codex','--urgent')
+        info = workers.record_spawned_session.call_args.args[1]
+        self.assertEqual(info['tier'],'default')
+        self.assertTrue(info['speed_audit']['requested']['urgent'])
+        self.assertTrue(info['speed_audit']['downgraded'])
+        self.cli('--pool','claude','--interactive','--user-requested-fast','fast mode please')
+        info = workers.record_spawned_session.call_args.args[1]
+        self.assertEqual((info['tier'],info['model']),('fast','claude-opus-5-fast'))
+        self.assertEqual(info['speed_audit']['authorization'],'user: fast mode please')
+
+    def test_sub_worker_fast_request_is_blocked_even_with_user_words(self):
+        with mock.patch.dict(workers.os.environ,{'MAESTRO_WORKER_DEPTH':'1','MAESTRO_WORKER_POOL':'codex'}):
+            result = self.cli('--pool','codex','--urgent','--user-requested-fast','fast')
+        self.assertEqual(result['tier'],'default')
+        self.assertIn('depth',result['speed_audit']['downgrade_reason'])
 
     def test_astra_guard_survives_every_speed_and_entry_point(self):
         for unlocked in (False,True):
@@ -189,8 +229,10 @@ class SpeedAndDispatchTests(unittest.TestCase):
         for flags,model in [([], 'claude-opus-5-5'),(['--interactive'],'claude-opus-5-fast'),
                             (['--urgent'],'claude-opus-5-fast'),(['--background','--urgent'],'claude-opus-5-5')]:
             with self.subTest(flags=flags):
-                self.assertEqual(self.cli('--pool','claude',*flags)['model'],model)
-        self.assertEqual(self.cli('--pool','claude-fast','--background')['model'],'claude-opus-5-fast')
+                self.assertEqual(self.cli('--pool','claude','--user-requested-fast','fast',*flags)['model'],model)
+        self.assertEqual(self.cli('--pool','claude-fast','--user-requested-fast','fast')['model'],'claude-opus-5-fast')
+        # --background overrides even an explicit claude-fast pool
+        self.assertEqual(self.cli('--pool','claude-fast','--background')['model'],'claude-opus-5-5')
 
     def test_claude_ultra_aliases_and_explicit_efforts(self):
         for pool in workers.CLAUDE_ULTRA_POOLS:
