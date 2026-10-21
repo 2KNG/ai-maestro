@@ -7,6 +7,7 @@ Unified AI Quota & Usage Inspector for:
 4. Multi-Agent Hierarchy Trees (Parent -> Subagent -> Sub-subagent for Antigravity & Codex)
 """
 import argparse
+import copy
 import datetime
 import glob
 import json
@@ -21,6 +22,7 @@ import tempfile
 import time
 import urllib.request
 from datetime import timezone, timedelta
+from typing import Any
 
 KST = timezone(timedelta(hours=9))
 ROUTING_MAX_AGE_SECONDS = 300
@@ -1379,20 +1381,33 @@ def _fetch_antigravity_agent_tree() -> list[dict]:
     return running_roots + idle_roots
 
 
+_CODEX_TIER_CACHE: dict[tuple, str] = {}
+
+
 def _default_codex_service_tier() -> str:
     cfg = os.path.expanduser("~/.codex/config.toml")
     try:
-        if os.path.exists(cfg):
-            with open(cfg, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    m = re.match(r'^\s*service_tier\s*=\s*"([^"]+)"', line)
-                    if m:
-                        val = m.group(1).strip()
-                        if val in ("default", "priority", "ultrafast"):
-                            return val
+        st = os.stat(cfg)
+    except OSError:
+        return "default"
+    key = (cfg, st.st_mtime_ns, st.st_size)
+    if key in _CODEX_TIER_CACHE:
+        return _CODEX_TIER_CACHE[key]
+    tier = "default"
+    try:
+        with open(cfg, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                m = re.match(r'^\s*service_tier\s*=\s*"([^"]+)"', line)
+                if m:
+                    val = m.group(1).strip()
+                    if val in ("default", "priority", "ultrafast"):
+                        tier = val
+                        break
     except Exception:
         pass
-    return "default"
+    _CODEX_TIER_CACHE.clear()
+    _CODEX_TIER_CACHE[key] = tier
+    return tier
 
 
 
@@ -1414,8 +1429,27 @@ def _codex_settings_from_line(line: str, fallback_model: str, fallback_effort: s
     return ctx, src.get("service_tier") or None
 
 
+# (path, mtime_ns, size, fallbacks, default tier) -> parsed rollout; rollouts are re-read only when they change.
+_CODEX_ROLLOUT_CACHE: dict[tuple, dict] = {}
+
+
 def parse_codex_rollout(path: str, fallback_model: str = "gpt-6.1-sol", fallback_effort: str = "ultra") -> dict:
     default_tier = _default_codex_service_tier()
+    try:
+        st = os.stat(path) if path else None
+    except OSError:
+        st = None
+    if st is None:
+        return _parse_codex_rollout(path, fallback_model, fallback_effort, default_tier)
+    key = (path, st.st_mtime_ns, st.st_size, fallback_model, fallback_effort, default_tier)
+    if key not in _CODEX_ROLLOUT_CACHE:
+        if len(_CODEX_ROLLOUT_CACHE) > 256:
+            _CODEX_ROLLOUT_CACHE.clear()
+        _CODEX_ROLLOUT_CACHE[key] = _parse_codex_rollout(path, fallback_model, fallback_effort, default_tier)
+    return copy.deepcopy(_CODEX_ROLLOUT_CACHE[key])
+
+
+def _parse_codex_rollout(path: str, fallback_model: str, fallback_effort: str, default_tier: str) -> dict:
     token_count = None
     turn_context = None
     service_tier = None  # turn_context omits it; thread_settings_applied carries the real tier
@@ -1558,6 +1592,14 @@ def _running_codex_cwds_and_snippets() -> tuple[set[str], list[str]]:
 
 
 
+# Transcripts untouched for this long cannot produce a row (24h window) unless a
+# live PID revives them, and those are rebuilt from ~/.claude/sessions instead.
+CLAUDE_JSONL_LOOKBACK_SEC = 7 * 86400
+# path -> (mtime_ns, size, {"offset", "lines", "nodes"}). Transcripts are append-only,
+# so a grown file only parses the bytes after "offset"; unchanged files are never read.
+_CLAUDE_JSONL_CACHE: dict[str, tuple[int, int, Any]] = {}
+
+
 def get_claude_agent_tree() -> list[dict]:
     """Return up to 30 sessions updated in 24h or with a verified live PID.
 
@@ -1576,11 +1618,11 @@ def get_claude_agent_tree() -> list[dict]:
     def string(value):
         return value.strip() if isinstance(value, str) else ""
 
-    def node_for(sid):
+    def node_for(sid, into=None):
         sid = string(sid)
         if not sid:
             return None
-        return nodes.setdefault(sid, {"id": sid, "session_id": sid,
+        return (nodes if into is None else into).setdefault(sid, {"id": sid, "session_id": sid,
             "thread_id": sid, "provider": "claude", "title": "", "model": "",
             "effort": "", "cwd": "", "created_at": None, "updated_at": None,
             "rollout_path": "", "jsonl_path": "", "spec_preview": "",
@@ -1622,46 +1664,91 @@ def get_claude_agent_tree() -> list[dict]:
         except OSError:
             pass
 
-    for path in sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))):
+    def parse_lines(raw_lines, into, path, index):
         default_sid = os.path.basename(path)[:-6]
+        for raw in raw_lines:
+            index += 1
+            try:
+                event = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            node = node_for(event.get("sessionId") or event.get("session_id") or default_sid, into)
+            if node is None:
+                continue
+            merge(node, event)
+            message = event.get("message")
+            if not isinstance(message, dict):
+                continue
+            if event.get("type") == "user" and not node["spec_preview"]:
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = " ".join(string(b.get("text")) for b in content
+                                       if isinstance(b, dict) and b.get("type") == "text")
+                node["spec_preview"] = string(content)[:500]
+            if event.get("type") != "assistant":
+                continue
+            merge(node, message)
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            mid = string(message.get("id")) or string(event.get("uuid")) or f"{path}:{index - 1}"
+            totals = node["_usage"].setdefault(mid, {})
+            for key in counters:
+                value = usage.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+                    totals[key] = max(totals.get(key, 0), int(value))
+        return index
+
+    def parse_jsonl(path, st):
+        entry = _CLAUDE_JSONL_CACHE.get(path)
+        if entry and entry[0] == st.st_mtime_ns and entry[1] == st.st_size:
+            return entry[2]
+        if entry and st.st_size >= entry[1]:
+            state = entry[2]
+        else:
+            state = {"offset": 0, "lines": 0, "nodes": {}}
+        with open(path, "rb") as handle:
+            handle.seek(state["offset"])
+            data = handle.read()
+        end = data.rfind(b"\n") + 1
+        tail = data[end:]
         try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
-                for index, line in enumerate(handle):
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue  # A writer may still be appending the last record.
-                    if not isinstance(event, dict):
-                        continue
-                    node = node_for(event.get("sessionId") or event.get("session_id") or default_sid)
-                    if node is None:
-                        continue
-                    merge(node, event)
-                    remember_mtime(node, path)
-                    node["rollout_path"] = node["jsonl_path"] = path
-                    message = event.get("message")
-                    if not isinstance(message, dict):
-                        continue
-                    if event.get("type") == "user" and not node["spec_preview"]:
-                        content = message.get("content")
-                        if isinstance(content, list):
-                            content = " ".join(string(b.get("text")) for b in content
-                                               if isinstance(b, dict) and b.get("type") == "text")
-                        node["spec_preview"] = string(content)[:500]
-                    if event.get("type") != "assistant":
-                        continue
-                    merge(node, message)
-                    usage = message.get("usage")
-                    if not isinstance(usage, dict):
-                        continue
-                    mid = string(message.get("id")) or string(event.get("uuid")) or f"{path}:{index}"
-                    totals = node["_usage"].setdefault(mid, {})
-                    for key in counters:
-                        value = usage.get(key)
-                        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
-                            totals[key] = max(totals.get(key, 0), int(value))
+            json.loads(tail.decode("utf-8", errors="replace"))  # final record without a newline
+            end = len(data)
+        except ValueError:
+            pass  # A writer may still be appending the last record; reread it next pass.
+        raw_lines = data[:end].split(b"\n")
+        if raw_lines and not raw_lines[-1]:
+            raw_lines.pop()
+        state["lines"] = parse_lines(raw_lines, state["nodes"], path, state["lines"])
+        state["offset"] += end
+        _CLAUDE_JSONL_CACHE[path] = (st.st_mtime_ns, st.st_size, state)
+        return state
+
+    seen_paths = set()
+    for path in sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))):
+        try:
+            st = os.stat(path)
+            if now - st.st_mtime > CLAUDE_JSONL_LOOKBACK_SEC:
+                continue
+            state = parse_jsonl(path, st)
         except OSError:
             continue
+        seen_paths.add(path)
+        for partial in state["nodes"].values():
+            node = node_for(partial["id"])
+            merge(node, partial)
+            node["_pids"].update(partial["_pids"])
+            for mid, totals in partial["_usage"].items():
+                merged = node["_usage"].setdefault(mid, {})
+                for key, value in totals.items():
+                    merged[key] = max(merged.get(key, 0), value)
+            node["_fallback_time"] = max(node["_fallback_time"], st.st_mtime)
+            node["rollout_path"] = node["jsonl_path"] = path
+    for stale in _CLAUDE_JSONL_CACHE.keys() - seen_paths:
+        del _CLAUDE_JSONL_CACHE[stale]
 
     for path in sorted(glob.glob(os.path.expanduser("~/.claude/sessions/*.json"))):
         try:
@@ -2691,8 +2778,21 @@ def collect_usage(include_agent_trees=True) -> dict:
     return report
 
 
+ORCA_SUMMARY_TTL_SEC = 10.0
+_ORCA_SUMMARY_CACHE: dict = {}
+
+
 def get_orca_summary() -> dict:
-    """Live Orca terminals/worktrees (cached ~20s); never raises."""
+    """Live Orca terminals/worktrees (memoized 10s, snapshot file ~20s); never raises."""
+    now = time.monotonic()
+    if _ORCA_SUMMARY_CACHE and now - _ORCA_SUMMARY_CACHE["at"] < ORCA_SUMMARY_TTL_SEC:
+        return copy.deepcopy(_ORCA_SUMMARY_CACHE["value"])
+    value = _build_orca_summary()
+    _ORCA_SUMMARY_CACHE.update(at=now, value=value)
+    return copy.deepcopy(value)
+
+
+def _build_orca_summary() -> dict:
     try:
         import orca_bridge
         snap = orca_bridge.snapshot()

@@ -4068,11 +4068,14 @@
       }
     }
 
+    // Hashes of the HTML the DOM holds; the bridge sends null for fields that still match.
+    let lastHashes = { active: '', closed: '', pc: '' };
     async function initLiveBridge() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 6000);
       try {
-        const r = await fetch(`${BRIDGE_URL}/api/status`, { signal: controller.signal });
+        const h = lastHashes;
+        const r = await fetch(`${BRIDGE_URL}/api/status?h_active=${h.active}&h_closed=${h.closed}&h_pc=${h.pc}`, { signal: controller.signal });
         const j = await r.json();
         if (j && j.ok) {
           if (Array.isArray(j.accounts) && j.accounts.length > 0) {
@@ -4099,6 +4102,7 @@
             switchTab(currentTab, false);
             notifyParentResize();
           }
+          if (j.hashes) lastHashes = j.hashes;
         }
       } catch (_) {} finally {
         clearTimeout(timeout);
@@ -4243,7 +4247,16 @@
     } catch (_) {}
     initLiveBridge().finally(notifyParentResize);
     setInterval(tickSubRipening, 1000);
-    setInterval(initLiveBridge, 4000);
+    // Hidden tabs poll at 15s so background viewers barely touch the tunnel.
+    let pollTimer = 0;
+    const schedulePoll = () => {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(() => initLiveBridge().finally(schedulePoll), document.hidden ? 15000 : 5000);
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) initLiveBridge().finally(schedulePoll);
+    });
+    schedulePoll();
   </script>
 </body>
 </html>

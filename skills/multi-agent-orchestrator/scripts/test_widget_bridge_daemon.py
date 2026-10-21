@@ -249,12 +249,57 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(body["timestamp_kst"], "first")
 
+    def test_status_omits_html_the_client_already_holds_and_gzips(self):
+        self.trees.return_value = ("A" * 4000, "closed", 1, 2)
+        bridge.refresh_http_snapshot(force=True)
+        with running_bridge() as base:
+            _, full = get_json(base, "/api/status")
+            self.assertEqual(full["activeTreeHtml"], "A" * 4000)
+            h = full["hashes"]
+            _, body = get_json(base, f"/api/status?h_active={h['active']}&h_closed={h['closed']}&h_pc=stale")
+            self.assertIsNone(body["activeTreeHtml"])
+            self.assertIsNone(body["closedTreeHtml"])
+            self.assertTrue(body["activeTreeUnchanged"] and body["closedTreeUnchanged"])
+            self.assertEqual(body["pcTelemetryHtml"], "pc")
+            self.assertNotIn("pcTelemetryUnchanged", body)
+            self.assertEqual(body["hashes"], h)
+            req = urllib.request.Request(base + "/api/status", headers={"Accept-Encoding": "gzip"})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                raw = response.read()
+            self.assertEqual(json.loads(bridge.gzip.decompress(raw))["activeTreeHtml"], "A" * 4000)
+            self.assertLess(len(raw), 1024)
+        self.assertEqual(self.collect.call_count, 1)
+
     def test_disconnected_clients_are_silent_at_handle_and_finish(self):
         handler = object.__new__(bridge.BridgeHandler)
         for method in ("handle", "finish"):
             for error in (BrokenPipeError, ConnectionResetError):
                 with mock.patch.object(http.server.BaseHTTPRequestHandler, method, side_effect=error):
                     getattr(handler, method)()
+
+
+class WidgetSyncTests(unittest.TestCase):
+    def test_only_recent_conversations_and_changed_content_are_written(self):
+        with tempfile.TemporaryDirectory() as brain, mock.patch.object(bridge, "BRAIN_DIR", brain), \
+                mock.patch.object(bridge, "_written_widget_hashes", {}), \
+                mock.patch.object(bridge.ruw, "pick_template", return_value=("t", "src")), \
+                mock.patch.object(bridge.ruw, "inject_live_data", return_value="html"), \
+                mock.patch.object(bridge.ruw, "compact_widget_html", side_effect=lambda h: h), \
+                mock.patch.object(bridge, "_atomic_write") as write:
+            fresh, stale = Path(brain, "fresh"), Path(brain, "stale")
+            fresh.mkdir()
+            stale.mkdir()
+            old = bridge.time.time() - bridge.WIDGET_SYNC_RECENT_SEC - 60
+            os.utime(stale, (old, old))
+            now = bridge.time.time()
+            self.assertEqual([d for d in bridge.list_conversation_dirs() if bridge._recently_active(d, now)],
+                             [str(fresh)])
+            target = str(fresh / bridge.WIDGET_FILENAME)
+            bridge.write_widget_to_all_conversations({}, target_dirs=[str(fresh)])
+            Path(target).write_text("html")
+            bridge.write_widget_to_all_conversations({}, target_dirs=[str(fresh)])
+            self.assertEqual([c.args[0] for c in write.call_args_list].count(target), 1)
 
 
 if __name__ == "__main__":

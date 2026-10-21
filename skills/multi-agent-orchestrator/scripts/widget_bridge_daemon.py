@@ -16,6 +16,8 @@ Supports:
 4. GET /api/route?difficulty=high|medium|low
    - Returns a routing recommendation from fresh quota data without changing session or widget state.
 """
+import gzip
+import hashlib
 import http.server
 import json
 import os
@@ -44,7 +46,10 @@ PORT = 18765
 # Auto-provisioning of usage_widget.html into every conversation directory
 BRAIN_DIR = os.path.expanduser("~/.gemini/antigravity/brain")
 WIDGET_FILENAME = "usage_widget.html"
-SCAN_INTERVAL_SEC = 3
+SCAN_INTERVAL_SEC = 6
+# Only conversations touched this recently get a widget provisioned on disk.
+WIDGET_SYNC_RECENT_SEC = 86400
+GZIP_MIN_BYTES = 1024
 FAILURE_BACKOFF_SEC = 15
 ALLOWED_CLOSED_DAYS = (7, 30)
 DEFAULT_CLOSED_DAYS = 7
@@ -63,6 +68,15 @@ _refresh_requested = threading.Event()
 _http_snapshot = None
 _bootstrap_html = b'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>AOH</title><p>Dashboard warming up...</p>'
 _bootstrap_status = b'{"ok":true,"warmingUp":true,"accounts":[],"activeTreeHtml":"","closedTreeHtml":"","activeCount":0,"closedCount":0,"state":{}}'
+# Large HTML fields the client may already hold: (hash key, body field, unchanged flag).
+HASHED_HTML_FIELDS = (("active", "activeTreeHtml", "activeTreeUnchanged"),
+                      ("closed", "closedTreeHtml", "closedTreeUnchanged"),
+                      ("pc", "pcTelemetryHtml", "pcTelemetryUnchanged"))
+_written_widget_hashes: dict[str, str] = {}
+
+
+def _content_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def refresh_http_snapshot(force=False):
@@ -88,13 +102,10 @@ def refresh_http_snapshot(force=False):
             "activeTreeHtml": active, "closedTreeHtml": closed,
             "activeCount": active_count, "closedCount": closed_count,
         }
+        body["hashes"] = {key: _content_hash(body[field]) for key, field, _ in HASHED_HTML_FIELDS}
         # Scope/age filtering is client-side; trees contain all scope/age attributes.
-        variants = {}
-        for scope in ("current", "all"):
-            for days in ALLOWED_CLOSED_DAYS:
-                body["state"] = dict(st, scope=scope, closedDays=days)
-                variants[(scope, days)] = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        snapshot = {"html": html.encode("utf-8"), "status": variants,
+        # Payloads are encoded lazily per (scope, days, fields the client already holds).
+        snapshot = {"html": html.encode("utf-8"), "body": body, "state": st, "status": {},
                     "scope": st.get("scope", "current"),
                     "closedDays": st.get("closedDays", DEFAULT_CLOSED_DAYS),
                     "data": data, "built_at": time.monotonic()}
@@ -102,14 +113,46 @@ def refresh_http_snapshot(force=False):
         return snapshot
 
 
-def status_snapshot_payload(snapshot, query):
+def status_snapshot_payload(snapshot, query, gzip_ok=False):
+    """JSON bytes for /api/status; HTML fields matching the client's h_* hashes are sent as null.
+
+    Returns (payload, gzipped). Encodings are memoized on the immutable snapshot.
+    """
     if snapshot is None:
-        return _bootstrap_status
+        return _bootstrap_status, False
     scope = query.get("scope", [snapshot["scope"]])[0]
     if scope not in ("current", "all"):
         scope = snapshot["scope"]
     days = _normalize_closed_days(query.get("closedDays", [snapshot["closedDays"]])[0])
-    return snapshot["status"][(scope, days)]
+    hashes = snapshot["body"]["hashes"]
+    unchanged = tuple(key for key, _, _ in HASHED_HTML_FIELDS if query.get(f"h_{key}", [""])[0] == hashes[key])
+    gzipped = False
+    key = (scope, days, unchanged)
+    payload = snapshot["status"].get(key)
+    if payload is None:
+        body = dict(snapshot["body"], state=dict(snapshot["state"], scope=scope, closedDays=days))
+        for hkey, field, flag in HASHED_HTML_FIELDS:
+            if hkey in unchanged:
+                body[field] = None
+                body[flag] = True
+        payload = snapshot["status"][key] = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    if gzip_ok and len(payload) > GZIP_MIN_BYTES:
+        gz_key = key + ("gzip",)
+        if gz_key not in snapshot["status"]:
+            snapshot["status"][gz_key] = gzip.compress(payload, compresslevel=6)
+        payload, gzipped = snapshot["status"][gz_key], True
+    return payload, gzipped
+
+
+def _recently_active(conv_dir: str, now: float) -> bool:
+    """A conversation counts as recent if its dir or transcript changed within WIDGET_SYNC_RECENT_SEC."""
+    for path in (conv_dir, os.path.join(conv_dir, ".system_generated", "logs", "transcript.jsonl")):
+        try:
+            if now - os.stat(path).st_mtime <= WIDGET_SYNC_RECENT_SEC:
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def list_conversation_dirs() -> list[str]:
@@ -184,10 +227,15 @@ def write_widget_to_all_conversations(data: dict, target_dirs: list[str] | None 
             try:
                 template, source = ruw.pick_template(target, SCRIPT_DIR)
                 if source not in rendered_cache:
-                    rendered_cache[source] = ruw.compact_widget_html(
+                    rendered = ruw.compact_widget_html(
                         ruw.inject_live_data(template, data) if template else ruw.build_widget_html(data)
                     )
-                _atomic_write(target, rendered_cache[source])
+                    rendered_cache[source] = (rendered, _content_hash(rendered))
+                rendered, digest = rendered_cache[source]
+                if _written_widget_hashes.get(target) == digest and os.path.exists(target):
+                    continue
+                _atomic_write(target, rendered)
+                _written_widget_hashes[target] = digest
                 if not os.path.exists(meta_target):
                     _atomic_write(meta_target, meta_json)
                 written += 1
@@ -210,7 +258,8 @@ def widget_sync_loop() -> None:
             except Exception as e:
                 sys.stderr.write(f"[widget-sync] snapshot refresh failed: {e}\n")
             dirs = list_conversation_dirs()
-            missing = [d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))]
+            missing = [d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))
+                       and _recently_active(d, now)]
             backing_off = (now - _last_failure) < FAILURE_BACKOFF_SEC
             if missing and not backing_off:
                 try:
@@ -426,9 +475,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _set_cors(self, status=200, content_type="application/json; charset=utf-8"):
+    def _set_cors(self, status=200, content_type="application/json; charset=utf-8", headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -492,8 +543,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         self._set_cors(503)
                         self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
                         return
-            self._set_cors(200)
-            self.wfile.write(status_snapshot_payload(snapshot, qs))
+            gzip_ok = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+            payload, gzipped = status_snapshot_payload(snapshot, qs, gzip_ok=gzip_ok)
+            headers = {"Content-Length": str(len(payload)), "Vary": "Accept-Encoding", "Cache-Control": "no-store"}
+            if gzipped:
+                headers["Content-Encoding"] = "gzip"
+            self._set_cors(200, headers=headers)
+            self.wfile.write(payload)
             return
 
         if parsed.path == "/api/orca":

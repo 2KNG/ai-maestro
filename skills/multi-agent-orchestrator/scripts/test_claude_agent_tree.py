@@ -25,6 +25,7 @@ class ClaudeAgentTreeTests(unittest.TestCase):
             usage.subprocess, "check_output", return_value=""))
         self.stack.enter_context(mock.patch.object(
             usage.urllib.request, "urlopen", side_effect=AssertionError("network forbidden")))
+        self.stack.enter_context(mock.patch.dict(usage._CLAUDE_JSONL_CACHE, clear=True))
 
     def write(self, name, value, raw=False):
         path = self.home / name
@@ -157,6 +158,28 @@ class ClaudeAgentTreeTests(unittest.TestCase):
     def test_old_transcript_not_revived_by_copy_mtime(self):
         self.transcript("old", [{"timestamp": self.now - 90000, "type": "user"}])
         self.assertEqual(usage.get_claude_agent_tree(), [])
+
+    def test_unchanged_transcript_is_not_reread_and_appends_parse_incrementally(self):
+        path = self.transcript("inc", [self.assistant("m1", input_tokens=10)])
+        self.assertEqual(usage.get_claude_agent_tree()[0]["tokens"], 10)
+        real_open = open
+        with mock.patch("builtins.open", side_effect=lambda f, *a, **k: (
+                self.fail("unchanged transcript reopened") if f == path else real_open(f, *a, **k))):
+            self.assertEqual(usage.get_claude_agent_tree()[0]["tokens"], 10)
+        offset = usage._CLAUDE_JSONL_CACHE[path][2]["offset"]
+        with open(path, "a") as handle:
+            handle.write("\n" + json.dumps(self.assistant("m1", input_tokens=10, output_tokens=5))
+                         + "\n" + json.dumps(self.assistant("m2", output_tokens=7)) + "\n{\"partial")
+        os.utime(path, (self.now, self.now + 1))
+        self.assertEqual(usage.get_claude_agent_tree()[0]["tokens"], 22)
+        self.assertGreater(usage._CLAUDE_JSONL_CACHE[path][2]["offset"], offset)
+
+    def test_transcripts_older_than_lookback_are_skipped(self):
+        path = self.transcript("stale", [self.assistant("m", output_tokens=1)])
+        old = self.now - usage.CLAUDE_JSONL_LOOKBACK_SEC - 1
+        os.utime(path, (old, old))
+        self.assertEqual(usage.get_claude_agent_tree(), [])
+        self.assertNotIn(path, usage._CLAUDE_JSONL_CACHE)
 
     def test_limit_and_order(self):
         self.registry({str(i): {"provider": "claude", "updated_at": self.now - i}
