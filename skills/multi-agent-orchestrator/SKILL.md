@@ -46,6 +46,8 @@ means `self`) and every other model (including missing model, which means
 > - `invoke_subagent`는 읽기 전용 탐색·로그/파일 조사에만 사용하며, 모든 항목에 `TypeName='research'`와 `Model='flash'` 또는 `'flash_lite'`를 지정한다.
 > - `TypeName='self'`, 사용자 정의 타입, `Model='pro'`/`'inherit'`, 타입 또는 모델 생략은 4 Argon 쿼터 보호를 위해 하네스가 강제 차단한다 (`decision: block`, 종료 코드 2).
 > - 모든 코딩·구현·리팩토링·UI/모션·알고리즘·아키텍처 위임은 `run_command`에서 `~/.local/bin/maestro worker-start --pool auto ...` (`Opus 5.5`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`)로 수행한다.
+> - Claude 쿼터 적극 활용 (Quota-Surplus Dispatch): 코딩·디버깅·아키텍처·UI 위임은 `--pool auto` 또는 `--pool claude`(`Opus 5.5`)를 사용하고 `--pool codex`를 습관적으로 하드코딩하지 않는다. `--pool auto`는 `benchmark_sync.recommend_model_for_task()`의 Reset-Aware Quota Surplus(Claude 7d ≥ 50% · 리셋까지 일일 소진 여력이 Codex보다 크면 최대 +10점)와 활성 워커 부하 분산(실행 중 워커 수 차이 1개당 +3점, 최대 +6, `agy_spawned_sessions.json` + `/proc` 기준)을 반영해 병렬 워커를 `Opus 5.5`와 `gpt-6.1-sol`/`gpt-6-astra`로 나눈다. `--pool codex`는 PC 조작/Computer-Use처럼 명시적 이유가 있을 때만 지정한다.
+> - 투입 전 라우팅 확인(드라이런, 워커 미기동): `~/.local/bin/maestro route --task '<task>' --difficulty <high|medium|low>`.
 
 | Difficulty | Dispatch command |
 |---|---|

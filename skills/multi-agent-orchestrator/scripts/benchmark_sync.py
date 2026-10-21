@@ -440,9 +440,161 @@ def classify_task_domain(spec: str = "", difficulty: str = "medium") -> str:
     return "general_coding"
 
 
-def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_data: dict | None = None) -> dict[str, Any]:
+# Reset-aware quota balancing between Claude (Opus 5.5) and Codex.
+# Static benchmarks rank gpt-6.1-sol/gpt-6-astra slightly above Opus 5.5 for coding,
+# so without these terms Claude quota sits unused until it expires at the weekly reset.
+SPAWN_REGISTRY_PATH = os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json")
+ACTIVE_WORKER_GRACE_SEC = 1800  # running records not seen in /proc count only this long
+BALANCE_DOMAINS = frozenset({"general_coding", "long_horizon_coding", "research_orchestration", "frontend_ui_motion"})
+SURPLUS_BONUS_CAP = 10.0
+LOAD_BONUS_CAP = 6.0
+BALANCE_BONUS_CAP = 14.0
+KST_OFFSET_SEC = 9 * 3600
+
+
+def _days_until_reset(window: dict | None, now: float | None = None) -> float | None:
+    """Days until a quota window resets, from resets_at/reset_at (ISO or epoch) or reset_time_kst."""
+    if not isinstance(window, dict):
+        return None
+    now = time.time() if now is None else now
+    import datetime
+    for key in ("resets_at", "reset_at"):
+        raw = window.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            if isinstance(raw, (int, float)):
+                ts = float(raw) / (1000.0 if raw > 1e12 else 1.0)
+            else:
+                dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                ts = dt.timestamp()
+            return max(0.0, (ts - now) / 86400.0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    match = re.match(r"\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", str(window.get("reset_time_kst") or ""))
+    if match:
+        dt = datetime.datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+        ts = dt.replace(tzinfo=datetime.timezone.utc).timestamp() - KST_OFFSET_SEC
+        return max(0.0, (ts - now) / 86400.0)
+    return None
+
+
+def count_active_workers(registry_path: str | None = None, live_ids: set[str] | None = None,
+                         now: float | None = None) -> dict[str, int]:
+    """Count running maestro workers per family (claude/codex) from the spawn registry.
+
+    A record counts when its process is visible in /proc, or when it started within
+    ACTIVE_WORKER_GRACE_SEC (session IDs appear in /proc a moment after launch).
+    Stale "running" records left behind by crashed workers are ignored.
+    """
+    counts = {"claude": 0, "codex": 0}
+    try:
+        with open(registry_path or SPAWN_REGISTRY_PATH, "r", encoding="utf-8") as f:
+            registry = json.load(f)
+    except (OSError, ValueError):
+        return counts
+    if not isinstance(registry, dict):
+        return counts
+    running = [(sid, rec) for sid, rec in registry.items()
+               if isinstance(rec, dict) and rec.get("status") == "running"]
+    if not running:
+        return counts
+    if live_ids is None:
+        live_ids = set()
+        try:
+            from live_worker_processes import scan_live_worker_processes
+            for proc in scan_live_worker_processes():
+                live_ids.update(x for x in (proc.get("session_id"), proc.get("registry_id")) if x)
+        except Exception:
+            pass
+    now = time.time() if now is None else now
+    for sid, rec in running:
+        family = "claude" if (rec.get("provider") == "claude" or str(rec.get("pool", "")).startswith("claude")) else (
+            "codex" if (rec.get("provider") == "codex" or str(rec.get("pool", "")).startswith("codex")) else None)
+        if family is None:
+            continue
+        try:
+            age = now - float(rec.get("started_at") or 0)
+        except (TypeError, ValueError):
+            age = float("inf")
+        if sid in live_ids or rec.get("session_id") in live_ids or age < ACTIVE_WORKER_GRACE_SEC:
+            counts[family] += 1
+    return counts
+
+
+def quota_balance_bonus(usage_data: dict | None, active_workers: dict | None = None,
+                        now: float | None = None) -> dict[str, Any]:
+    """Score bonuses that steer coding work to Claude when its quota would otherwise expire unused.
+
+    surplus: Claude 7d >= 50%, comparable 7d to Codex, and a higher burn budget
+             (remaining % per day until reset) than Codex. Capped at SURPLUS_BONUS_CAP.
+    load:    the family with fewer running workers gets +3 per extra worker on the other side
+             (needs >= 30% quota), so parallel jobs split instead of stacking on one pool.
+    """
+    result: dict[str, Any] = {"claude": 0.0, "codex": 0.0, "surplus": 0.0, "active_workers": active_workers or {}}
+    if not isinstance(usage_data, dict):
+        return result
+
+    def window(key, name):
+        win = ((usage_data.get(key) or {}).get(name)) or {}
+        rem = win.get("remaining_percent") if isinstance(win, dict) else None
+        return (float(rem) if rem is not None else None), (win if isinstance(win, dict) else {})
+
+    cl_5h, _ = window("claude_local", "five_hour")
+    cl_7d, cl_wk = window("claude_local", "weekly")
+    cdx_5h, _ = window("codex_local", "five_hour")
+    cdx_7d, cdx_wk = window("codex_local", "weekly")
+    cl_eff = min(x for x in (cl_5h, cl_7d) if x is not None) if (cl_5h is not None or cl_7d is not None) else None
+    cdx_eff = min(x for x in (cdx_5h, cdx_7d) if x is not None) if (cdx_5h is not None or cdx_7d is not None) else None
+    cl_days = _days_until_reset(cl_wk, now)
+    cdx_days = _days_until_reset(cdx_wk, now)
+
+    surplus = 0.0
+    burn_ratio = None
+    if cl_7d is not None and cl_eff is not None and cl_eff >= 30.0 and cl_7d >= 50.0:
+        surplus += 2.0
+        if cdx_7d is None or cl_7d >= cdx_7d - 10.0:
+            surplus += 2.0
+        if cl_days is not None and cdx_7d is not None and cdx_days is not None:
+            cl_daily = cl_7d / max(cl_days, 0.25)
+            cdx_daily = cdx_7d / max(cdx_days, 0.25)
+            burn_ratio = round(cl_daily / cdx_daily, 2) if cdx_daily > 0 else None
+            if burn_ratio is None or burn_ratio > 1.0:
+                surplus += min(6.0, (burn_ratio - 1.0) * 6.0) if burn_ratio is not None else 6.0
+        elif cdx_7d is not None and cl_7d - cdx_7d >= 10.0:
+            surplus += min(6.0, (cl_7d - cdx_7d) / 5.0)
+        if cl_days is not None and cl_days <= 3.0:
+            surplus += 2.0  # use-it-or-lose-it: the weekly window resets soon
+    surplus = min(SURPLUS_BONUS_CAP, surplus)
+
+    active = active_workers or {}
+    cl_n, cdx_n = int(active.get("claude", 0) or 0), int(active.get("codex", 0) or 0)
+    cl_load = min(LOAD_BONUS_CAP, 3.0 * (cdx_n - cl_n)) if (cdx_n > cl_n and cl_eff is not None and cl_eff >= 30.0) else 0.0
+    cdx_load = min(LOAD_BONUS_CAP, 3.0 * (cl_n - cdx_n)) if (cl_n > cdx_n and cdx_eff is not None and cdx_eff >= 30.0) else 0.0
+
+    result.update(
+        claude=round(min(BALANCE_BONUS_CAP, surplus + cl_load), 2),
+        codex=round(cdx_load, 2),
+        surplus=round(surplus, 2),
+        claude_load=cl_load,
+        codex_load=cdx_load,
+        claude_days_to_reset=round(cl_days, 2) if cl_days is not None else None,
+        codex_days_to_reset=round(cdx_days, 2) if cdx_days is not None else None,
+        burn_ratio=burn_ratio,
+    )
+    return result
+
+
+def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_data: dict | None = None,
+                             active_workers: dict | None = None) -> dict[str, Any]:
     """Recommend the optimal model/pool using Domain Benchmark × Cost-Efficiency,
     failing over only when quota drops below the low threshold (< 15~20%).
+
+    With live usage_data, coding/architecture/UI tasks above low difficulty also get
+    quota_balance_bonus(): Claude surplus before its weekly reset and active-worker
+    load balancing between Claude and Codex. active_workers defaults to the live registry.
     """
     domain = classify_task_domain(spec, difficulty)
     matrix = get_daily_benchmark_and_models(usage_data)["benchmark_matrix"]
@@ -487,6 +639,12 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
         cl_agy = pools.get("Claude & GPT-OSS Pool (Antigravity)") or {}
         cl_agy_7d = (cl_agy.get("weekly") or {}).get("remaining_percent")
         quotas["agy-sonnet"] = float(cl_agy_7d) if cl_agy_7d is not None else 0.0
+
+    balance = {"claude": 0.0, "codex": 0.0}
+    if isinstance(usage_data, dict) and difficulty != "low" and domain in BALANCE_DOMAINS:
+        if active_workers is None:
+            active_workers = count_active_workers()
+        balance = quota_balance_bonus(usage_data, active_workers)
 
     scored_candidates = []
     for label, prof in matrix.items():
@@ -554,6 +712,10 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
         else:
             canonical = pool
 
+        bonus = float(balance.get(canonical, 0.0) or 0.0) if rem >= 20.0 else 0.0
+        if bonus:
+            final_score = round(final_score + bonus, 2)
+
         scored_candidates.append({
             "profile": label,
             "model": prof["model"],
@@ -564,6 +726,7 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
             "benchmark_score": bench_score,
             "remaining_percent": rem,
             "score": final_score,
+            "balance_bonus": bonus,
             "citation": prof.get("citations", ""),
             "weekly_quota_burn_pct": prof.get("weekly_quota_burn_pct"),
             "cost_krw": prof.get("avg_cost_krw"),
@@ -583,6 +746,7 @@ def recommend_model_for_task(spec: str = "", difficulty: str = "medium", usage_d
         "remaining_percent": winner.get("remaining_percent"),
         "citation": winner.get("citation"),
         "cost_krw": winner.get("cost_krw"),
+        "quota_balance": balance,
         "candidates": scored_candidates,
     }
 

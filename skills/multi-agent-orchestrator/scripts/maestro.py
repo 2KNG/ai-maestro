@@ -191,7 +191,9 @@ def choose_auto_pool(difficulty: str = "high", spec: str = "", exclude_canonical
     excl = exclude_canonical or set()
     winner = best.get("pool")
 
-    # For medium difficulty general coding without spec, prefer codex-astra unless Claude 7d > Codex 7d by 12%+
+    # For medium difficulty general coding without spec, follow the quota-balanced benchmark
+    # recommendation (Claude reset surplus + active worker load); otherwise prefer codex-astra
+    # unless Claude 7d > Codex 7d by 12%+
     if not spec and difficulty == "medium" and "codex" not in excl and "claude" not in excl:
         c_map = {c.get("pool"): c for c in (best.get("candidates") or [])}
         codex_c = c_map.get("codex")
@@ -205,7 +207,10 @@ def choose_auto_pool(difficulty: str = "high", spec: str = "", exclude_canonical
         ):
             codex_7d = float(codex_c.get("weekly_remaining") or 0.0)
             claude_7d = float(claude_c.get("weekly_remaining") or 0.0)
-            if claude_7d > codex_7d + 12.0:
+            rec_canonical = (best.get("benchmark_recommendation") or {}).get("canonical_pool")
+            if rec_canonical in ("claude", "codex"):
+                winner = rec_canonical
+            elif claude_7d > codex_7d + 12.0:
                 winner = "claude"
             else:
                 winner = "codex"
@@ -1026,6 +1031,10 @@ def main():
     p_status.add_argument("--difficulty", default="high", choices=["high", "medium", "low"])
     p_status.add_argument("--json", action="store_true")
 
+    p_route = sub.add_parser("route", help="Show which pool/model --pool auto would pick for a task (dry run)")
+    p_route.add_argument("--task", "--spec", dest="task", required=True)
+    p_route.add_argument("--difficulty", default="high", choices=["high", "medium", "low"])
+
     p_start = sub.add_parser("worker-start")
     p_start.add_argument("--spec", default="", help="Task spec string (or '-' / empty to read from --spec-file or stdin)")
     p_start.add_argument("--spec-file", default="", help="Path to file containing task spec")
@@ -1086,6 +1095,34 @@ def main():
     p_cal.add_argument("--json", action="store_true", help="Output raw JSON calibration snapshot")
 
     args = parser.parse_args()
+
+    if args.cmd == "route":
+        if is_computer_use_task(args.task):
+            pool, data, reason = "codex", None, "computer-use task pre-route"
+        elif is_motion_or_ui_task(args.task):
+            pool, data, reason = "claude", None, "motion/UI task pre-route"
+        else:
+            pool, data = choose_auto_pool(args.difficulty, spec=args.task)
+            reason = "choose_auto_pool"
+        if data is None:
+            data = cau.collect_usage(include_agent_trees=False)
+        rec = benchmark_sync.recommend_model_for_task(args.task, args.difficulty, data)
+        print(json.dumps({
+            "ok": True,
+            "task": args.task,
+            "difficulty": args.difficulty,
+            "pool": pool,
+            "route_reason": reason,
+            "domain": rec.get("domain"),
+            "recommended_model": rec.get("recommended_model"),
+            "recommended_pool": rec.get("recommended_pool"),
+            "quota_balance": rec.get("quota_balance"),
+            "top_candidates": [
+                {k: c.get(k) for k in ("profile", "pool", "score", "benchmark_score", "remaining_percent", "balance_bonus")}
+                for c in (rec.get("candidates") or [])[:4]
+            ],
+        }, ensure_ascii=False, indent=2))
+        return
 
     if args.cmd == "status":
         pool, data = choose_auto_pool(args.difficulty)
