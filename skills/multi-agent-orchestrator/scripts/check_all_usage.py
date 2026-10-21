@@ -2086,7 +2086,9 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
 # take a union instead of double counting nested trees.
 PROC_SNAPSHOT_TTL_SEC = 2.5
 GPU_SNAPSHOT_TTL_SEC = 3.0
-RESOURCE_FIELDS = ("cpu_pct", "ram_mb", "gpu_mb", "io_kbps")
+GPU_TOTAL_TTL_SEC = 300.0
+# tx = bytes sent/written (wchar), rx = bytes received/read (rchar).
+RESOURCE_FIELDS = ("cpu_pct", "ram_mb", "gpu_mb", "tx_kbps", "rx_kbps")
 _ENV_STEP_RE = re.compile(rb'"stepIndex"\s*:\s*(\d+)')
 _TASK_LOG_FD_RE = re.compile(r"/brain/([^/]+)/\.system_generated/tasks/(task-\d+)\.log(?: \(deleted\))?$")
 try:
@@ -2097,6 +2099,7 @@ except (AttributeError, ValueError, OSError):
 _proc_cache: dict[str, tuple[float, dict]] = {}
 _proc_prev: dict[str, dict] = {}
 _gpu_cache: tuple[float, dict] = (-1e9, {})
+_gpu_total_cache: tuple[float, float] = (-1e9, 0.0)
 
 
 def _read_proc_bytes(path: str, limit: int = 131072) -> bytes:
@@ -2182,6 +2185,37 @@ def _gpu_process_memory(force: bool = False) -> dict[int, float]:
     return usage
 
 
+def _gpu_total_memory() -> float:
+    """Total VRAM MiB over all GPUs (rarely changes, cached); 0.0 without a GPU."""
+    global _gpu_total_cache
+    now = time.monotonic()
+    if now - _gpu_total_cache[0] < GPU_TOTAL_TTL_SEC:
+        return _gpu_total_cache[1]
+    total = 0.0
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=1.5).stdout
+        for line in out.splitlines():
+            try:
+                total += float(line)
+            except ValueError:
+                continue
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _gpu_total_cache = (now, total)
+    return total
+
+
+def _mem_total_mb(proc_root: str = "/proc") -> float:
+    for line in _read_proc_bytes(f"{proc_root}/meminfo", 4096).splitlines():
+        if line.startswith(b"MemTotal:"):
+            try:
+                return int(line.split()[1]) / 1024
+            except (IndexError, ValueError):
+                break
+    return 0.0
+
+
 def process_snapshot(proc_root: str = "/proc", *, force: bool = False) -> dict:
     """Cached system process snapshot with per-PID CPU% (delta against the previous pass)."""
     now = time.monotonic()
@@ -2211,8 +2245,10 @@ def process_snapshot(proc_root: str = "/proc", *, force: bool = False) -> dict:
     for pid, p in procs.items():
         children.setdefault(p["ppid"], []).append(pid)
     gpu = _gpu_process_memory()
+    totals = {"mem_total_mb": round(_mem_total_mb(proc_root), 1),
+              "gpu_total_mb": round(_gpu_total_memory(), 1) if gpu or shutil.which("nvidia-smi") else 0.0}
     snap = {"proc_root": proc_root, "mono": now, "sampled_at": time.time(), "procs": procs,
-            "children": children, "gpu": gpu, "state": state, "stats": {}}
+            "children": children, "gpu": gpu, "totals": totals, "state": state, "stats": {}}
     _proc_prev[proc_root] = state
     if len(_proc_cache) >= 8:
         _proc_cache.clear()
@@ -2232,47 +2268,55 @@ def _descendants(snap: dict, roots) -> set[int]:
     return seen
 
 
-def _pid_stats(snap: dict, pid: int) -> tuple[float, float, float, float]:
-    """(cpu_pct, ram_mb, gpu_mb, io_kbps); /proc/<pid>/io is read only for attributed PIDs."""
+def _pid_stats(snap: dict, pid: int) -> tuple[float, float, float, float, float]:
+    """(cpu_pct, ram_mb, gpu_mb, tx_kbps, rx_kbps); /proc/<pid>/io is read only for attributed PIDs."""
     stats = snap["stats"].get(pid)
     if stats is not None:
         return stats
     p = snap["procs"][pid]
     state = snap["state"].get((pid, p["start"])) or {}
-    io_kbps = 0.0
+    rates = (0.0, 0.0)
     raw = _read_proc_bytes(f"{snap['proc_root']}/{pid}/io", 1024)
     counters = dict(line.split(b":", 1) for line in raw.splitlines() if b":" in line)
     try:
-        total = int(counters[b"rchar"]) + int(counters[b"wchar"])
+        io = (int(counters[b"wchar"]), int(counters[b"rchar"]))  # (sent/written, received/read)
     except (KeyError, ValueError):
-        total = None
-    if total is not None:
-        if state.get("io") is not None and snap["mono"] > (state.get("io_mono") or snap["mono"]):
-            io_kbps = max(0, total - state["io"]) / 1024 / (snap["mono"] - state["io_mono"])
+        io = None
+    if io is not None:
+        last = state.get("io")
+        if isinstance(last, tuple) and snap["mono"] > (state.get("io_mono") or snap["mono"]):
+            span = snap["mono"] - state["io_mono"]
+            rates = tuple(max(0, cur - prev) / 1024 / span for cur, prev in zip(io, last))
         elif p.get("age_sec", 0) > 1:
-            io_kbps = total / 1024 / p["age_sec"]
-        state.update(io=total, io_mono=snap["mono"])
-    stats = (p["cpu_pct"], p["rss_kb"] / 1024, float(snap["gpu"].get(pid, 0.0)), io_kbps)
+            rates = tuple(value / 1024 / p["age_sec"] for value in io)
+        state.update(io=io, io_mono=snap["mono"])
+    stats = (p["cpu_pct"], p["rss_kb"] / 1024, float(snap["gpu"].get(pid, 0.0)), *rates)
     snap["stats"][pid] = stats
     return stats
 
 
-def _resource_summary(stats, pids) -> dict:
-    totals = [sum(values) for values in zip(*stats)] if stats else [0.0] * len(RESOURCE_FIELDS)
-    return {**{key: round(value, 1) for key, value in zip(RESOURCE_FIELDS, totals)},
-            "proc_count": len(pids), "pids": sorted(pids)}
+def _resource_summary(stats, pids, totals=None) -> dict:
+    """Field sums plus ram_pct / gpu_pct of system RAM and total VRAM when those totals are known."""
+    sums = [sum(values) for values in zip(*stats)] if stats else [0.0] * len(RESOURCE_FIELDS)
+    summary = {key: round(value, 1) for key, value in zip(RESOURCE_FIELDS, sums)}
+    for pct_key, field, total_key in (("ram_pct", 1, "mem_total_mb"), ("gpu_pct", 2, "gpu_total_mb")):
+        total = float((totals or {}).get(total_key) or 0)
+        if total > 0:
+            summary[pct_key] = round(sums[field] / total * 100, 2)
+    return {**summary, "proc_count": len(pids), "pids": sorted(pids)}
 
 
 def summarize_pids(snap: dict, pids) -> dict:
     """Sum one PID set; the sorted PID list lets callers union overlapping trees."""
     pids = [pid for pid in set(pids) if pid in snap["procs"]]
-    return _resource_summary([_pid_stats(snap, pid) for pid in pids], pids)
+    return _resource_summary([_pid_stats(snap, pid) for pid in pids], pids, snap.get("totals"))
 
 
-def merge_resources(proc_table: dict, resources) -> dict | None:
+def merge_resources(proc_table: dict, resources, totals=None) -> dict | None:
     """Roll up resource summaries by PID union using process_resources['procs'].
 
     Nested trees (a worker under its conversation's shell) are counted once.
+    `totals` (process_resources itself works) supplies mem_total_mb / gpu_total_mb.
     """
     pids = set()
     for res in resources:
@@ -2281,7 +2325,9 @@ def merge_resources(proc_table: dict, resources) -> dict | None:
     pids = [pid for pid in pids if str(pid) in (proc_table or {})]
     if not pids:
         return None
-    summary = _resource_summary([proc_table[str(pid)][:len(RESOURCE_FIELDS)] for pid in pids], pids)
+    rows = [[v if isinstance(v, (int, float)) else 0.0 for v in proc_table[str(pid)][:len(RESOURCE_FIELDS)]]
+            for pid in pids]
+    summary = _resource_summary(rows, pids, totals)
     summary["active_procs"] = summary["proc_count"]
     return summary
 
@@ -2400,7 +2446,8 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         "sampled_at": snap["sampled_at"],
         "ttl_sec": PROC_SNAPSHOT_TTL_SEC,
         "gpu_available": bool(snap["gpu"]) or bool(shutil.which("nvidia-smi")),
-        # pid -> [cpu_pct, ram_mb, gpu_mb, io_kbps, comm]; only attributed PIDs.
+        **snap["totals"],
+        # pid -> [cpu_pct, ram_mb, gpu_mb, tx_kbps, rx_kbps, comm]; only attributed PIDs.
         "procs": {str(pid): [round(v, 2) for v in _pid_stats(snap, pid)] + [procs[pid]["comm"]]
                   for pid in sorted(attributed)},
         "conversations": conversations,

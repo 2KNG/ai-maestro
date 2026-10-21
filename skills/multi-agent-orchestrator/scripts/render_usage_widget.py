@@ -2045,9 +2045,13 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
 
 
 RES_MARK_START, RES_MARK_END = "<!--__RES__-->", "<!--__RES_END__-->"
-# (on, hot) thresholds per field: CPU %, RAM MB, GPU VRAM MB, I/O KB/s.
-_RES_LEVELS = {"cpu_pct": (5.0, 50.0), "ram_mb": (256.0, 2048.0), "gpu_mb": (1.0, 4096.0), "io_kbps": (64.0, 10240.0)}
-_RES_CLASSES = {"cpu_pct": "r-cpu", "ram_mb": "r-ram", "gpu_mb": "r-gpu", "io_kbps": "r-io"}
+# Display order CPU -> GPU -> RAM -> send (tx) -> receive (rx); (on, hot) thresholds:
+# CPU % (one core = 100), GPU % of total VRAM, RAM % of system memory, KB/s.
+_RES_LEVELS = {"cpu_pct": (5.0, 50.0), "gpu_pct": (0.01, 50.0), "ram_pct": (1.0, 10.0),
+               "tx_kbps": (64.0, 10240.0), "rx_kbps": (64.0, 10240.0)}
+_RES_CLASSES = {"cpu_pct": "r-cpu", "gpu_pct": "r-gpu", "ram_pct": "r-ram", "tx_kbps": "r-tx", "rx_kbps": "r-rx"}
+_RES_ICONS = {"cpu_pct": "cpu", "gpu_pct": "gpu", "ram_pct": "ram", "tx_kbps": "up", "rx_kbps": "dn"}
+_RES_LABELS = {"cpu_pct": "CPU", "gpu_pct": "GPU", "ram_pct": "RAM", "tx_kbps": "↑ 보냄", "rx_kbps": "↓ 받음"}
 
 
 def _fmt_res_mb(mb) -> str:
@@ -2057,7 +2061,14 @@ def _fmt_res_mb(mb) -> str:
 
 def _fmt_res_rate(kbps) -> str:
     kbps = float(kbps or 0)
-    return f"{kbps / 1024:.1f}MB/s" if kbps >= 1024 else f"{kbps:.0f}KB/s"
+    if kbps >= 1024:
+        return f"{kbps / 1024:.1f}MB/s"
+    return f"{kbps:.1f}KB/s" if kbps < 10 else f"{kbps:.0f}KB/s"
+
+
+def _fmt_res_pct(pct) -> str:
+    pct = float(pct or 0)
+    return f"{pct:.1f}%" if pct >= 0.05 else "<0.1%"
 
 
 def _res_cls(field: str, value) -> str:
@@ -2068,55 +2079,83 @@ def _res_cls(field: str, value) -> str:
     return _RES_CLASSES[field] + level
 
 
+def _res_metrics(res: dict) -> list[tuple[str, float, str]]:
+    """(field, level value, text) of the non-zero metrics in CPU, GPU, RAM, send, receive order."""
+    out = []
+    cpu = float(res.get("cpu_pct") or 0)
+    if cpu > 0.04:
+        out.append(("cpu_pct", cpu, f"{cpu:.1f}%"))
+    for field, mb_key in (("gpu_pct", "gpu_mb"), ("ram_pct", "ram_mb")):
+        mb, pct = float(res.get(mb_key) or 0), res.get(field)
+        if mb > 0:  # without a known total the exact MB is shown instead of a percentage
+            out.append((field, float(pct or 0), _fmt_res_pct(pct) if pct is not None else _fmt_res_mb(mb)))
+    for field in ("tx_kbps", "rx_kbps"):
+        rate = float(res.get(field) or 0)
+        if rate >= 0.05:
+            out.append((field, rate, _fmt_res_rate(rate)))
+    return out
+
+
 def _has_res(res) -> bool:
     return isinstance(res, dict) and bool(res.get("proc_count"))
 
 
+def _res_active(res) -> bool:
+    """Live consumption: RAM alone (an idle shell) does not count."""
+    return _has_res(res) and any(field != "ram_pct" for field, _, _ in _res_metrics(res))
+
+
 def _res_title(res: dict, rollup: bool = False) -> str:
     scope = "합산: 메인 + 하위 에이전트·잡·데몬 프로세스 트리" if rollup else "프로세스 트리 (루트 + 모든 자식)"
-    return (f"{scope} · CPU {float(res.get('cpu_pct') or 0):.1f}% · RAM {_fmt_res_mb(res.get('ram_mb'))} · "
-            f"GPU VRAM {float(res.get('gpu_mb') or 0):.0f}MB · I/O {_fmt_res_rate(res.get('io_kbps'))} · "
-            f"프로세스 {int(res.get('proc_count') or 0)}개")
+    parts = [scope, f"CPU {float(res.get('cpu_pct') or 0):.1f}% (코어 1개 = 100%)"]
+    for field, mb_key, unit in (("gpu_pct", "gpu_mb", "VRAM"), ("ram_pct", "ram_mb", "RSS")):
+        mb = float(res.get(mb_key) or 0)
+        if field == "ram_pct" or mb > 0:
+            pct = res.get(field)
+            exact = f"{unit} {mb:.0f}MB"
+            parts.append(f"{_RES_LABELS[field]} " + (f"{_fmt_res_pct(pct)} ({exact})" if pct is not None else exact))
+    parts += [f"↑ 보냄 {_fmt_res_rate(res.get('tx_kbps'))}", f"↓ 받음 {_fmt_res_rate(res.get('rx_kbps'))}",
+              f"프로세스 {int(res.get('proc_count') or 0)}개"]
+    return " · ".join(parts)
 
 
-def _res_pill_html(res, rollup: bool = False) -> str:
-    """Inline CPU/RAM/GPU/I-O pill; empty when no process is attributed."""
-    if not _has_res(res):
+def _res_icon(field: str) -> str:
+    return f'<svg class="ri"><use href="#ri-{_RES_ICONS[field]}"/></svg>'
+
+
+def _res_pill_html(res, rollup: bool = False, force: bool = False) -> str:
+    """Inline icon pill (CPU, GPU, RAM, send, receive; zeros omitted); empty for idle trees unless forced."""
+    if not (_res_active(res) or (force and _has_res(res))):
         return ""
-    gpu, io = float(res.get("gpu_mb") or 0), float(res.get("io_kbps") or 0)
-    segs = [("cpu_pct", f"CPU {float(res.get('cpu_pct') or 0):.1f}%"),
-            ("ram_mb", f"RAM {_fmt_res_mb(res.get('ram_mb'))}")]
-    if rollup or gpu > 0:
-        segs.append(("gpu_mb", f"GPU {gpu:.0f}MB"))
-    if rollup or io >= 1:
-        segs.append(("io_kbps", f"I/O {_fmt_res_rate(io)}"))
-    classes = [_res_cls(field, res.get(field)) for field, _ in segs]
+    metrics = _res_metrics(res)
+    classes = [_res_cls(field, value) for field, value, _ in metrics]
     cls = "res-pill" + (" rollup" if rollup else "") + ("" if any(" r-" in c for c in classes) else " idle")
-    inner = "<i>·</i>".join(f'<span class="{c}">{text}</span>' for c, (_, text) in zip(classes, segs))
+    inner = "".join(f'<span class="{c}">{_res_icon(field)}{text}</span>'
+                    for c, (field, _, text) in zip(classes, metrics))
     return f'<span class="{cls}" title="{_html_esc(_res_title(res, rollup))}">{inner}</span>'
 
 
 def _res_slot_html(key: str, res, rollup: bool = False) -> str:
-    """Keyed slot the live patcher refreshes in place; omitted when nothing is attributed."""
-    if not _has_res(res):
+    """Keyed slot the live patcher refreshes in place; omitted for idle or unattributed trees."""
+    if not _res_active(res):
         return ""
     return (f'<span class="res-slot" data-res-key="{_html_esc(key)}">'
             f'{RES_MARK_START}{_res_pill_html(res, rollup)}{RES_MARK_END}</span>')
 
 
 def _res_table_row(row_cls: str, tag: str, label: str, res) -> str:
-    cells = "".join(f'<td class="{_res_cls(field, res.get(field))}">{text}</td>' for field, text in (
-        ("cpu_pct", f"{float(res.get('cpu_pct') or 0):.1f}%"), ("ram_mb", _fmt_res_mb(res.get("ram_mb"))),
-        ("gpu_mb", f"{float(res.get('gpu_mb') or 0):.0f}MB"), ("io_kbps", _fmt_res_rate(res.get("io_kbps")))))
+    shown = {field: (value, text) for field, value, text in _res_metrics(res)}
+    cells = "".join(f'<td class="{_res_cls(field, shown[field][0])}">{shown[field][1]}</td>' if field in shown
+                    else '<td>-</td>' for field in _RES_LEVELS)
     return (f'<tr class="{row_cls}"><td title="{_html_esc(label)}"><span class="res-kind">{_html_esc(tag)}</span>'
             f'{_html_esc(label[:90])}</td>{cells}<td>{int(res.get("proc_count") or 0)}</td></tr>')
 
 
-def _res_board_html(entries: list[dict], proc_table: dict) -> str:
+def _res_board_html(entries: list[dict], proc_table: dict, totals=None) -> str:
     """Section-level rollup line plus the "리소스 상세" breakdown drawer."""
     from check_all_usage import merge_resources
     rows = [e["res"] for e in entries if e.get("res") and _has_res(e["res"].get("rollup"))]
-    total = merge_resources(proc_table, [r["rollup"] for r in rows])
+    total = merge_resources(proc_table, [r["rollup"] for r in rows], totals)
     if not total:
         summary, drawer = '<span class="res-meta">귀속된 프로세스 없음</span>', ""
     else:
@@ -2128,12 +2167,12 @@ def _res_board_html(entries: list[dict], proc_table: dict) -> str:
         toggle_js = ("var h=document.documentElement;h.classList.toggle('res-open');"
                      "try{localStorage.setItem('agy_res_open_v1',h.classList.contains('res-open')?1:0)}catch(e){}"
                      "if(window.notifyParentResize)notifyParentResize()")
-        summary = (f'{_res_pill_html(total, rollup=True)}'
+        summary = (f'{_res_pill_html(total, rollup=True, force=True)}'
                    f'<span class="res-meta">에이전트 {len(rows)} · 프로세스 {total["proc_count"]}</span>'
                    f'<button type="button" class="res-toggle" onclick="{toggle_js}" '
-                   f'title="에이전트별 CPU · RAM · GPU VRAM · I/O · 프로세스 수 (자세히)">리소스 상세</button>')
+                   f'title="에이전트별 CPU · GPU · RAM · ↑ 보냄 · ↓ 받음 · 프로세스 수 (자세히)">리소스 상세</button>')
         drawer = ('<div class="res-drawer"><table class="res-table"><tr><th>에이전트 (메인 합산 → 하위)</th>'
-                  '<th>CPU</th><th>RAM</th><th>GPU VRAM</th><th>I/O</th><th>프로세스</th></tr>'
+                  '<th>CPU</th><th>GPU</th><th>RAM</th><th>↑ 보냄</th><th>↓ 받음</th><th>프로세스</th></tr>'
                   f'{"".join(table_rows)}</table></div>')
     return (f'<div class="res-board" data-res-key="res-board">{RES_MARK_START}'
             f'<div class="res-head"><b>리소스</b>{summary}</div>{drawer}{RES_MARK_END}</div>')
@@ -2144,11 +2183,13 @@ RES_ASSETS_CSS = (
     "<!--__RES_ASSETS_CSS_START__--><style>"
     "body.standalone-web .widget-shell{max-width:clamp(980px,92vw,1380px)}"
     ".res-slot{display:inline-flex;flex:none}"
-    ".res-pill{display:inline-flex;align-items:center;gap:3px;height:18px;box-sizing:border-box;padding:0 5px;"
+    ".res-pill{display:inline-flex;align-items:center;gap:6px;height:18px;box-sizing:border-box;padding:0 5px;"
     "border-radius:4px;border:1px solid var(--bdr);white-space:nowrap}"
     ".res-pill,.res-meta,.res-table{color:var(--muted);font:9.5px ui-monospace,Menlo,monospace}"
-    ".res-pill.rollup{border-color:#22d3ee55}.res-pill.idle{opacity:.55}.res-pill i{font-style:normal;opacity:.4}"
-    ".r-on.r-cpu{color:#22d3ee}.r-on.r-ram{color:#34d399}.r-on.r-gpu{color:#a78bfa}.r-on.r-io{color:#38bdf8}"
+    ".res-pill.rollup{border-color:#22d3ee55}.res-pill.idle{opacity:.55}"
+    ".res-pill>span{display:inline-flex;align-items:center;gap:2px}"
+    ".ri{width:10px;height:10px;flex:none;fill:none;stroke:currentColor;stroke-width:1.1;stroke-linecap:round;stroke-linejoin:round}"
+    ".r-on.r-cpu{color:#22d3ee}.r-on.r-gpu{color:#a78bfa}.r-on.r-ram{color:#34d399}.r-on.r-tx{color:#f472b6}.r-on.r-rx{color:#38bdf8}"
     ".r-hot{color:#fbbf24!important;font-weight:700}html.light :is(.r-on,.r-hot){filter:brightness(.7)}"
     ".res-board{margin:0 0 4px;border:1px solid var(--bdr);border-radius:6px}"
     ".res-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 6px;font-size:10.5px}"
@@ -2168,7 +2209,16 @@ RES_ASSETS_CSS = (
 # Resource numbers change every pass: keep them out of the tree signature, then
 # patch keyed slots (insert / refresh / drop) after the regular reconcile.
 RES_ASSETS_JS = (
-    "<!--__RES_ASSETS_JS_START__--><script>(function(){"
+    "<!--__RES_ASSETS_JS_START__--><svg width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\">"
+    "<symbol id=\"ri-cpu\" viewBox=\"0 0 10 10\"><rect x=\"2.5\" y=\"2.5\" width=\"5\" height=\"5\" rx=\".7\"/>"
+    "<path d=\"M4 1v1.5M6 1v1.5M4 7.5V9M6 7.5V9M1 4h1.5M1 6h1.5M7.5 4H9M7.5 6H9\"/></symbol>"
+    "<symbol id=\"ri-gpu\" viewBox=\"0 0 10 10\"><rect x=\".7\" y=\"2.2\" width=\"8.6\" height=\"5\" rx=\".7\"/>"
+    "<circle cx=\"6.3\" cy=\"4.7\" r=\"1.3\"/><path d=\"M2.5 4h1M2.5 5.5h1M2.2 7.2v1.6M4.5 7.2v1.6\"/></symbol>"
+    "<symbol id=\"ri-ram\" viewBox=\"0 0 10 10\"><rect x=\".7\" y=\"2.5\" width=\"8.6\" height=\"4.2\" rx=\".5\"/>"
+    "<path d=\"M2.8 3.9v1.4M5 3.9v1.4M7.2 3.9v1.4M2 6.7v1.6M4 6.7v1.6M6 6.7v1.6M8 6.7v1.6\"/></symbol>"
+    "<symbol id=\"ri-up\" viewBox=\"0 0 10 10\"><path d=\"M5 8.8V1.6M2.1 4.4 5 1.4l2.9 3\"/></symbol>"
+    "<symbol id=\"ri-dn\" viewBox=\"0 0 10 10\"><path d=\"M5 1.2v7.2M2.1 5.6 5 8.6l2.9-3\"/></symbol></svg>"
+    "<script>(function(){"
     "try{if(localStorage.getItem('agy_res_open_v1')==1)document.documentElement.classList.add('res-open')}catch(e){}"
     "var S=new RegExp('<!'+'--__RES__-->[\\\\s\\\\S]*?<!'+'--__RES_END__-->','g'),o=window.smartPatchTree;"
     "function q(c,s){return c.querySelector(s)}"
@@ -3563,7 +3613,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         # Main rollup: own conversation, every descendant conversation, attached workers and jobs.
         ag_rollup = merge_resources(proc_table, [ag.get("rollup_resources"), _conv_res(cid)]
                                     + [_conv_res(ch.get("conversation_id")) for ch in (ag.get("children") or [])]
-                                    + [res for _, _, res in res_children])
+                                    + [res for _, _, res in res_children], proc_res)
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         has_running_job = any(t.get("kind") == "job" for t in bg_tree_jobs)
@@ -3724,7 +3774,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         is_keep_alive_cdx = is_live_running or root_dot == "idle-fresh"
         cdx_rollup = merge_resources(proc_table, [cdx.get("rollup_resources"), _worker_res(cdx)]
-                                     + [res for _, _, res in res_children_cdx])
+                                     + [res for _, _, res in res_children_cdx], proc_res)
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
@@ -3765,7 +3815,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         -item["updated_ts"],
     ))
     if proc_res and "error" not in proc_res:
-        active_parts.append(_res_board_html(active_entries, proc_table))
+        active_parts.append(_res_board_html(active_entries, proc_table, proc_res))
     active_parts.extend(item["html"] for item in active_entries)
     active_parts.append("<!--__ACTIVE_TREE_HTML_END__-->")
 

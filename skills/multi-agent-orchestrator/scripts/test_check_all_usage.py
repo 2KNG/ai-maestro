@@ -439,10 +439,12 @@ class ProcessResourceTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
-        gpu = mock.patch.object(usage, "_gpu_process_memory", return_value={101: 512.0})
-        gpu.start()
-        self.addCleanup(gpu.stop)
+        for name, value in (("_gpu_process_memory", {101: 512.0}), ("_gpu_total_memory", 8192.0)):
+            patcher = mock.patch.object(usage, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         Path(self.root, "uptime").write_text("1000.00 0.00\n")
+        Path(self.root, "meminfo").write_text("MemTotal:       16777216 kB\nMemFree:  1 kB\n")  # 16 GiB
 
     def proc(self, pid, ppid, *, cpu_sec=0, rss_pages=256, cid="", step=None, io=(0, 0), comm="python3"):
         d = Path(self.root, str(pid))
@@ -487,6 +489,10 @@ class ProcessResourceTests(unittest.TestCase):
         page_mb = usage._PAGE_KB / 1024
         self.assertAlmostEqual(root["rollup_resources"]["ram_mb"], round((256 * 4 + 512) * page_mb, 1))
         self.assertEqual(root["rollup_resources"]["gpu_mb"], 512.0)
+        self.assertEqual(root["rollup_resources"]["gpu_pct"], 6.25)  # 512 of 8192 MiB VRAM
+        self.assertAlmostEqual(root["rollup_resources"]["ram_pct"],
+                               round((256 * 4 + 512) * page_mb / 16384 * 100, 2))
+        self.assertEqual((pr["mem_total_mb"], pr["gpu_total_mb"]), (16384.0, 8192.0))
         # First pass: lifetime average, 50 CPU seconds over a 500 s old process.
         self.assertAlmostEqual(pr["conversations"]["conv-a"]["cpu_pct"], 10.0)
 
@@ -494,14 +500,16 @@ class ProcessResourceTests(unittest.TestCase):
         self.proc(100, 1, cpu_sec=50, cid="conv-a", step=1, io=(10 * 1024, 0))
         with mock.patch.object(usage.time, "monotonic", return_value=100.0):
             self.build({})
-        self.proc(100, 1, cpu_sec=51, cid="conv-a", step=1, io=(20 * 1024, 10 * 1024))
+        self.proc(100, 1, cpu_sec=51, cid="conv-a", step=1, io=(30 * 1024, 10 * 1024))
         with mock.patch.object(usage.time, "monotonic", return_value=101.0):
             self.assertIs(usage.process_snapshot(self.root), usage.process_snapshot(self.root))  # cached
         with mock.patch.object(usage.time, "monotonic", return_value=104.0):
             pr = self.build({})
         res = pr["conversations"]["conv-a"]
         self.assertAlmostEqual(res["cpu_pct"], 25.0)  # 1 CPU second in 4 s
-        self.assertAlmostEqual(res["io_kbps"], 5.0)  # 20 KiB in 4 s
+        self.assertAlmostEqual(res["rx_kbps"], 5.0)  # 20 KiB read (rchar) in 4 s
+        self.assertAlmostEqual(res["tx_kbps"], 2.5)  # 10 KiB written (wchar) in 4 s
+        self.assertNotIn("io_kbps", res)
 
     def test_maestro_wrapper_and_cli_are_one_worker(self):
         self.proc(10, 1, comm="python3")
@@ -522,10 +530,13 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertNotIn("rollup_resources", trees["codex"][0])
 
     def test_merge_resources_unions_pids(self):
-        table = {"1": [1.0, 10.0, 0.0, 1.0, "a"], "2": [2.0, 20.0, 5.0, 2.0, "b"]}
-        merged = usage.merge_resources(table, [{"pids": [1, 2]}, {"pids": [2]}, None])
-        self.assertEqual((merged["cpu_pct"], merged["ram_mb"], merged["gpu_mb"], merged["io_kbps"]),
-                         (3.0, 30.0, 5.0, 3.0))
+        table = {"1": [1.0, 10.0, 0.0, 1.0, 4.0, "a"], "2": [2.0, 20.0, 5.0, 2.0, 0.0, "b"]}
+        merged = usage.merge_resources(table, [{"pids": [1, 2]}, {"pids": [2]}, None],
+                                       {"mem_total_mb": 1000.0, "gpu_total_mb": 0.0})
+        self.assertEqual((merged["cpu_pct"], merged["ram_mb"], merged["gpu_mb"], merged["tx_kbps"], merged["rx_kbps"]),
+                         (3.0, 30.0, 5.0, 3.0, 4.0))
+        self.assertEqual(merged["ram_pct"], 3.0)
+        self.assertNotIn("gpu_pct", merged)  # unknown VRAM total: no percentage
         self.assertEqual((merged["proc_count"], merged["active_procs"], merged["pids"]), (2, 2, [1, 2]))
         self.assertIsNone(usage.merge_resources(table, [{"pids": [7]}, None]))
 

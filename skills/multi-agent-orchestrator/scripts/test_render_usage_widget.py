@@ -447,8 +447,16 @@ class ResourceRenderingTests(unittest.TestCase):
         processes.start()
 
     @staticmethod
-    def res(pids, cpu, ram, gpu=0.0, io=0.0):
-        return dict(cpu_pct=cpu, ram_mb=ram, gpu_mb=gpu, io_kbps=io, proc_count=len(pids), pids=pids)
+    def res(pids, cpu, ram, gpu=0.0, tx=0.0, rx=0.0):
+        # 16 GiB RAM and 8 GiB VRAM, matching TOTALS.
+        return dict(cpu_pct=cpu, ram_mb=ram, gpu_mb=gpu, tx_kbps=tx, rx_kbps=rx, ram_pct=round(ram / 163.84, 2),
+                    gpu_pct=round(gpu / 81.92, 2), proc_count=len(pids), pids=pids)
+
+    TOTALS = {'mem_total_mb': 16384.0, 'gpu_total_mb': 8192.0}
+
+    @staticmethod
+    def slot(html, key):
+        return re.search(rf'data-res-key="{key}"><!--__RES__-->(.*?)<!--__RES_END__-->', html).group(1)
 
     def render(self, process_resources):
         now = datetime.now(timezone.utc).isoformat()
@@ -465,34 +473,63 @@ class ResourceRenderingTests(unittest.TestCase):
             return widget.build_active_and_closed_trees_html(data, {})[0]
 
     def test_rows_show_own_trees_and_main_rolls_up_by_pid_union(self):
-        procs = {'1': [10.0, 100.0, 0.0, 1.0, 'bash'], '2': [30.0, 300.0, 2048.0, 200.0, 'pytest'],
-                 '3': [1.0, 50.0, 0.0, 0.0, 'node']}
+        procs = {'1': [10.0, 100.0, 0.0, 1.0, 0.0, 'bash'], '2': [30.0, 300.0, 2048.0, 150.0, 50.0, 'pytest'],
+                 '3': [1.0, 50.0, 0.0, 0.0, 0.0, 'node']}
         active = self.render({
-            'procs': procs,
-            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2], 40.0, 400.0, 2048.0, 201.0),
+            'procs': procs, **self.TOTALS,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2], 40.0, 400.0, 2048.0, 151.0, 50.0),
                               'ressub-0001': self.res([3], 1.0, 50.0)},
-            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([2], 30.0, 300.0, 2048.0, 200.0)},
+            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([2], 30.0, 300.0, 2048.0, 150.0, 50.0)},
             'workers': {}, 'pids': {},
         })
-        main = re.search(r'data-res-key="res-node-agy-resparen"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
-        # Subagent pid 3 joins the rollup; the job's pid 2 is not counted twice.
-        self.assertIn('CPU 41.0%', main)
-        self.assertIn('RAM 450MB', main)
-        self.assertIn('GPU 2048MB', main)
-        self.assertIn('I/O 201KB/s', main)
+        main = self.slot(active, 'res-node-agy-resparen')
+        # Subagent pid 3 joins the rollup; the job's pid 2 is not counted twice. Order: CPU, GPU, RAM, send, receive.
+        self.assertEqual(re.findall(r'#ri-(\w+)', main), ['cpu', 'gpu', 'ram', 'up', 'dn'])
+        self.assertIn('<use href="#ri-cpu"/></svg>41.0%', main)
+        self.assertIn('#ri-gpu"/></svg>25.0%', main)  # 2048 of 8192 MiB
+        self.assertIn('#ri-ram"/></svg>2.8%', main)  # 450 of 16384 MiB = 2.75%
+        self.assertIn('#ri-up"/></svg>151KB/s', main)
+        self.assertIn('#ri-dn"/></svg>50KB/s', main)
+        self.assertIn('GPU 25.0% (VRAM 2048MB)', main)  # exact sizes stay in the tooltip
+        self.assertIn('RAM 2.8% (RSS 450MB)', main)
         self.assertIn('res-pill rollup', main)
-        sub = re.search(r'data-res-key="res-node-sub-ressub-0"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
-        self.assertIn('CPU 1.0%', sub)
+        self.assertNotIn('I/O', main)
+        sub = self.slot(active, 'res-node-sub-ressub-0')
+        self.assertEqual(re.findall(r'#ri-(\w+)', sub), ['cpu', 'ram'])  # zero GPU / send / receive omitted
         self.assertIn('idle', sub)  # below every activity threshold
-        self.assertNotIn('r-gpu', sub)  # zero VRAM is not shown on child rows
-        job = re.search(r'data-res-key="res-node-bg-resparen-task-42"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
-        self.assertIn('<span class="r-cpu r-on">CPU 30.0%</span>', job)
+        job = self.slot(active, 'res-node-bg-resparen-task-42')
+        self.assertIn('<span class="r-cpu r-on"><svg class="ri"><use href="#ri-cpu"/></svg>30.0%</span>', job)
         self.assertIn('r-gpu r-on', job)
+        self.assertIn('r-tx r-on', job)
         # The board precedes the first tree node and carries the breakdown drawer.
         self.assertLess(active.index('class="res-board"'), active.index('class="tree-node'))
         self.assertIn('리소스 상세', active)
         self.assertIn('<span class="res-kind">JOB</span>pytest loop', active)
         self.assertIn('에이전트 1 · 프로세스 3', active)
+
+    def test_idle_rows_get_no_pill_and_zero_metrics_are_omitted(self):
+        active = self.render({
+            'procs': {'1': [0.0, 5.0, 0.0, 0.0, 0.0, 'bash'], '3': [0.0, 50.0, 0.0, 0.0, 2.0, 'node']},
+            **self.TOTALS,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1], 0.0, 5.0),
+                              'ressub-0001': self.res([3], 0.0, 50.0, rx=2.0)},
+            'tasks': {}, 'workers': {}, 'pids': {},
+        })
+        # RAM alone is not activity: the idle job/shell rows render no slot at all.
+        self.assertNotIn('res-node-bg-resparen-task-42', active)
+        sub = self.slot(active, 'res-node-sub-ressub-0')
+        self.assertEqual(re.findall(r'#ri-(\w+)', sub), ['ram', 'dn'])
+        self.assertIn('2.0KB/s', sub)
+        self.assertNotIn('#ri-cpu', sub)
+        board = self.slot(active, 'res-board')
+        self.assertNotIn('#ri-gpu', board)
+
+        quiet = self.render({'procs': {'1': [0.0, 5.0, 0.0, 0.0, 0.0, 'bash']}, **self.TOTALS,
+                             'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1], 0.0, 5.0)},
+                             'tasks': {}, 'workers': {}, 'pids': {}})
+        self.assertNotIn('res-slot', quiet)
+        # The summary bar still shows the attributed total (RAM only).
+        self.assertEqual(re.findall(r'#ri-(\w+)', self.slot(quiet, 'res-board')), ['ram'])
 
     def test_without_process_data_no_resource_markup_is_rendered(self):
         active = self.render(None)
@@ -510,6 +547,8 @@ class ResourceRenderingTests(unittest.TestCase):
         self.assertLess(once.index('RES_ASSETS_CSS_START'), once.index('</head>'))
         self.assertLess(once.index('RES_ASSETS_JS_START'), once.index('</body>'))
         self.assertIn('max-width:clamp(980px,92vw,1380px)', once)
+        for icon in ('cpu', 'gpu', 'ram', 'up', 'dn'):
+            self.assertEqual(once.count(f'<symbol id="ri-{icon}"'), 1)
         # The script must not contain a literal HTML comment opener.
         script = once[once.index('<script>(function'):once.index('RES_ASSETS_JS_END')]
         self.assertNotIn('<!--__RES__', script)
