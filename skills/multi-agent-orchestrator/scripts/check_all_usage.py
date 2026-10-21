@@ -2140,6 +2140,15 @@ GPU_TOTAL_TTL_SEC = 300.0
 RESOURCE_FIELDS = ("cpu_pct", "ram_mb", "gpu_mb", "tx_kbps", "rx_kbps")
 _ENV_STEP_RE = re.compile(rb'"stepIndex"\s*:\s*(\d+)')
 _TASK_LOG_FD_RE = re.compile(r"/brain/([^/]+)/\.system_generated/tasks/(task-\d+)\.log(?: \(deleted\))?$")
+# Antigravity runtime (language_server + the Electron window tree) hosting every
+# AGY conversation. What no run_command / worker tree claims is split across the
+# live AGY sessions as negative pseudo-PIDs, so a main agent carries its own
+# CPU / RAM / I/O and rollups stay additive under the PID-union rules.
+AGY_RUNTIME_COMMS = ("language_server", "antigravity")
+AGY_RUNTIME_RECENT_SEC = 7 * 86400  # idle roots the widget still lists as active
+AGY_RUNTIME_IDLE_WEIGHT = 0.1  # CPU / I/O weight of an idle session against a running one
+AGY_RUNTIME_RAM_TOKENS = 100_000  # context tokens worth one extra RAM weight unit
+_INTERNAL_AGY_TITLE_PREFIXES = ("✦", "🪐", "[AGY]")
 try:
     _CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
     _PAGE_KB = max(1, os.sysconf("SC_PAGE_SIZE") // 1024)
@@ -2362,7 +2371,10 @@ def _resource_summary(stats, pids, totals=None) -> dict:
         total = float((totals or {}).get(total_key) or 0)
         if total > 0:
             summary[pct_key] = round(sums[field] / total * 100, 2)
-    return {**summary, "proc_count": len(pids), "pids": sorted(pids)}
+    shares = sum(1 for pid in pids if int(pid) < 0)
+    if shares:
+        summary["runtime_shares"] = shares  # AGY runtime pseudo-PIDs, not real processes
+    return {**summary, "proc_count": len(pids) - shares, "pids": sorted(pids)}
 
 
 def summarize_pids(snap: dict, pids) -> dict:
@@ -2399,12 +2411,119 @@ def _set_resources(node: dict, key: str, value) -> None:
         node.pop(key, None)
 
 
+def _is_agy_runtime(proc) -> bool:
+    comm = (proc or {}).get("comm") or ""
+    return any(comm.startswith(name) for name in AGY_RUNTIME_COMMS)
+
+
+def _norm_workspace(value) -> str:
+    """file:///home/u/dev and the language_server's file_home_u_dev both become file_home_u_dev."""
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+
+
+def _workspace_id_arg(proc_root: str, pid: int) -> str:
+    args = _read_proc_bytes(f"{proc_root}/{pid}/cmdline", 16384).split(b"\0")
+    for i, arg in enumerate(args):
+        if arg == b"--workspace_id" and i + 1 < len(args):
+            return args[i + 1].decode("utf-8", "replace")
+        if arg.startswith(b"--workspace_id="):
+            return arg.split(b"=", 1)[1].decode("utf-8", "replace")
+    return ""
+
+
+def _agy_runtime_sessions(trees: dict, now: float | None = None) -> list[dict]:
+    """AGY sessions sharing the runtime: running conversations plus the idle main agents still listed as active.
+
+    CPU / I/O weight favours running sessions; RAM weight grows with the context
+    the language server keeps in memory for that conversation.
+    """
+    now = time.time() if now is None else now
+    sessions, seen = [], set()
+
+    def visit(node, depth):
+        cid = node.get("conversation_id")
+        if not cid or cid in seen or "error" in node:
+            return
+        seen.add(cid)
+        running = bool(node.get("is_running")) and not node.get("killed")
+        if not running:
+            ts = _timing_timestamp(node.get("last_modified_time"))
+            title = str(node.get("title") or "").lstrip()
+            listed = (depth == 0 and not node.get("is_subagent") and not node.get("killed")
+                      and not title.startswith(_INTERNAL_AGY_TITLE_PREFIXES)
+                      and ts is not None and now - ts <= AGY_RUNTIME_RECENT_SEC)
+        if running or listed:
+            tokens = (node.get("context_usage") or {}).get("used_tokens") or 0
+            tokens = float(tokens) if isinstance(tokens, (int, float)) and not isinstance(tokens, bool) else 0.0
+            sessions.append({"cid": cid, "node": node, "running": running,
+                             "cpu_w": 1.0 if running else AGY_RUNTIME_IDLE_WEIGHT,
+                             "ram_w": 1.0 + max(0.0, tokens) / AGY_RUNTIME_RAM_TOKENS,
+                             "workspaces": {_norm_workspace(w) for w in node.get("workspaces") or () if w}})
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                visit(child, depth + 1)
+
+    for root in (trees or {}).get("antigravity") or []:
+        if isinstance(root, dict):
+            visit(root, 0)
+    return sessions
+
+
+def _agy_runtime_pools(snap: dict, claimed: set) -> dict[str, set[int]]:
+    """Workspace key ("" = shared by every session) -> runtime PIDs no conversation / worker tree claims.
+
+    A language_server started with --workspace_id keeps its own subtree for that
+    workspace; the hub server and the Electron window tree are shared.
+    """
+    procs = snap["procs"]
+    roots = [pid for pid, p in procs.items() if _is_agy_runtime(p) and not _is_agy_runtime(procs.get(p["ppid"]))]
+    pools = {"": _descendants(snap, roots) - claimed}
+    for pid in sorted(pools[""]):
+        if pid in pools[""] and procs[pid]["comm"].startswith("language_server"):
+            workspace = _norm_workspace(_workspace_id_arg(snap["proc_root"], pid))
+            if workspace:
+                own = _descendants(snap, [pid]) & pools[""]
+                pools.setdefault(workspace, set()).update(own)
+                pools[""] -= own
+    return {key: pids for key, pids in pools.items() if pids}
+
+
+def _split_agy_runtime(snap: dict, pools: dict, sessions: list[dict]) -> dict[str, tuple]:
+    """cid -> (per-core cpu, ram_mb, gpu_mb, tx, rx) share; each pool is split in full, so shares add up to it.
+
+    A workspace pool goes to the sessions of that workspace; one without sessions joins the shared pool.
+    """
+    shared = set(pools.get("", ()))
+    groups = []
+    for key, pids in pools.items():
+        members = [s for s in sessions if key and key in s["workspaces"]]
+        if members:
+            groups.append((pids, members))
+        elif key:
+            shared |= pids
+    if shared and sessions:
+        groups.append((shared, sessions))
+    shares: dict[str, tuple] = {}
+    for pids, members in groups:
+        sums = [sum(values) for values in zip(*(_pid_stats(snap, pid) for pid in pids))]
+        cpu_w = sum(s["cpu_w"] for s in members)
+        ram_w = sum(s["ram_w"] for s in members)
+        for s in members:
+            cpu, ram = s["cpu_w"] / cpu_w, s["ram_w"] / ram_w
+            part = (sums[0] * cpu, sums[1] * ram, sums[2] * ram, sums[3] * cpu, sums[4] * cpu)
+            prev = shares.get(s["cid"])
+            shares[s["cid"]] = tuple(a + b for a, b in zip(prev, part)) if prev else part
+    return shares
+
+
 def build_process_resources(trees: dict | None = None, proc_root: str = "/proc", live_workers=None) -> dict:
     """Attach `resources` / `rollup_resources` to agent-tree nodes and return lookup tables.
 
     A conversation group is every descendant of a process carrying that
     conversation ID, so CLI workers and background jobs a main agent launched
-    are inside its rollup without title or cwd guessing.
+    are inside its rollup without title or cwd guessing. The Antigravity runtime
+    hosting the conversations (language_server + window tree) is split across
+    live AGY sessions as negative pseudo-PIDs (`self_resources` on each node).
     """
     snap = process_snapshot(proc_root)
     procs = snap["procs"]
@@ -2419,7 +2538,6 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         if p["task"] and (parent.get("cid"), parent.get("task")) != (p["cid"], p["task"]):
             task_roots.setdefault(f"{p['cid']}/{p['task']}", []).append(pid)
     conv_pids = {cid: _descendants(snap, roots) for cid, roots in conv_roots.items()}
-    conversations = {cid: summarize_pids(snap, pids) for cid, pids in conv_pids.items()}
 
     if live_workers is None:
         try:
@@ -2451,6 +2569,23 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         if pids & worker_pids:
             tasks[key]["worker_pids"] = sorted(pids & worker_pids)
 
+    trees = trees or {}
+    sessions = _agy_runtime_sessions(trees)
+    pools = _agy_runtime_pools(snap, worker_pids.union(*conv_pids.values())) if sessions else {}
+    share_stats: dict[int, tuple] = {}
+    share_pid: dict[str, int] = {}
+    for index, (cid, stats) in enumerate(sorted(_split_agy_runtime(snap, pools, sessions).items()), 1):
+        share_pid[cid] = -index
+        share_stats[-index] = stats
+        conv_pids.setdefault(cid, set()).add(-index)
+
+    def summarize(pids):
+        pids = [pid for pid in set(pids) if pid in procs or pid in share_stats]
+        rows = [share_stats[pid] if pid < 0 else _pid_stats(snap, pid) for pid in pids]
+        return _resource_summary(rows, pids, snap["totals"])
+
+    conversations = {cid: summarize(pids) for cid, pids in conv_pids.items()}
+
     def agy_cids(node, seen):
         cid = node.get("conversation_id")
         if cid and cid not in seen:
@@ -2463,6 +2598,7 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
     def annotate_agy(node):
         cid = node.get("conversation_id") or ""
         _set_resources(node, "resources", conversations.get(cid))
+        _set_resources(node, "self_resources", summarize([share_pid[cid]]) if cid in share_pid else None)
         for task in node.get("background_tasks") or []:
             if isinstance(task, dict):
                 _set_resources(task, "resources", tasks.get(f"{cid}/{task.get('short_id')}"))
@@ -2471,11 +2607,10 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
                 annotate_agy(child)
 
     def rollup(pids):
-        summary = summarize_pids(snap, pids)
+        summary = summarize(pids)
         summary["active_procs"] = summary["proc_count"]
         return summary
 
-    trees = trees or {}
     for node in trees.get("antigravity") or []:
         if isinstance(node, dict) and "error" not in node:
             annotate_agy(node)
@@ -2510,7 +2645,8 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
     attributed = set()
     for group in (conversations, tasks, workers, by_pid):
         for res in group.values():
-            attributed.update(res["pids"])
+            attributed.update(pid for pid in res["pids"] if pid > 0)
+    runtime_pids = set().union(*pools.values()) if share_pid else set()
     return {
         "sampled_at": snap["sampled_at"],
         "ttl_sec": PROC_SNAPSHOT_TTL_SEC,
@@ -2518,8 +2654,13 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         **snap["totals"],
         # pid -> [per-core cpu %, ram_mb, gpu_mb, tx_kbps, rx_kbps, comm]; only attributed PIDs.
         # Raw per-core values keep rows additive; merge_resources normalizes the sum.
-        "procs": {str(pid): [round(v, 2) for v in _pid_stats(snap, pid)] + [procs[pid]["comm"]]
-                  for pid in sorted(attributed)},
+        # Negative keys are AGY runtime shares (language_server + window tree split per session).
+        "procs": {**{str(pid): [round(v, 2) for v in _pid_stats(snap, pid)] + [procs[pid]["comm"]]
+                     for pid in sorted(attributed)},
+                  **{str(pid): [round(v, 2) for v in stats] + ["agy-runtime"]
+                     for pid, stats in sorted(share_stats.items(), reverse=True)}},
+        "agy_runtime": {**summarize_pids(snap, runtime_pids), "sessions": len(share_pid),
+                        "shares": share_pid} if share_pid else None,
         "conversations": conversations,
         "tasks": tasks,
         "workers": workers,

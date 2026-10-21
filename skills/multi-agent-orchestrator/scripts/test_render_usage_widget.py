@@ -598,9 +598,36 @@ class ResourceRenderingTests(unittest.TestCase):
         quiet = self.render({'procs': {'1': [0.0, 5.0, 0.0, 0.0, 0.0, 'bash']}, **self.TOTALS,
                              'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1], 0.0, 5.0)},
                              'tasks': {}, 'workers': {}, 'pids': {}})
-        self.assertNotIn('res-slot', quiet)
+        # A live main agent always shows its pill, even when it only holds RAM; unattributed rows show none.
+        self.assertEqual(self.tags(self.slot(quiet, 'res-node-agy-resparen')), ['RAM'])
+        self.assertNotIn('res-node-sub-ressub-0', quiet)
+        self.assertNotIn('res-node-bg-resparen-task-42', quiet)
         # The summary bar still shows the attributed total (RAM only).
         self.assertEqual(self.tags(self.slot(quiet, 'res-board')), ['RAM'])
+
+    def test_runtime_shares_give_main_its_own_usage_on_top_of_children(self):
+        # -1 / -2: Antigravity runtime shares (language_server + window) of the main and its subagent.
+        procs = {'-1': [3.0, 600.0, 0.0, 20.0, 40.0, 'agy-runtime'], '-2': [1.0, 200.0, 0.0, 0.0, 0.0, 'agy-runtime'],
+                 '7': [0.0, 30.0, 0.0, 0.0, 0.0, 'bash']}
+        active = self.render({
+            'procs': procs, **self.TOTALS,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([-1], 3.0, 600.0, tx=20.0, rx=40.0),
+                              'ressub-0001': self.res([-2], 1.0, 200.0)},
+            # An idle job shell (RAM only) still gets its pill: it is a running JOB row.
+            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([7], 0.0, 30.0)},
+            'workers': {}, 'pids': {},
+        })
+        main = self.slot(active, 'res-node-agy-resparen')
+        sub = self.slot(active, 'res-node-sub-ressub-0')
+        self.assertEqual(self.tags(self.slot(active, 'res-node-bg-resparen-task-42')), ['RAM'])
+        self.assertIn('<b class="rl">CPU</b>1.0%', sub)
+        # Main total 4.0% = own runtime share 3.0% + SUB 1.0% (+ idle JOB 0%), so it exceeds the children.
+        self.assertIn('<b class="rl">CPU</b>4.0%', main)
+        self.assertIn('합산: CPU 4.0% · RAM 5.1% (메인 본체: CPU 3.0% · RAM 3.7% + '
+                      '하위 에이전트/잡 합계: CPU 1.0% · RAM 1.4%)', main)
+        self.assertIn('Antigravity 런타임 몫', main)
+        self.assertIn('<span class="res-kind">SELF</span>', active)
+        self.assertIn('에이전트 1 · 프로세스 1', active)  # runtime shares are not counted as processes
 
     def test_pill_uses_text_labels_and_arrows_with_a_ram_floor(self):
         pill = widget._res_pill_html(dict(cpu_pct=2.3, gpu_mb=336.0, gpu_pct=4.1, ram_mb=5.0, ram_pct=0.03,

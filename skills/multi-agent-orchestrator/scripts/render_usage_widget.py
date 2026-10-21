@@ -2100,7 +2100,7 @@ def _res_metrics(res: dict) -> list[tuple[str, float, str]]:
 
 
 def _has_res(res) -> bool:
-    return isinstance(res, dict) and bool(res.get("proc_count"))
+    return isinstance(res, dict) and bool(res.get("proc_count") or res.get("runtime_shares"))
 
 
 def _res_active(res) -> bool:
@@ -2108,7 +2108,19 @@ def _res_active(res) -> bool:
     return _has_res(res) and any(field != "ram_pct" for field, _, _ in _res_metrics(res))
 
 
-def _res_title(res: dict, rollup: bool = False) -> str:
+def _res_cpu_ram(res) -> str:
+    res = res or {}
+    return f"CPU {_fmt_res_pct(res.get('cpu_pct'))} · RAM {_fmt_res_pct(res.get('ram_pct'), bool(res.get('ram_mb')))}"
+
+
+def _res_split_text(total: dict, split) -> str:
+    """'합산: ... (메인 본체: ... + 하위 에이전트/잡 합계: ...)' so a main row shows its own share and its children."""
+    own, kids = split
+    kids_text = f"하위 에이전트/잡 합계: {_res_cpu_ram(kids)}" if kids else "하위 에이전트/잡 없음"
+    return f"합산: {_res_cpu_ram(total)} (메인 본체: {_res_cpu_ram(own)} + {kids_text})"
+
+
+def _res_title(res: dict, rollup: bool = False, split=None) -> str:
     scope = "합산: 메인 + 하위 에이전트·잡·데몬 프로세스 트리" if rollup else "프로세스 트리 (루트 + 모든 자식)"
     cpu = f"CPU {_fmt_res_pct(res.get('cpu_pct'))}"
     if res.get("cpu_core_pct") is not None:
@@ -2120,17 +2132,23 @@ def _res_title(res: dict, rollup: bool = False) -> str:
             pct = res.get(field)
             exact = f"{unit} {mb:.0f}MB"
             parts.append(f"{_RES_LABELS[field]} " + (f"{_fmt_res_pct(pct, mb > 0)} ({exact})" if pct is not None else exact))
-    parts += [f"↑ 보냄 {_fmt_res_rate(res.get('tx_kbps'))}", f"↓ 받음 {_fmt_res_rate(res.get('rx_kbps'))}",
-              f"프로세스 {int(res.get('proc_count') or 0)}개"]
-    return " · ".join(parts)
+    procs = f"프로세스 {int(res.get('proc_count') or 0)}개"
+    if res.get("runtime_shares"):
+        procs += " + Antigravity 런타임 몫 (language_server · 창)"
+    parts += [f"↑ 보냄 {_fmt_res_rate(res.get('tx_kbps'))}", f"↓ 받음 {_fmt_res_rate(res.get('rx_kbps'))}", procs]
+    text = " · ".join(parts)
+    return f"{_res_split_text(res, split)}\n{text}" if split else text
 
 
 def _res_tag(field: str) -> str:
     return f'<b class="rl">{_RES_TAGS[field]}</b>'
 
 
-def _res_pill_html(res, rollup: bool = False, force: bool = False) -> str:
-    """Inline pill "CPU 2.3% GPU 4.1% RAM 0.6% ↑ 70KB/s ↓ 2.5MB/s" (zeros omitted); empty for idle trees unless forced."""
+def _res_pill_html(res, rollup: bool = False, force: bool = False, split=None) -> str:
+    """Inline pill "CPU 2.3% GPU 4.1% RAM 0.6% ↑ 70KB/s ↓ 2.5MB/s" (zeros omitted); empty for idle trees unless forced.
+
+    `split` = (main own, children sum) adds the breakdown line to a main row's tooltip.
+    """
     if not (_res_active(res) or (force and _has_res(res))):
         return ""
     metrics = _res_metrics(res)
@@ -2138,15 +2156,17 @@ def _res_pill_html(res, rollup: bool = False, force: bool = False) -> str:
     cls = "res-pill" + (" rollup" if rollup else "") + ("" if any(" r-" in c for c in classes) else " idle")
     inner = "".join(f'<span class="{c}">{_res_tag(field)}{text}</span>'
                     for c, (field, _, text) in zip(classes, metrics))
-    return f'<span class="{cls}" title="{_html_esc(_res_title(res, rollup))}">{inner}</span>'
+    title = _html_esc(_res_title(res, rollup, split)).replace("\n", "&#10;")
+    return f'<span class="{cls}" title="{title}">{inner}</span>'
 
 
-def _res_slot_html(key: str, res, rollup: bool = False) -> str:
-    """Keyed slot the live patcher refreshes in place; omitted for idle or unattributed trees."""
-    if not _res_active(res):
+def _res_slot_html(key: str, res, rollup: bool = False, force: bool = False, split=None) -> str:
+    """Keyed slot the live patcher refreshes in place; omitted for unattributed trees and, unless
+    forced (live main agents, running SUB / JOB rows, which always hold at least RAM), for idle ones."""
+    if not (_res_active(res) or (force and _has_res(res))):
         return ""
     return (f'<span class="res-slot" data-res-key="{_html_esc(key)}">'
-            f'{RES_MARK_START}{_res_pill_html(res, rollup)}{RES_MARK_END}</span>')
+            f'{RES_MARK_START}{_res_pill_html(res, rollup, force, split)}{RES_MARK_END}</span>')
 
 
 def _res_table_row(row_cls: str, tag: str, label: str, res) -> str:
@@ -2810,7 +2830,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
         f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
         f'{c_icon}'
         f'<span class="agent-name" title="{title}">{title}</span></div><div class="agent-right">'
-        f'{_res_slot_html(f"res-{c_node_id}", node.get("resources"))}'
+        f'{_res_slot_html(f"res-{c_node_id}", node.get("resources"), force=running)}'
         f'{c_pill}'
         f'{_context_pill_html(fmt_k(total), pct, "green", node, running, dot)}'
         f'<span class="row-actions">'
@@ -3463,7 +3483,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(c_disp)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
-                f'{_res_slot_html(f"res-{c_node_id}", c_res)}'
+                f'{_res_slot_html(f"res-{c_node_id}", c_res, force=c_live)}'
                 f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
                 f'<span class="row-actions">'
                 f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
@@ -3524,7 +3544,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(c_role)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
-                f'{_res_slot_html(f"res-{c_node_id}", c_res)}'
+                f'{_res_slot_html(f"res-{c_node_id}", c_res, force=c_running)}'
                 f'{c_pill}'
                 f'{_context_pill_html(c_used, c_pct, "blue", ch, c_running, c_dot)}'
                 f'<span class="row-actions">'
@@ -3601,7 +3621,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(bt_desc)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
-                f'{_res_slot_html(f"res-{bt_node_id}", bt_res)}'
+                f'{_res_slot_html(f"res-{bt_node_id}", bt_res, force=bt_kind == "job")}'
                 f'{bt_pill}'
                 f'{bt_time_pill}'
                 f'<span class="row-actions bg-actions">'
@@ -3636,6 +3656,11 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         ag_rollup = merge_resources(proc_table, [ag.get("rollup_resources"), _conv_res(cid)]
                                     + [_conv_res(ch.get("conversation_id")) for ch in (ag.get("children") or [])]
                                     + [res for _, _, res in res_children], proc_res)
+        # Own share = rollup minus the PIDs child rows claimed: the Antigravity runtime share
+        # (language_server + window) plus run_command shells no row shows.
+        own_pids = [pid for pid in (ag_rollup or {}).get("pids") or () if pid not in claimed_pids]
+        ag_self = merge_resources(proc_table, [{"pids": own_pids}], proc_res) if own_pids else None
+        ag_kids = merge_resources(proc_table, [{"pids": sorted(claimed_pids)}], proc_res) if claimed_pids else None
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         has_running_job = any(t.get("kind") == "job" for t in bg_tree_jobs)
@@ -3653,7 +3678,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'{bg_parent_chip}'
             f'</div>'
             f'<div class="agent-right">'
-            f'{_res_slot_html(f"res-{node_id}", ag_rollup, rollup=True)}'
+            f'{_res_slot_html(f"res-{node_id}", ag_rollup, rollup=True, force=True, split=(ag_self, ag_kids))}'
             f'{model_pill}'
             f'{_context_pill_html(used_k, pct, "blue", ag, is_busy_ag, root_dot)}'
             f'<span class="row-actions">'
@@ -3676,7 +3701,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": cid == "521b781e-43da-4647-b411-585e65e5f002",
             "updated_ts": updated_ts,
             "html": parent_html,
-            "res": {"kind": "MAIN", "label": disp_title, "rollup": ag_rollup, "children": res_children},
+            "res": {"kind": "MAIN", "label": disp_title, "rollup": ag_rollup,
+                    "children": [("SELF", "메인 본체 (Antigravity 런타임 몫 + 직접 실행)", ag_self)] + res_children},
         })
 
     active_cdx_sorted = sorted(active_cdx, key=lambda x: 0 if x.get("source") == "vscode" else 1)

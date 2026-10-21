@@ -553,6 +553,68 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertEqual(pr["workers"]["sess-9"]["pids"], [10, 11, 12])
         self.assertEqual(pr["workers"]["reg-1"]["pids"], [10, 11, 12])
 
+    def test_antigravity_runtime_is_split_across_live_sessions(self):
+        now = usage.datetime.datetime.now(usage.datetime.timezone.utc)
+        recent, old = now.isoformat(), (now - usage.datetime.timedelta(days=30)).isoformat()
+        self.proc(50, 1, cpu_sec=20, rss_pages=1000, comm="antigravity")  # Electron main window
+        self.proc(51, 50, cpu_sec=60, rss_pages=2000, comm="antigravity")  # renderer
+        self.proc(60, 50, cpu_sec=40, rss_pages=3000, io=(4000 * 1024, 0), comm="language_server")
+        self.proc(70, 60, cpu_sec=5, cid="conv-a", step=3, comm="bash")  # run_command: the conversation's own tree
+        trees = {"antigravity": [
+            {"conversation_id": "conv-a", "is_running": True, "last_modified_time": recent,
+             "context_usage": {"used_tokens": 100_000}, "background_tasks": [{"short_id": "task-3"}],
+             "children": [{"conversation_id": "sub-a", "is_running": True, "is_subagent": True, "children": []},
+                          {"conversation_id": "sub-done", "is_running": False, "is_subagent": True, "children": []}]},
+            {"conversation_id": "conv-idle", "is_running": False, "last_modified_time": recent, "children": []},
+            {"conversation_id": "conv-old", "is_running": False, "last_modified_time": old, "children": []},
+            {"conversation_id": "conv-killed", "is_running": True, "killed": True, "children": []},
+        ]}
+        pr = self.build(trees)
+        main, idle_main, old_main = trees["antigravity"][:3]
+        runtime = pr["agy_runtime"]
+        self.assertEqual(runtime["pids"], [50, 51, 60])  # the run_command shell 70 stays with conv-a
+        self.assertEqual(set(runtime["shares"]), {"conv-a", "sub-a", "conv-idle"})
+        self.assertNotIn("self_resources", old_main)
+        self.assertNotIn("resources", main["children"][1])
+        shares = [main["self_resources"], main["children"][0]["self_resources"], idle_main["self_resources"]]
+        # Every share is non-zero and the shares add up to the runtime exactly.
+        for field in ("cpu_core_pct", "ram_mb", "rx_kbps"):
+            self.assertTrue(all(s[field] > 0 for s in shares), field)
+            self.assertAlmostEqual(sum(s[field] for s in shares), runtime[field], delta=0.2)
+        # CPU follows running state (1 : 1 : 0.1); RAM follows context size (2 : 1 : 1).
+        self.assertAlmostEqual(main["self_resources"]["cpu_core_pct"], runtime["cpu_core_pct"] / 2.1, delta=0.1)
+        self.assertAlmostEqual(idle_main["self_resources"]["cpu_core_pct"], runtime["cpu_core_pct"] * 0.1 / 2.1, delta=0.1)
+        self.assertAlmostEqual(main["self_resources"]["ram_mb"], runtime["ram_mb"] / 2, delta=0.2)
+        self.assertEqual((main["self_resources"]["proc_count"], main["self_resources"]["runtime_shares"]), (0, 1))
+        # Main total = own runtime share + its run_command tree + the subagent's share.
+        bash = pr["tasks"]["conv-a/task-3"]
+        rollup = main["rollup_resources"]
+        self.assertAlmostEqual(rollup["cpu_core_pct"], main["self_resources"]["cpu_core_pct"] + bash["cpu_core_pct"]
+                               + main["children"][0]["self_resources"]["cpu_core_pct"], delta=0.2)
+        self.assertEqual(rollup["proc_count"], 1)
+        self.assertEqual(pr["procs"][str(runtime["shares"]["conv-a"])][-1], "agy-runtime")
+        merged = usage.merge_resources(pr["procs"], [rollup], pr)
+        self.assertAlmostEqual(merged["cpu_core_pct"], rollup["cpu_core_pct"], delta=0.1)
+        self.assertNotIn("50", pr["procs"])
+
+    def test_workspace_language_server_goes_to_its_own_workspace(self):
+        now = usage.datetime.datetime.now(usage.datetime.timezone.utc).isoformat()
+        self.proc(50, 1, rss_pages=1000, comm="antigravity")
+        self.proc(60, 50, rss_pages=4000, comm="language_server")
+        Path(self.root, "60", "cmdline").write_bytes(b"language_server_linux_x64\0--workspace_id\0"
+                                                     b"file_home_u_dev_robot\0")
+        trees = {"antigravity": [
+            {"conversation_id": "robot", "is_running": True, "last_modified_time": now,
+             "workspaces": ["file:///home/u/dev/robot"], "children": []},
+            {"conversation_id": "web", "is_running": True, "last_modified_time": now,
+             "workspaces": ["file:///home/u/dev/web"], "children": []},
+        ]}
+        self.build(trees)
+        robot, web = (node["self_resources"]["ram_mb"] for node in trees["antigravity"])
+        page_mb = usage._PAGE_KB / 1024
+        self.assertAlmostEqual(robot, round((4000 + 500) * page_mb, 1), delta=0.2)  # own server + half the window
+        self.assertAlmostEqual(web, round(500 * page_mb, 1), delta=0.2)
+
     def test_nodes_without_processes_get_no_resource_keys(self):
         trees = {"antigravity": [{"conversation_id": "idle", "resources": {"stale": 1}, "children": []}],
                  "claude": [{"session_id": "gone", "pid": 999999}], "codex": [{"thread_id": "t", "children": []}]}
