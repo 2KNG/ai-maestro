@@ -669,6 +669,13 @@
       background: #f87171;
       box-shadow: 0 0 4px rgba(248, 113, 113, 0.28);
     }
+    /* 끝난 SUB: 증발 전 15초 동안 멈춘 흐린 완료 점 (브리딩 없음) */
+    .status-dot.sub-done {
+      background: #64748b;
+      box-shadow: none;
+      opacity: 0.55;
+      animation: none;
+    }
 
     .agent-name {
       font-size: 11px;
@@ -2030,12 +2037,12 @@
     .ctx-pill.idle-fresh .ctx-time-txt, .ctx-pill.age-green .ctx-time-txt { color: #54c9a0; font-weight: 600; }
     .ctx-pill.age-yellow .ctx-time-txt { color: #e9b45b; font-weight: 600; }
     .ctx-pill.age-orange .ctx-time-txt { color: #f59e0b; font-weight: 600; }
-    .ctx-pill.age-red .ctx-time-txt, .ctx-pill.done .ctx-time-txt { color: #94a3b8; font-weight: 500; }
+    .ctx-pill.age-red .ctx-time-txt, .ctx-pill.done .ctx-time-txt, .ctx-pill.sub-done .ctx-time-txt { color: #94a3b8; font-weight: 500; }
     html.light .ctx-pill.busy .ctx-time-txt, html.light .ctx-pill.running .ctx-time-txt { color: #2563eb; }
     html.light .ctx-pill.idle-fresh .ctx-time-txt, html.light .ctx-pill.age-green .ctx-time-txt { color: #059669; }
     html.light .ctx-pill.age-yellow .ctx-time-txt { color: #d97706; }
     html.light .ctx-pill.age-orange .ctx-time-txt { color: #ea580c; }
-    html.light .ctx-pill.age-red .ctx-time-txt, html.light .ctx-pill.done .ctx-time-txt { color: #64748b; }
+    html.light .ctx-pill.age-red .ctx-time-txt, html.light .ctx-pill.done .ctx-time-txt, html.light .ctx-pill.sub-done .ctx-time-txt { color: #64748b; }
     .ctx-time-txt {
       overflow: hidden;
       text-overflow: ellipsis;
@@ -3802,10 +3809,12 @@
               oDot.title = nDot.title;
             }
           } else {
-            if (oDot.classList.contains('busy')) {
-              oDot.className = 'status-dot idle-fresh';
+            if (!oDot.classList.contains('sub-done')) {
+              // A finished SUB never keeps a running (busy / pulsing green) dot.
+              oDot.className = 'status-dot sub-done';
+              oDot.title = nDot.title;
             }
-            // Non-running subagent: tickSubRipening is the SOLE owner of ripening classes!
+            // Non-running subagent: tickSubRipening owns the countdown tooltip.
           }
         } else {
           if (oDot.className !== nDot.className) oDot.className = nDot.className;
@@ -3820,8 +3829,8 @@
           if (nCtx.classList.contains('busy')) {
             if (!oCtx.classList.contains('busy')) oCtx.className = nCtx.className;
           } else {
-            if (oCtx.classList.contains('busy')) oCtx.className = 'ctx-pill idle-fresh';
-            // Non-running subagent: tickSubRipening is the SOLE owner of ripening classes!
+            if (!oCtx.classList.contains('sub-done')) oCtx.className = 'ctx-pill sub-done';
+            // Non-running subagent: tickSubRipening owns the countdown tooltip.
           }
         } else {
           if (oCtx.className !== nCtx.className) oCtx.className = nCtx.className;
@@ -3836,10 +3845,28 @@
         const oTime = oCtx.querySelector('.ctx-time-txt');
         const nTime = nCtx.querySelector('.ctx-time-txt');
         if (oTime && nTime) {
-          if (nTime.dataset.startTs) oTime.dataset.startTs = nTime.dataset.startTs;
-          if (nTime.dataset.durLabel) oTime.dataset.durLabel = nTime.dataset.durLabel;
-          if (nTime.dataset.clockLabel) oTime.dataset.clockLabel = nTime.dataset.clockLabel;
+          // Mirror the server exactly: a finished row drops data-start-ts, and a
+          // leftover one would keep tickSubRipening counting up forever.
+          ['startTs', 'durLabel', 'clockLabel'].forEach(key => {
+            if (nTime.dataset[key]) oTime.dataset[key] = nTime.dataset[key];
+            else delete oTime.dataset[key];
+          });
+          if (!nTime.dataset.startTs && oTime.textContent !== nTime.textContent) {
+            oTime.textContent = nTime.textContent;
+          }
         }
+      }
+
+      // Resource pill: drop it when the new row has none; keyed-slot sync fills new ones.
+      const oRes = oldRow.querySelector('.agent-right > .res-slot');
+      const nRes = newRow.querySelector('.agent-right > .res-slot');
+      if (oRes && !nRes) {
+        oRes.remove();
+      } else if (nRes && !oRes) {
+        const oRight = oldRow.querySelector('.agent-right');
+        if (oRight) oRight.prepend(nRes.cloneNode(true));
+      } else if (oRes && nRes && nRes.innerHTML && oRes.innerHTML !== nRes.innerHTML) {
+        oRes.innerHTML = nRes.innerHTML;
       }
 
       const oAct = oldRow.querySelector('.row-actions');
@@ -3848,6 +3875,9 @@
         oAct.innerHTML = nAct.innerHTML;
       }
     }
+
+    const SUB_SYNC_ATTRS = ['data-sub-running', 'data-running', 'data-sub-completed-ts', 'data-done-ts',
+                            'data-idle-age', 'data-idle-sec', 'data-status-kind'];
 
     function reconcileBranchChildren(oldBr, newBr) {
       const oldChildren = new Map();
@@ -3914,9 +3944,16 @@
               }
             }
           }
-          if (newChild.dataset.subRunning !== undefined) oldChild.dataset.subRunning = newChild.dataset.subRunning;
-          if (newChild.getAttribute('data-idle-age') !== null) {
-            oldChild.setAttribute('data-idle-age', newChild.getAttribute('data-idle-age'));
+          const wasRunning = oldChild.getAttribute('data-sub-running') === '1';
+          const nowRunning = newChild.getAttribute('data-sub-running') === '1';
+          SUB_SYNC_ATTRS.forEach(attr => {
+            const value = newChild.getAttribute(attr);
+            if (value === null) oldChild.removeAttribute(attr);
+            else if (oldChild.getAttribute(attr) !== value) oldChild.setAttribute(attr, value);
+          });
+          if (wasRunning !== nowRunning && nid) {
+            // Restart the completion countdown from the server's idle age / done-ts.
+            ripenStartMap.delete(nid);
           }
         }
       });
@@ -4089,7 +4126,8 @@
 
     const ripenStartMap = new Map();
     const evaporatedSubIds = new Set();
-    const RIPEN_REMOVE_SEC = 60;
+    // Must match SUB_IDLE_RETENTION_SEC in render_usage_widget.py.
+    const RIPEN_REMOVE_SEC = 15;
 
     function formatSecCompact(sec) {
       sec = Math.max(1, Math.floor(sec));
@@ -4149,29 +4187,16 @@
           return;
         }
         if (!pill && !dot) return;
-        const rem = Math.max(1, 60 - age);
-        let cls = 'age-green';
-        let tip = `🟢 SUB 완료 · 초록 단계 (${age}s / 15s · ${rem}s 후 증발)`;
-        if (age >= 45) {
-          cls = 'age-red';
-          tip = `🔴 SUB 소멸 임박 · 빨강 단계 (${age}s / 60s · ${rem}s 후 증발)`;
-        } else if (age >= 30) {
-          cls = 'age-orange';
-          tip = `🟠 SUB 숙성 · 주황 단계 (${age}s / 45s · ${rem}s 후 증발)`;
-        } else if (age >= 15) {
-          cls = 'age-yellow';
-          tip = `🟡 SUB 숙성 · 노랑 단계 (${age}s / 30s · ${rem}s 후 증발)`;
-        }
+        const rem = Math.max(1, RIPEN_REMOVE_SEC - age);
+        const tip = `✓ SUB 완료 (${age}s · ${rem}s 후 증발)`;
         if (dot) {
-          if (!dot.classList.contains(cls)) {
-            dot.className = `status-dot ${cls}`;
-          }
+          if (dot.className !== 'status-dot sub-done') dot.className = 'status-dot sub-done';
           dot.title = tip;
         }
         if (pill) {
-          if (!pill.classList.contains(cls)) {
+          if (!pill.classList.contains('sub-done')) {
             pill.classList.remove('busy', 'running', 'st-busy', 'idle-fresh', 'age-green', 'age-yellow', 'age-orange', 'age-red', 'age-any', 'done');
-            pill.classList.add(cls);
+            pill.classList.add('sub-done');
           }
           if (pill.dataset.baseTitle === undefined) pill.dataset.baseTitle = pill.title || '';
           pill.title = pill.dataset.baseTitle ? `${tip} · ${pill.dataset.baseTitle}` : tip;

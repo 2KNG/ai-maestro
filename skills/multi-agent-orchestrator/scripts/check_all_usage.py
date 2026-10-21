@@ -810,12 +810,9 @@ get_claude_code_usage = get_claude_status
 
 
 def _load_agy_spawn_registry() -> dict:
-    try:
-        with open(os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json"), encoding="utf-8") as f:
-            registry = json.load(f)
-        return registry if isinstance(registry, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    # Dead worker pids are reaped to "completed" so they never render as running.
+    from spawn_registry_reaper import load_registry
+    return load_registry("~/.gemini/antigravity/agy_spawned_sessions.json")
 
 
 def _has_agy_prefix(value) -> bool:

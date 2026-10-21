@@ -633,7 +633,9 @@ def start_claude_worker(pool: str, spec: str, cwd: str, effort: str | None,
               "tier": effective_tier, "depth": current_depth + 1}
 
     def register(status, **extra):
+        # A --wait worker has no recorded child pid; this process outlives it.
         record_spawned_session(session_id, {**result, "provider": "claude", "model": model,
+                                           "supervisor_pid": os.getpid(),
                                            "effort": selected_effort, "spec_preview": spec[:160],
                                            "started_at": started_at, "status": status,
                                            **({"speed_audit": speed_audit} if speed_audit else {}),
@@ -861,7 +863,7 @@ def start_codex_worker(spec: str, cwd: str, effort: str, tier: str, timeout: int
     registration = {"provider": "codex", "pool": pool, "model": model,
                     "effort": effort, "tier": tier, "cwd": abs_cwd, "title": agy_title,
                     "spec_preview": spec[:160], "started_at": t0, "status": "running",
-                    "depth": current_depth + 1}
+                    "depth": current_depth + 1, "supervisor_pid": os.getpid()}
     if speed_audit:
         registration["speed_audit"] = speed_audit
     record_spawned_session(temporary_sid, registration)

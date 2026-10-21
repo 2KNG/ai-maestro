@@ -198,10 +198,10 @@ class RenderingTests(unittest.TestCase):
             if os.path.exists(tpath):
                 os.remove(tpath)
 
-    def test_completed_subagent_filtered_after_65s(self):
+    def test_completed_subagent_filtered_after_retention(self):
         now = datetime.now(timezone.utc)
-        iso_fresh = (now - timedelta(seconds=30)).isoformat()
-        iso_expired = (now - timedelta(seconds=70)).isoformat()
+        iso_fresh = (now - timedelta(seconds=5)).isoformat()
+        iso_expired = (now - timedelta(seconds=widget.SUB_IDLE_RETENTION_SEC + 5)).isoformat()
         cid = 'testparent-0003-0000-0000-000000000003'
         parent = dict(
             conversation_id=cid,
@@ -217,8 +217,13 @@ class RenderingTests(unittest.TestCase):
         )
         self.assertIn('Fresh Subagent', active)
         self.assertNotIn('Expired Subagent', active)
-        self.assertIn('data-idle-age="30"', active)
+        self.assertIn('data-idle-age="5"', active)
         self.assertIn('class="tree-node sub-node sub-ripening"', active)
+        fresh_row = active.split('Fresh Subagent')[0].rsplit('sub-ripening', 1)[1]
+        # A finished SUB shows a static completed dot, never a running/pulsing one.
+        self.assertIn('status-dot sub-done', fresh_row)
+        self.assertNotIn('status-dot busy', fresh_row)
+        self.assertNotIn('status-dot idle-fresh', fresh_row)
 
     def test_filter_worker_start_jobs(self):
         import tempfile

@@ -58,7 +58,7 @@ def fmt_k(tokens: int | float) -> str:
     return str(tokens)
 
 
-SUB_IDLE_RETENTION_SEC = 65
+SUB_IDLE_RETENTION_SEC = 15
 
 
 def _fmt_duration(node: dict) -> str:
@@ -2281,20 +2281,13 @@ def _status_dot_from_age(is_busy: bool, age_sec: float) -> tuple[str, str]:
 
 
 def _sub_status_dot_from_age(is_busy: bool, age_sec: float, slot_idx: int = 0) -> tuple[str, str, int]:
-    """Ripening for SUB rows matching client tickSubRipening:
-    0~15s Green -> 15~30s Yellow -> 30~45s Orange -> 45~60s Red -> >=60s Evaporate.
-    """
+    """SUB rows matching client tickSubRipening: a finished worker shows a static
+    completed dot for SUB_IDLE_RETENTION_SEC, then evaporates."""
     if is_busy:
         return "busy", "🔵 SUB 실행 중 (파란색 브리딩)", 0
     eff_age = int(max(0.0, age_sec))
-    rem_sec = max(0, 60 - eff_age)
-    if eff_age < 15:
-        return "age-green", f"🟢 SUB 완료 · 초록 단계 ({eff_age}s / 15s · {rem_sec}s 후 증발)", eff_age
-    if eff_age < 30:
-        return "age-yellow", f"🟡 SUB 숙성 · 노랑 단계 ({eff_age}s / 30s · {rem_sec}s 후 증발)", eff_age
-    if eff_age < 45:
-        return "age-orange", f"🟠 SUB 숙성 · 주황 단계 ({eff_age}s / 45s · {rem_sec}s 후 증발)", eff_age
-    return "age-red", f"🔴 SUB 소멸 임박 · 빨강 단계 ({eff_age}s / 60s · {rem_sec}s 후 증발)", eff_age
+    rem_sec = max(0, SUB_IDLE_RETENTION_SEC - eff_age)
+    return "sub-done", f"✓ SUB 완료 ({eff_age}s · {rem_sec}s 후 증발)", eff_age
 
 
 def _sub_prefix_html(
@@ -2313,7 +2306,7 @@ def _sub_prefix_html(
         tag_lbl = tag_lbl_or_dot_cls
         elbow = "├─"
     is_bg = tag_lbl != "SUB"
-    tip = dot_tip or ("하위 백그라운드 태스크 (클릭 시 상세·시작 시각 표시)" if is_bg else "하위 서브에이전트 워커 (완료 후 1분 간격 초록→노랑→주황→빨강 숙성 뒤 자동 증발)")
+    tip = dot_tip or ("하위 백그라운드 태스크 (클릭 시 상세·시작 시각 표시)" if is_bg else "하위 서브에이전트 워커 (완료 후 15초 뒤 자동 증발)")
     t_cls = "sub-tag bg-tag" if is_bg else "sub-tag"
     return (
         f'<span class="sub-prefix" title="{_html_esc(tip)}">'
@@ -2847,13 +2840,9 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
 
 
 def _worker_registry() -> dict:
-    path = os.path.expanduser("~/.gemini/antigravity/agy_spawned_sessions.json")
-    try:
-        with open(path) as f:
-            value = json.load(f)
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    # Dead worker pids are reaped to "completed" so they never render as running.
+    from spawn_registry_reaper import load_registry
+    return load_registry("~/.gemini/antigravity/agy_spawned_sessions.json")
 
 
 def _pid_alive(pid) -> bool:
@@ -3071,6 +3060,13 @@ def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], 
                    or node.get("ok") is not None)
     if is_terminal:
         return has_running_child, max(updated_ts, rollout_ts)
+    if node.get("registry_id") and not node.get("live_process"):
+        # A maestro registry row is live only while its process is: a recent
+        # updated_at or rollout write from a worker that already exited is not.
+        from spawn_registry_reaper import entry_process_alive
+        ids = {node.get(k) for k in ("thread_id", "session_id", "registry_id")} - {None, ""}
+        return (has_running_child or bool(ids & live_ids) or entry_process_alive(node),
+                max(updated_ts, rollout_ts))
     is_live_running = (max(0, now_sec - updated_ts) <= 90
                        or (rollout_ts > 0 and max(0, now_sec - rollout_ts) <= 60)
                        or has_running_child
@@ -3432,9 +3428,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             sid = c.get("session_id") or c.get("id") or ""
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
-            if not c_live and (not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed):
-                continue
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            if not c_live and (not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed
+                               or now_sec - c_ts > SUB_IDLE_RETENTION_SEC):
+                continue
             c = {**c, "resources": _claim(claimed_pids, _worker_res(c))}
             res_children.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
@@ -3450,7 +3447,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             ctid_short = ctid[-8:] if len(ctid) >= 8 else ctid
             c_node_id = f"node-sub-cdx-{ctid}"
             c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
-            if not c_live and (c_node_id in dismissed or ctid in dismissed):
+            c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
+            if not c_live and (c_node_id in dismissed or ctid in dismissed or c_age_s > SUB_IDLE_RETENTION_SEC):
                 continue
             ctc = repo_codex.get("token_count") or {}
             c_used = fmt_k(ctc.get("total_tokens", 0))
@@ -3468,7 +3466,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 resolve_speed_tier(c_tctx.get("service_tier"), repo_codex.get("tier")),
                 c_tctx.get("reasoning_effort") or "high",
             )
-            c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
             sub_slot_idx += 1
             c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
@@ -3746,6 +3743,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            if not c_live and now_sec - c_ts > SUB_IDLE_RETENTION_SEC:
+                continue
             c = {**c, "resources": _claim(claimed_pids_cdx, _worker_res(c))}
             res_children_cdx.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items_cdx.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
@@ -3770,7 +3769,6 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 seen_child_ids.add(child_tid)
                 rendered_codex_child_ids.add(child_tid)
                 active_children.append(ch)
-            is_live_running = is_live_running or bool(active_children)
             for ch in active_children:
                 child_tid = ch["thread_id"]
                 child_node_id = f"node-sub-cdx-{tid}-{child_tid}"
@@ -3790,15 +3788,22 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 child_used = fmt_k(child_tokens.get("total_tokens", 0))
                 child_pct = float(child_tokens.get("percent", 0.0) or 0.0)
                 child_repo, _ = _repo_from_uris_or_cwd(None, child_cwd)
-                c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
-                child_dot = "busy" if c_live_child else "idle-fresh"
-                child_ts = float(ch.get("updated_at") or 0.0)
+                if ch.get("registry_id"):
+                    c_live_child, child_ts = _codex_root_activity(ch, live_codex_ids, rollout_paths, now_sec)
+                else:
+                    c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
+                    child_ts = float(ch.get("updated_at") or 0.0)
+                child_age = max(0.0, now_sec - float(child_ts or 0.0))
+                if not c_live_child and child_age > SUB_IDLE_RETENTION_SEC:
+                    continue
+                is_live_running = is_live_running or c_live_child
+                child_dot, child_tip, child_eff_age = _sub_status_dot_from_age(c_live_child, child_age)
                 child_res = _claim(claimed_pids_cdx, _worker_res(ch))
                 res_children_cdx.append(("SUB", child_disp, child_res))
                 row_html = (
-                    f'<div class="tree-node sub-node" data-node-id="{child_node_id}">'
+                    f'<div class="tree-node sub-node sub-ripening" data-node-id="{child_node_id}" data-sub-running="{int(c_live_child)}" data-sub-age="{child_eff_age}" data-idle-age="{int(child_age)}" data-done-ts="{int(child_ts or 0)}">'
                     f'<div class="agent-row child" onclick="toggleDetail(\'{child_det_id}\')">'
-                    f'<div class="agent-left">{_sub_prefix_html(child_dot)}'
+                    f'<div class="agent-left">{_sub_prefix_html(child_dot, "SUB", child_tip)}'
                     f'{child_icon}'
                     f'<span class="agent-name">{_html_esc(child_disp)}</span></div>'
                     f'<div class="agent-right">{_res_slot_html(f"res-{child_node_id}", child_res)}'
