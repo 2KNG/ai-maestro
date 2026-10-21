@@ -138,12 +138,26 @@ def test_status_reports_legacy_services_when_uninstalled(tmp_path,monkeypatch):
     monkeypatch.setattr(remote,'node_urls',lambda *args:{'local_lan_url':'http://192.168.1.2:6768/','fleet_url':'https://hub.example.com/orca/pc2/'})
     result=remote.remote_status('pc2',home=tmp_path)
     assert result['state']=='not_installed'
-    assert len(result['legacy_services'])==3
+    assert not result['ok']
+    assert len(result['legacy_services'])==4
     assert result['legacy_services'][0]['active']
     assert result['legacy_services'][0]['local_port']==6768
     assert result['pairing']=='pending'
     assert result['local_lan_url']=='http://192.168.1.2:6768/'
     assert not (tmp_path/'.local').exists()
+
+
+def test_status_ok_for_rtc2kng_enrolled_node(tmp_path,monkeypatch):
+    monkeypatch.setattr(remote.platform,'system',lambda:'Linux')
+    active={'orca-remote.service','agy-widget-bridge.service','rtc2kng-node.service'}
+    monkeypatch.setattr(remote,'service_active',lambda system,name:name in active)
+    monkeypatch.setattr(remote,'port_open',lambda port:True)
+    monkeypatch.setattr(remote,'node_urls',lambda *args:{})
+    result=remote.remote_status('pc2',home=tmp_path)
+    assert result['ok']
+    assert result['state']=='legacy'
+    active.discard('rtc2kng-node.service')
+    assert not remote.remote_status('pc2',home=tmp_path)['ok']
 
 
 def test_pairing_wait_is_bounded_and_validates_payload(tmp_path):

@@ -465,8 +465,13 @@ def remote_status(node_id, home=None):
     if system=='Linux':
         for name, role, port in [('orca-remote.service','orca',6768),
                                  ('agy-widget-bridge.service','widget',18765),
+                                 ('rtc2kng-node.service','node',None),
                                  ('rtc2kng-tunnel.service','tunnel',None)]:
             legacy.append({'name':name,'role':role,'local_port':port,'active':service_active(system,name)})
+    # Nodes enrolled by rtc2kng itself run outside maestro's state dir: healthy when
+    # Orca + widget are up and either the fleet node daemon or the SSH tunnel carries them.
+    active_roles={s['role'] for s in legacy if s['active']}
+    legacy_ok=not statuses and {'orca','widget'}<=active_roles and bool({'node','tunnel'}&active_roles)
     pairing=wait_for_pairing(state,timeout=0)
     try:
         import orca_bridge
@@ -481,8 +486,9 @@ def remote_status(node_id, home=None):
         hub=remote_config.public_view(remote_config.resolve())
     except (OSError,ValueError):
         hub={}
-    return {'ok':bool(statuses) and all(s['active'] for s in statuses),'node_id':node_id,
-            'state':'installed' if config else 'not_installed','services':statuses,'legacy_services':legacy,
+    return {'ok':(bool(statuses) and all(s['active'] for s in statuses)) or legacy_ok,'node_id':node_id,
+            'state':'installed' if config else 'legacy' if legacy_ok else 'not_installed',
+            'services':statuses,'legacy_services':legacy,
             'local_ports':{'orca':port_open(6768),'widget':port_open(18765)},
             'pairing_available':pairing,'pairing':'available' if pairing else 'pending',
             'orca_url':config.get('orca_url'),'widget_url':config.get('widget_url'),
