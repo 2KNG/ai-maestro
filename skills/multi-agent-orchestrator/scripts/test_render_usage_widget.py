@@ -80,7 +80,7 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('agy-origin-badge', active)
         self.assertNotIn(chr(0x1fa90), active)
 
-    def test_standalone_bundle_roundtrips_and_stays_below_55kb(self):
+    def test_standalone_bundle_roundtrips_and_stays_below_57kb(self):
         template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Thread {i}',
                       updated_at=1000+i, status='closed', cwd='/tmp') for i in range(20)]
@@ -97,7 +97,8 @@ class RenderingTests(unittest.TestCase):
         self.assertLess(len(restored), len(original))
         for marker in ('__SERVER_STATE_JSON_START__', '__ACCOUNTS_JSON_START__', '__ACTIVE_TREE_HTML_START__'):
             self.assertIn(marker, restored)
-        self.assertLess(len(bundled.encode()), 55000)
+        # The template alone bundles to ~54.96 KB; the per-agent resource CSS/JS adds ~1.3 KB.
+        self.assertLess(len(bundled.encode()), 57000)
 
     def test_child_nodes_ordering_and_cron_at_bottom(self):
         now = datetime.now(timezone.utc)
@@ -434,6 +435,84 @@ class RenderingTests(unittest.TestCase):
         html2 = widget._claude_worker_row(node2, set(), 1005)
         self.assertIn("✦ Already diamond", html2)
         self.assertNotIn("✦ ✦", html2)
+
+
+class ResourceRenderingTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(widget, '_worker_registry', return_value={})
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        processes = mock.patch("live_worker_processes.scan_live_worker_processes", return_value=[])
+        self.addCleanup(processes.stop)
+        processes.start()
+
+    @staticmethod
+    def res(pids, cpu, ram, gpu=0.0, io=0.0):
+        return dict(cpu_pct=cpu, ram_mb=ram, gpu_mb=gpu, io_kbps=io, proc_count=len(pids), pids=pids)
+
+    def render(self, process_resources):
+        now = datetime.now(timezone.utc).isoformat()
+        cid = 'resparent-0001-0000-0000-000000000001'
+        parent = dict(conversation_id=cid, status='RUNNING', last_modified_time=now,
+                      children=[dict(conversation_id='ressub-0001', role='Resource Subagent',
+                                     last_modified_time=now, status='CASCADE_RUN_STATUS_RUNNING')])
+        bg = [{'id': f'{cid}/task-42', 'short_id': 'task-42', 'desc': 'pytest loop', 'kind': 'job',
+               'created_at': now, 'done': False}]
+        data = {'agent_trees': {'antigravity': [parent]}}
+        if process_resources is not None:
+            data['process_resources'] = process_resources
+        with mock.patch.object(widget, '_extract_active_bg_tasks', return_value=bg):
+            return widget.build_active_and_closed_trees_html(data, {})[0]
+
+    def test_rows_show_own_trees_and_main_rolls_up_by_pid_union(self):
+        procs = {'1': [10.0, 100.0, 0.0, 1.0, 'bash'], '2': [30.0, 300.0, 2048.0, 200.0, 'pytest'],
+                 '3': [1.0, 50.0, 0.0, 0.0, 'node']}
+        active = self.render({
+            'procs': procs,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2], 40.0, 400.0, 2048.0, 201.0),
+                              'ressub-0001': self.res([3], 1.0, 50.0)},
+            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([2], 30.0, 300.0, 2048.0, 200.0)},
+            'workers': {}, 'pids': {},
+        })
+        main = re.search(r'data-res-key="res-node-agy-resparen"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
+        # Subagent pid 3 joins the rollup; the job's pid 2 is not counted twice.
+        self.assertIn('CPU 41.0%', main)
+        self.assertIn('RAM 450MB', main)
+        self.assertIn('GPU 2048MB', main)
+        self.assertIn('I/O 201KB/s', main)
+        self.assertIn('res-pill rollup', main)
+        sub = re.search(r'data-res-key="res-node-sub-ressub-0"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
+        self.assertIn('CPU 1.0%', sub)
+        self.assertIn('idle', sub)  # below every activity threshold
+        self.assertNotIn('r-gpu', sub)  # zero VRAM is not shown on child rows
+        job = re.search(r'data-res-key="res-node-bg-resparen-task-42"><!--__RES__-->(.*?)<!--__RES_END__-->', active).group(1)
+        self.assertIn('<span class="r-cpu r-on">CPU 30.0%</span>', job)
+        self.assertIn('r-gpu r-on', job)
+        # The board precedes the first tree node and carries the breakdown drawer.
+        self.assertLess(active.index('class="res-board"'), active.index('class="tree-node'))
+        self.assertIn('리소스 상세', active)
+        self.assertIn('<span class="res-kind">JOB</span>pytest loop', active)
+        self.assertIn('에이전트 1 · 프로세스 3', active)
+
+    def test_without_process_data_no_resource_markup_is_rendered(self):
+        active = self.render(None)
+        self.assertNotIn('res-slot', active)
+        self.assertNotIn('res-board', active)
+        idle = self.render({'procs': {}, 'conversations': {}, 'tasks': {}, 'workers': {}, 'pids': {}})
+        self.assertNotIn('res-slot', idle)
+        self.assertIn('귀속된 프로세스 없음', idle)
+
+    def test_assets_are_injected_once_and_widen_the_standalone_shell(self):
+        page = '<html><head><style></style></head><body><script></script></body></html>'
+        once = widget._inject_resource_assets(page)
+        twice = widget._inject_resource_assets(once)
+        self.assertEqual(once, twice)
+        self.assertLess(once.index('RES_ASSETS_CSS_START'), once.index('</head>'))
+        self.assertLess(once.index('RES_ASSETS_JS_START'), once.index('</body>'))
+        self.assertIn('max-width:clamp(980px,92vw,1380px)', once)
+        # The script must not contain a literal HTML comment opener.
+        script = once[once.index('<script>(function'):once.index('RES_ASSETS_JS_END')]
+        self.assertNotIn('<!--__RES__', script)
 
 
 if __name__ == '__main__':

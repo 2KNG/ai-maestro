@@ -14,6 +14,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -2074,6 +2075,341 @@ def select_best_pool(data, difficulty='high', urgent: bool = False, interactive:
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-agent process resources (CPU / RAM / GPU VRAM / I/O)
+#
+# One /proc pass builds the ppid tree; CPU% and I/O are deltas against the
+# previous pass (lifetime average on the first). Attribution uses exact
+# evidence only: ANTIGRAVITY_CONVERSATION_ID + the run_command stepIndex
+# (task-<stepIndex>.log) in the inherited environment, a task log on fd 1/2,
+# and live CLI worker PIDs. Every summary carries its PID list so rollups
+# take a union instead of double counting nested trees.
+PROC_SNAPSHOT_TTL_SEC = 2.5
+GPU_SNAPSHOT_TTL_SEC = 3.0
+RESOURCE_FIELDS = ("cpu_pct", "ram_mb", "gpu_mb", "io_kbps")
+_ENV_STEP_RE = re.compile(rb'"stepIndex"\s*:\s*(\d+)')
+_TASK_LOG_FD_RE = re.compile(r"/brain/([^/]+)/\.system_generated/tasks/(task-\d+)\.log(?: \(deleted\))?$")
+try:
+    _CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
+    _PAGE_KB = max(1, os.sysconf("SC_PAGE_SIZE") // 1024)
+except (AttributeError, ValueError, OSError):
+    _CLK_TCK, _PAGE_KB = 100, 4
+_proc_cache: dict[str, tuple[float, dict]] = {}
+_proc_prev: dict[str, dict] = {}
+_gpu_cache: tuple[float, dict] = (-1e9, {})
+
+
+def _read_proc_bytes(path: str, limit: int = 131072) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit)
+    except OSError:
+        return b""
+
+
+def _env_value(env: bytes, key: bytes) -> bytes:
+    prefix = key + b"="
+    if env.startswith(prefix):
+        start = len(prefix)
+    else:
+        found = env.find(b"\0" + prefix)
+        if found < 0:
+            return b""
+        start = found + 1 + len(prefix)
+    end = env.find(b"\0", start)
+    return env[start:] if end < 0 else env[start:end]
+
+
+def _scan_process_table(proc_root: str = "/proc") -> dict[int, dict]:
+    """pid -> ppid, CPU ticks, RSS and the conversation/task evidence of one /proc pass."""
+    table = {}
+    try:
+        names = [e.name for e in os.scandir(proc_root) if e.name.isdigit()]
+    except OSError:
+        return table
+    for name in names:
+        base = f"{proc_root}/{name}"
+        text = _read_proc_bytes(base + "/stat", 4096).decode("utf-8", "replace")
+        close = text.rfind(")")
+        fields = text[close + 2:].split()
+        if close < 0 or len(fields) < 22 or fields[0] in ("Z", "X"):
+            continue
+        try:
+            ppid, ticks = int(fields[1]), int(fields[11]) + int(fields[12])
+            start, rss_pages = int(fields[19]), int(fields[21])
+        except ValueError:
+            continue
+        cid = task = ""
+        env = _read_proc_bytes(base + "/environ")  # empty for other users' processes
+        if env:
+            cid = _env_value(env, b"ANTIGRAVITY_CONVERSATION_ID").decode("utf-8", "replace").strip()
+            match = _ENV_STEP_RE.search(_env_value(env, b"ANTIGRAVITY_SOURCE_METADATA")) if cid else None
+            task = f"task-{int(match.group(1))}" if match else ""
+            if not task:
+                for fd in ("1", "2"):
+                    try:
+                        match = _TASK_LOG_FD_RE.search(os.readlink(f"{base}/fd/{fd}"))
+                    except OSError:
+                        match = None
+                    if match and (not cid or match.group(1) == cid):
+                        cid, task = match.group(1), match.group(2)
+                        break
+        table[int(name)] = {"ppid": ppid, "comm": text[text.find("(") + 1:close], "ticks": ticks,
+                            "start": start, "rss_kb": rss_pages * _PAGE_KB, "cid": cid, "task": task}
+    return table
+
+
+def _gpu_process_memory(force: bool = False) -> dict[int, float]:
+    """pid -> VRAM MiB from nvidia-smi compute apps; cached, {} without a GPU."""
+    global _gpu_cache
+    now = time.monotonic()
+    if not force and now - _gpu_cache[0] < GPU_SNAPSHOT_TTL_SEC:
+        return _gpu_cache[1]
+    usage = {}
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=1.5).stdout
+        for line in out.splitlines():
+            pid_text, _, mem_text = line.partition(",")
+            try:
+                usage[int(pid_text)] = usage.get(int(pid_text), 0.0) + float(mem_text)
+            except ValueError:
+                continue  # "[N/A]" on some drivers
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _gpu_cache = (now, usage)
+    return usage
+
+
+def process_snapshot(proc_root: str = "/proc", *, force: bool = False) -> dict:
+    """Cached system process snapshot with per-PID CPU% (delta against the previous pass)."""
+    now = time.monotonic()
+    cached = _proc_cache.get(proc_root)
+    if cached and not force and now - cached[0] < PROC_SNAPSHOT_TTL_SEC:
+        return cached[1]
+    procs = _scan_process_table(proc_root)
+    try:
+        uptime = float(_read_proc_bytes(f"{proc_root}/uptime", 64).split()[0])
+    except (IndexError, ValueError):
+        uptime = 0.0
+    prev = _proc_prev.get(proc_root, {})
+    state = {}
+    for pid, p in procs.items():
+        key = (pid, p["start"])
+        last = prev.get(key)
+        p["age_sec"] = max(0.0, uptime - p["start"] / _CLK_TCK)
+        if last and now > last["mono"]:
+            cpu = (p["ticks"] - last["ticks"]) / _CLK_TCK / (now - last["mono"]) * 100
+        else:
+            cpu = (p["ticks"] / _CLK_TCK) / p["age_sec"] * 100 if p["age_sec"] > 1 else 0.0
+        p["cpu_pct"] = max(0.0, cpu)
+        # I/O counters are carried forward until a later pass reads them again.
+        state[key] = {"mono": now, "ticks": p["ticks"], "io": (last or {}).get("io"),
+                      "io_mono": (last or {}).get("io_mono")}
+    children: dict[int, list[int]] = {}
+    for pid, p in procs.items():
+        children.setdefault(p["ppid"], []).append(pid)
+    gpu = _gpu_process_memory()
+    snap = {"proc_root": proc_root, "mono": now, "sampled_at": time.time(), "procs": procs,
+            "children": children, "gpu": gpu, "state": state, "stats": {}}
+    _proc_prev[proc_root] = state
+    if len(_proc_cache) >= 8:
+        _proc_cache.clear()
+    _proc_cache[proc_root] = (now, snap)
+    return snap
+
+
+def _descendants(snap: dict, roots) -> set[int]:
+    procs, children = snap["procs"], snap["children"]
+    seen: set[int] = set()
+    stack = [pid for pid in roots if pid in procs]
+    while stack:
+        pid = stack.pop()
+        if pid not in seen:
+            seen.add(pid)
+            stack.extend(children.get(pid, ()))
+    return seen
+
+
+def _pid_stats(snap: dict, pid: int) -> tuple[float, float, float, float]:
+    """(cpu_pct, ram_mb, gpu_mb, io_kbps); /proc/<pid>/io is read only for attributed PIDs."""
+    stats = snap["stats"].get(pid)
+    if stats is not None:
+        return stats
+    p = snap["procs"][pid]
+    state = snap["state"].get((pid, p["start"])) or {}
+    io_kbps = 0.0
+    raw = _read_proc_bytes(f"{snap['proc_root']}/{pid}/io", 1024)
+    counters = dict(line.split(b":", 1) for line in raw.splitlines() if b":" in line)
+    try:
+        total = int(counters[b"rchar"]) + int(counters[b"wchar"])
+    except (KeyError, ValueError):
+        total = None
+    if total is not None:
+        if state.get("io") is not None and snap["mono"] > (state.get("io_mono") or snap["mono"]):
+            io_kbps = max(0, total - state["io"]) / 1024 / (snap["mono"] - state["io_mono"])
+        elif p.get("age_sec", 0) > 1:
+            io_kbps = total / 1024 / p["age_sec"]
+        state.update(io=total, io_mono=snap["mono"])
+    stats = (p["cpu_pct"], p["rss_kb"] / 1024, float(snap["gpu"].get(pid, 0.0)), io_kbps)
+    snap["stats"][pid] = stats
+    return stats
+
+
+def _resource_summary(stats, pids) -> dict:
+    totals = [sum(values) for values in zip(*stats)] if stats else [0.0] * len(RESOURCE_FIELDS)
+    return {**{key: round(value, 1) for key, value in zip(RESOURCE_FIELDS, totals)},
+            "proc_count": len(pids), "pids": sorted(pids)}
+
+
+def summarize_pids(snap: dict, pids) -> dict:
+    """Sum one PID set; the sorted PID list lets callers union overlapping trees."""
+    pids = [pid for pid in set(pids) if pid in snap["procs"]]
+    return _resource_summary([_pid_stats(snap, pid) for pid in pids], pids)
+
+
+def merge_resources(proc_table: dict, resources) -> dict | None:
+    """Roll up resource summaries by PID union using process_resources['procs'].
+
+    Nested trees (a worker under its conversation's shell) are counted once.
+    """
+    pids = set()
+    for res in resources:
+        if isinstance(res, dict):
+            pids.update(int(pid) for pid in res.get("pids") or ())
+    pids = [pid for pid in pids if str(pid) in (proc_table or {})]
+    if not pids:
+        return None
+    summary = _resource_summary([proc_table[str(pid)][:len(RESOURCE_FIELDS)] for pid in pids], pids)
+    summary["active_procs"] = summary["proc_count"]
+    return summary
+
+
+def _set_resources(node: dict, key: str, value) -> None:
+    """Attach only real data; stale values on cached nodes are dropped."""
+    if value:
+        node[key] = value
+    else:
+        node.pop(key, None)
+
+
+def build_process_resources(trees: dict | None = None, proc_root: str = "/proc", live_workers=None) -> dict:
+    """Attach `resources` / `rollup_resources` to agent-tree nodes and return lookup tables.
+
+    A conversation group is every descendant of a process carrying that
+    conversation ID, so CLI workers and background jobs a main agent launched
+    are inside its rollup without title or cwd guessing.
+    """
+    snap = process_snapshot(proc_root)
+    procs = snap["procs"]
+    conv_roots: dict[str, list[int]] = {}
+    task_roots: dict[str, list[int]] = {}
+    for pid, p in procs.items():
+        if not p["cid"]:
+            continue
+        parent = procs.get(p["ppid"]) or {}
+        if parent.get("cid") != p["cid"]:
+            conv_roots.setdefault(p["cid"], []).append(pid)
+        if p["task"] and (parent.get("cid"), parent.get("task")) != (p["cid"], p["task"]):
+            task_roots.setdefault(f"{p['cid']}/{p['task']}", []).append(pid)
+    conv_pids = {cid: _descendants(snap, roots) for cid, roots in conv_roots.items()}
+    conversations = {cid: summarize_pids(snap, pids) for cid, pids in conv_pids.items()}
+    tasks = {key: summarize_pids(snap, _descendants(snap, roots)) for key, roots in task_roots.items()}
+
+    if live_workers is None:
+        try:
+            from live_worker_processes import scan_live_worker_processes
+            live_workers = scan_live_worker_processes(proc_root)
+        except Exception:
+            live_workers = []
+    records = {r.get("pid"): r for r in live_workers if isinstance(r, dict) and r.get("pid") in procs}
+    workers: dict[str, dict] = {}
+    by_pid: dict[str, dict] = {}
+    for pid, record in records.items():
+        # A maestro wrapper and the CLI it launched are one worker.
+        parent = records.get(procs[pid]["ppid"])
+        wrapped = parent and parent.get("provider") == "maestro" and record.get("provider") != "maestro"
+        res = summarize_pids(snap, _descendants(snap, [parent["pid"] if wrapped else pid]))
+        by_pid[str(pid)] = res
+        for key in ("session_id", "registry_id"):
+            if record.get(key):
+                workers[record[key]] = res
+
+    def agy_cids(node, seen):
+        cid = node.get("conversation_id")
+        if cid and cid not in seen:
+            seen.add(cid)
+            for child in node.get("children") or []:
+                if isinstance(child, dict):
+                    agy_cids(child, seen)
+        return seen
+
+    def annotate_agy(node):
+        cid = node.get("conversation_id") or ""
+        _set_resources(node, "resources", conversations.get(cid))
+        for task in node.get("background_tasks") or []:
+            if isinstance(task, dict):
+                _set_resources(task, "resources", tasks.get(f"{cid}/{task.get('short_id')}"))
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                annotate_agy(child)
+
+    def rollup(pids):
+        summary = summarize_pids(snap, pids)
+        summary["active_procs"] = summary["proc_count"]
+        return summary
+
+    trees = trees or {}
+    for node in trees.get("antigravity") or []:
+        if isinstance(node, dict) and "error" not in node:
+            annotate_agy(node)
+            pids = set().union(*(conv_pids.get(cid, set()) for cid in agy_cids(node, set())))
+            _set_resources(node, "rollup_resources", rollup(pids) if pids else None)
+    for node in trees.get("claude") or []:
+        if not isinstance(node, dict):
+            continue
+        pid = node.get("pid")
+        res = None
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid in procs and node.get("is_running"):
+            res = by_pid.get(str(pid)) or summarize_pids(snap, _descendants(snap, [pid]))
+        res = res or workers.get(node.get("session_id") or "")
+        _set_resources(node, "resources", res)
+        # A Claude session's process tree already contains every worker it spawned.
+        _set_resources(node, "rollup_resources", rollup(res["pids"]) if res else None)
+
+    def annotate_codex(node):
+        res = workers.get(node.get("thread_id") or "")
+        _set_resources(node, "resources", res)
+        pids = set((res or {}).get("pids") or ())
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                pids |= annotate_codex(child)
+        return pids
+
+    for node in trees.get("codex") or []:
+        if isinstance(node, dict) and "error" not in node:
+            pids = annotate_codex(node)
+            _set_resources(node, "rollup_resources", rollup(pids) if pids else None)
+
+    attributed = set()
+    for group in (conversations, tasks, workers, by_pid):
+        for res in group.values():
+            attributed.update(res["pids"])
+    return {
+        "sampled_at": snap["sampled_at"],
+        "ttl_sec": PROC_SNAPSHOT_TTL_SEC,
+        "gpu_available": bool(snap["gpu"]) or bool(shutil.which("nvidia-smi")),
+        # pid -> [cpu_pct, ram_mb, gpu_mb, io_kbps, comm]; only attributed PIDs.
+        "procs": {str(pid): [round(v, 2) for v in _pid_stats(snap, pid)] + [procs[pid]["comm"]]
+                  for pid in sorted(attributed)},
+        "conversations": conversations,
+        "tasks": tasks,
+        "workers": workers,
+        "pids": by_pid,
+    }
+
+
 def collect_usage(include_agent_trees=True) -> dict:
     """Collect one quota snapshot, optionally with the more expensive agent trees."""
     report = {
@@ -2092,6 +2428,10 @@ def collect_usage(include_agent_trees=True) -> dict:
             "codex": get_codex_agent_tree(),
             "claude": get_claude_agent_tree(),
         }
+        try:
+            report["process_resources"] = build_process_resources(report["agent_trees"])
+        except Exception as exc:  # telemetry must never break quota reporting
+            report["process_resources"] = {"error": type(exc).__name__}
         report["orca"] = get_orca_summary()
     return report
 

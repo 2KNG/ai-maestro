@@ -433,5 +433,112 @@ class AntigravityOriginTests(unittest.TestCase):
                          {cid: source for cid, _, _, source in parents})
 
 
+class ProcessResourceTests(unittest.TestCase):
+    """Synthetic /proc trees; nvidia-smi is replaced by a fixed PID map."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        gpu = mock.patch.object(usage, "_gpu_process_memory", return_value={101: 512.0})
+        gpu.start()
+        self.addCleanup(gpu.stop)
+        Path(self.root, "uptime").write_text("1000.00 0.00\n")
+
+    def proc(self, pid, ppid, *, cpu_sec=0, rss_pages=256, cid="", step=None, io=(0, 0), comm="python3"):
+        d = Path(self.root, str(pid))
+        d.mkdir(exist_ok=True)
+        tck = usage._CLK_TCK
+        fields = ["S", str(ppid)] + ["0"] * 9 + [str(int(cpu_sec * tck)), "0"] + ["0"] * 6 + [str(500 * tck), "0", str(rss_pages)]
+        (d / "stat").write_text(f"{pid} ({comm}) " + " ".join(fields) + " 0 0\n")
+        env = b"PATH=/bin\0"
+        if cid:
+            env += f"ANTIGRAVITY_CONVERSATION_ID={cid}\0".encode()
+        if step is not None:
+            env += ('ANTIGRAVITY_SOURCE_METADATA={"tool":{"stepIndex":%d}}\0' % step).encode()
+        (d / "environ").write_bytes(env)
+        (d / "io").write_text(f"rchar: {io[0]}\nwchar: {io[1]}\n")
+
+    def build(self, trees, workers=()):
+        return usage.build_process_resources(trees, proc_root=self.root, live_workers=list(workers))
+
+    def test_trees_are_attributed_by_environment_and_rolled_up_once(self):
+        self.proc(100, 1, cpu_sec=50, cid="conv-a", step=42, comm="bash")
+        self.proc(101, 100, cid="conv-a", step=42)
+        self.proc(200, 100, cid="conv-a", step=42, comm="claude")
+        self.proc(201, 200, rss_pages=512, comm="pytest")  # child without the variable still belongs to its tree
+        self.proc(300, 1, rss_pages=9999)  # unrelated
+        self.proc(400, 1, cid="conv-b", step=7)
+        trees = {"antigravity": [{"conversation_id": "conv-a",
+                                  "background_tasks": [{"short_id": "task-42"}],
+                                  "children": [{"conversation_id": "conv-b", "children": []}]}],
+                 "claude": [{"session_id": "sess-1"}], "codex": []}
+        pr = self.build(trees, [{"pid": 200, "provider": "claude", "session_id": "sess-1"}])
+
+        root = trees["antigravity"][0]
+        self.assertEqual(pr["conversations"]["conv-a"]["pids"], [100, 101, 200, 201])
+        self.assertEqual(pr["tasks"]["conv-a/task-42"]["pids"], [100, 101, 200, 201])
+        self.assertEqual(root["background_tasks"][0]["resources"]["pids"], [100, 101, 200, 201])
+        self.assertEqual(root["children"][0]["resources"]["pids"], [400])
+        self.assertEqual(root["rollup_resources"]["pids"], [100, 101, 200, 201, 400])
+        self.assertEqual(root["rollup_resources"]["active_procs"], 5)
+        self.assertEqual(trees["claude"][0]["resources"]["pids"], [200, 201])
+        self.assertEqual(pr["workers"]["sess-1"]["proc_count"], 2)
+        self.assertNotIn("300", pr["procs"])
+        page_mb = usage._PAGE_KB / 1024
+        self.assertAlmostEqual(root["rollup_resources"]["ram_mb"], round((256 * 4 + 512) * page_mb, 1))
+        self.assertEqual(root["rollup_resources"]["gpu_mb"], 512.0)
+        # First pass: lifetime average, 50 CPU seconds over a 500 s old process.
+        self.assertAlmostEqual(pr["conversations"]["conv-a"]["cpu_pct"], 10.0)
+
+    def test_second_pass_uses_cpu_and_io_deltas(self):
+        self.proc(100, 1, cpu_sec=50, cid="conv-a", step=1, io=(10 * 1024, 0))
+        with mock.patch.object(usage.time, "monotonic", return_value=100.0):
+            self.build({})
+        self.proc(100, 1, cpu_sec=51, cid="conv-a", step=1, io=(20 * 1024, 10 * 1024))
+        with mock.patch.object(usage.time, "monotonic", return_value=101.0):
+            self.assertIs(usage.process_snapshot(self.root), usage.process_snapshot(self.root))  # cached
+        with mock.patch.object(usage.time, "monotonic", return_value=104.0):
+            pr = self.build({})
+        res = pr["conversations"]["conv-a"]
+        self.assertAlmostEqual(res["cpu_pct"], 25.0)  # 1 CPU second in 4 s
+        self.assertAlmostEqual(res["io_kbps"], 5.0)  # 20 KiB in 4 s
+
+    def test_maestro_wrapper_and_cli_are_one_worker(self):
+        self.proc(10, 1, comm="python3")
+        self.proc(11, 10, comm="claude")
+        self.proc(12, 11, comm="node")
+        pr = self.build({}, [{"pid": 10, "provider": "maestro", "registry_id": "reg-1"},
+                             {"pid": 11, "provider": "claude", "session_id": "sess-9"}])
+        self.assertEqual(pr["workers"]["sess-9"]["pids"], [10, 11, 12])
+        self.assertEqual(pr["workers"]["reg-1"]["pids"], [10, 11, 12])
+
+    def test_nodes_without_processes_get_no_resource_keys(self):
+        trees = {"antigravity": [{"conversation_id": "idle", "resources": {"stale": 1}, "children": []}],
+                 "claude": [{"session_id": "gone", "pid": 999999}], "codex": [{"thread_id": "t", "children": []}]}
+        self.build(trees)
+        self.assertNotIn("resources", trees["antigravity"][0])
+        self.assertNotIn("rollup_resources", trees["antigravity"][0])
+        self.assertNotIn("resources", trees["claude"][0])
+        self.assertNotIn("rollup_resources", trees["codex"][0])
+
+    def test_merge_resources_unions_pids(self):
+        table = {"1": [1.0, 10.0, 0.0, 1.0, "a"], "2": [2.0, 20.0, 5.0, 2.0, "b"]}
+        merged = usage.merge_resources(table, [{"pids": [1, 2]}, {"pids": [2]}, None])
+        self.assertEqual((merged["cpu_pct"], merged["ram_mb"], merged["gpu_mb"], merged["io_kbps"]),
+                         (3.0, 30.0, 5.0, 3.0))
+        self.assertEqual((merged["proc_count"], merged["active_procs"], merged["pids"]), (2, 2, [1, 2]))
+        self.assertIsNone(usage.merge_resources(table, [{"pids": [7]}, None]))
+
+    def test_collect_usage_survives_resource_failures(self):
+        with ExitStack() as stack:
+            for name in ("get_antigravity_usage", "get_codex_usage", "get_claude_status",
+                         "get_antigravity_agent_tree", "get_codex_agent_tree", "get_claude_agent_tree"):
+                stack.enter_context(mock.patch.object(usage, name, return_value={} if "usage" in name or "status" in name else []))
+            stack.enter_context(mock.patch.object(usage, "get_orca_summary", return_value={}))
+            stack.enter_context(mock.patch.object(usage, "build_process_resources", side_effect=RuntimeError))
+            report = usage.collect_usage()
+        self.assertEqual(report["process_resources"], {"error": "RuntimeError"})
+
+
 if __name__ == "__main__":
     unittest.main()

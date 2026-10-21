@@ -2044,6 +2044,159 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
     )
 
 
+RES_MARK_START, RES_MARK_END = "<!--__RES__-->", "<!--__RES_END__-->"
+# (on, hot) thresholds per field: CPU %, RAM MB, GPU VRAM MB, I/O KB/s.
+_RES_LEVELS = {"cpu_pct": (5.0, 50.0), "ram_mb": (256.0, 2048.0), "gpu_mb": (1.0, 4096.0), "io_kbps": (64.0, 10240.0)}
+_RES_CLASSES = {"cpu_pct": "r-cpu", "ram_mb": "r-ram", "gpu_mb": "r-gpu", "io_kbps": "r-io"}
+
+
+def _fmt_res_mb(mb) -> str:
+    mb = float(mb or 0)
+    return f"{mb / 1024:.1f}GB" if mb >= 1024 else f"{mb:.0f}MB"
+
+
+def _fmt_res_rate(kbps) -> str:
+    kbps = float(kbps or 0)
+    return f"{kbps / 1024:.1f}MB/s" if kbps >= 1024 else f"{kbps:.0f}KB/s"
+
+
+def _res_cls(field: str, value) -> str:
+    """Field color class plus r-on / r-hot activity level ("" level renders dim)."""
+    on, hot = _RES_LEVELS[field]
+    value = float(value or 0)
+    level = " r-hot" if value >= hot else (" r-on" if value >= on else "")
+    return _RES_CLASSES[field] + level
+
+
+def _has_res(res) -> bool:
+    return isinstance(res, dict) and bool(res.get("proc_count"))
+
+
+def _res_title(res: dict, rollup: bool = False) -> str:
+    scope = "합산: 메인 + 하위 에이전트·잡·데몬 프로세스 트리" if rollup else "프로세스 트리 (루트 + 모든 자식)"
+    return (f"{scope} · CPU {float(res.get('cpu_pct') or 0):.1f}% · RAM {_fmt_res_mb(res.get('ram_mb'))} · "
+            f"GPU VRAM {float(res.get('gpu_mb') or 0):.0f}MB · I/O {_fmt_res_rate(res.get('io_kbps'))} · "
+            f"프로세스 {int(res.get('proc_count') or 0)}개")
+
+
+def _res_pill_html(res, rollup: bool = False) -> str:
+    """Inline CPU/RAM/GPU/I-O pill; empty when no process is attributed."""
+    if not _has_res(res):
+        return ""
+    gpu, io = float(res.get("gpu_mb") or 0), float(res.get("io_kbps") or 0)
+    segs = [("cpu_pct", f"CPU {float(res.get('cpu_pct') or 0):.1f}%"),
+            ("ram_mb", f"RAM {_fmt_res_mb(res.get('ram_mb'))}")]
+    if rollup or gpu > 0:
+        segs.append(("gpu_mb", f"GPU {gpu:.0f}MB"))
+    if rollup or io >= 1:
+        segs.append(("io_kbps", f"I/O {_fmt_res_rate(io)}"))
+    classes = [_res_cls(field, res.get(field)) for field, _ in segs]
+    cls = "res-pill" + (" rollup" if rollup else "") + ("" if any(" r-" in c for c in classes) else " idle")
+    inner = "<i>·</i>".join(f'<span class="{c}">{text}</span>' for c, (_, text) in zip(classes, segs))
+    return f'<span class="{cls}" title="{_html_esc(_res_title(res, rollup))}">{inner}</span>'
+
+
+def _res_slot_html(key: str, res, rollup: bool = False) -> str:
+    """Keyed slot the live patcher refreshes in place; omitted when nothing is attributed."""
+    if not _has_res(res):
+        return ""
+    return (f'<span class="res-slot" data-res-key="{_html_esc(key)}">'
+            f'{RES_MARK_START}{_res_pill_html(res, rollup)}{RES_MARK_END}</span>')
+
+
+def _res_table_row(row_cls: str, tag: str, label: str, res) -> str:
+    cells = "".join(f'<td class="{_res_cls(field, res.get(field))}">{text}</td>' for field, text in (
+        ("cpu_pct", f"{float(res.get('cpu_pct') or 0):.1f}%"), ("ram_mb", _fmt_res_mb(res.get("ram_mb"))),
+        ("gpu_mb", f"{float(res.get('gpu_mb') or 0):.0f}MB"), ("io_kbps", _fmt_res_rate(res.get("io_kbps")))))
+    return (f'<tr class="{row_cls}"><td title="{_html_esc(label)}"><span class="res-kind">{_html_esc(tag)}</span>'
+            f'{_html_esc(label[:90])}</td>{cells}<td>{int(res.get("proc_count") or 0)}</td></tr>')
+
+
+def _res_board_html(entries: list[dict], proc_table: dict) -> str:
+    """Section-level rollup line plus the "리소스 상세" breakdown drawer."""
+    from check_all_usage import merge_resources
+    rows = [e["res"] for e in entries if e.get("res") and _has_res(e["res"].get("rollup"))]
+    total = merge_resources(proc_table, [r["rollup"] for r in rows])
+    if not total:
+        summary, drawer = '<span class="res-meta">귀속된 프로세스 없음</span>', ""
+    else:
+        table_rows = []
+        for row in rows:
+            table_rows.append(_res_table_row("main", row["kind"], row["label"], row["rollup"]))
+            table_rows.extend(_res_table_row("child", tag, label, res)
+                              for tag, label, res in row["children"] if _has_res(res))
+        toggle_js = ("var h=document.documentElement;h.classList.toggle('res-open');"
+                     "try{localStorage.setItem('agy_res_open_v1',h.classList.contains('res-open')?1:0)}catch(e){}"
+                     "if(window.notifyParentResize)notifyParentResize()")
+        summary = (f'{_res_pill_html(total, rollup=True)}'
+                   f'<span class="res-meta">에이전트 {len(rows)} · 프로세스 {total["proc_count"]}</span>'
+                   f'<button type="button" class="res-toggle" onclick="{toggle_js}" '
+                   f'title="에이전트별 CPU · RAM · GPU VRAM · I/O · 프로세스 수 (자세히)">리소스 상세</button>')
+        drawer = ('<div class="res-drawer"><table class="res-table"><tr><th>에이전트 (메인 합산 → 하위)</th>'
+                  '<th>CPU</th><th>RAM</th><th>GPU VRAM</th><th>I/O</th><th>프로세스</th></tr>'
+                  f'{"".join(table_rows)}</table></div>')
+    return (f'<div class="res-board" data-res-key="res-board">{RES_MARK_START}'
+            f'<div class="res-head"><b>리소스</b>{summary}</div>{drawer}{RES_MARK_END}</div>')
+
+
+RES_ASSETS_BLOCK_RE = re.compile(r"<!--__RES_ASSETS_(CSS|JS)_START__-->.*?<!--__RES_ASSETS_\1_END__-->", re.S)
+RES_ASSETS_CSS = (
+    "<!--__RES_ASSETS_CSS_START__--><style>"
+    "body.standalone-web .widget-shell{max-width:clamp(980px,92vw,1380px)}"
+    ".res-slot{display:inline-flex;flex:none}"
+    ".res-pill{display:inline-flex;align-items:center;gap:3px;height:18px;box-sizing:border-box;padding:0 5px;"
+    "border-radius:4px;border:1px solid var(--bdr);white-space:nowrap}"
+    ".res-pill,.res-meta,.res-table{color:var(--muted);font:9.5px ui-monospace,Menlo,monospace}"
+    ".res-pill.rollup{border-color:#22d3ee55}.res-pill.idle{opacity:.55}.res-pill i{font-style:normal;opacity:.4}"
+    ".r-on.r-cpu{color:#22d3ee}.r-on.r-ram{color:#34d399}.r-on.r-gpu{color:#a78bfa}.r-on.r-io{color:#38bdf8}"
+    ".r-hot{color:#fbbf24!important;font-weight:700}html.light :is(.r-on,.r-hot){filter:brightness(.7)}"
+    ".res-board{margin:0 0 4px;border:1px solid var(--bdr);border-radius:6px}"
+    ".res-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 6px;font-size:10.5px}"
+    ".res-toggle{margin-left:auto;height:18px;padding:0 7px;border-radius:4px;border:1px solid var(--bdr);"
+    "background:none;color:var(--muted);cursor:pointer;font-size:10px}"
+    ".res-toggle:after{content:' ▾'}.res-open .res-toggle:after{content:' ▴'}"
+    ".res-drawer{display:none;padding:0 6px 6px;overflow-x:auto}.res-open .res-drawer{display:block}"
+    ".res-table{width:100%;border-collapse:collapse}"
+    ".res-table :is(th,td){text-align:right;padding:1.5px 6px;white-space:nowrap}"
+    ".res-table th{border-bottom:1px solid var(--bdr)}"
+    ".res-table :is(th,td):first-child{text-align:left;max-width:520px;overflow:hidden;text-overflow:ellipsis;color:var(--text)}"
+    ".res-table .main td{font-weight:700}.res-table .child td:first-child{padding-left:18px}"
+    ".res-kind{margin-right:5px;padding:0 4px;border-radius:3px;font-size:8.5px;background:#6366f122;color:#818cf8}"
+    "@media (max-width:760px){.agent-row .res-slot{display:none}}"
+    "</style><!--__RES_ASSETS_CSS_END__-->"
+)
+# Resource numbers change every pass: keep them out of the tree signature, then
+# patch keyed slots (insert / refresh / drop) after the regular reconcile.
+RES_ASSETS_JS = (
+    "<!--__RES_ASSETS_JS_START__--><script>(function(){"
+    "try{if(localStorage.getItem('agy_res_open_v1')==1)document.documentElement.classList.add('res-open')}catch(e){}"
+    "var S=new RegExp('<!'+'--__RES__-->[\\\\s\\\\S]*?<!'+'--__RES_END__-->','g'),o=window.smartPatchTree;"
+    "function q(c,s){return c.querySelector(s)}"
+    "function sync(c,h){if(!c||!h)return;var t=document.createElement('div'),k={};t.innerHTML=h;"
+    "t.querySelectorAll('[data-res-key]').forEach(function(n){var key=n.dataset.resKey,"
+    "cur=q(c,'[data-res-key=\"'+CSS.escape(key)+'\"]');k[key]=1;"
+    "if(cur){if(cur.innerHTML!==n.innerHTML)cur.innerHTML=n.innerHTML;return}"
+    "if(key=='res-board')return c.prepend(n);"
+    "var r=q(c,'.tree-node[data-node-id=\"'+CSS.escape(key.slice(4))+'\"]>.agent-row .agent-right');if(r)r.prepend(n)});"
+    "c.querySelectorAll('[data-res-key]').forEach(function(n){if(!k[n.dataset.resKey])n.remove()})}"
+    "if(typeof o=='function'&&!o.res){window.smartPatchTree=function(c,h){"
+    "var r=o(c,typeof h=='string'?h.replace(S,''):h);sync(c,h);return r};window.smartPatchTree.res=1}"
+    "})()</script><!--__RES_ASSETS_JS_END__-->"
+)
+
+
+def _inject_resource_assets(html: str) -> str:
+    """Add the resource pill CSS/JS at render time (idempotent)."""
+    html = RES_ASSETS_BLOCK_RE.sub("", html)
+    head = html.find("</head>")
+    if head >= 0:
+        html = html[:head] + RES_ASSETS_CSS + html[head:]
+    body = html.rfind("</body>")
+    if body >= 0:
+        html = html[:body] + RES_ASSETS_JS + html[body:]
+    return html
+
+
 def _status_dot_from_age(is_busy: bool, age_sec: float) -> tuple[str, str]:
     """6-stage status dot: BUSY (blue breathing) -> IDLE fresh (green breathing) -> Static Green -> Yellow -> Orange -> Red."""
     if is_busy:
@@ -2604,6 +2757,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
         f'<div class="agent-left">{_sub_prefix_html(dot, "SUB", tip)}'
         f'{c_icon}'
         f'<span class="agent-name" title="{title}">{title}</span></div><div class="agent-right">'
+        f'{_res_slot_html(f"res-{c_node_id}", node.get("resources"))}'
         f'{c_pill}'
         f'{_context_pill_html(fmt_k(total), pct, "green", node, running, dot)}'
         f'<span class="row-actions">'
@@ -2919,6 +3073,26 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     claude_list = [c for c in claude_list if c.get("session_id") in live_claude_ids
                    or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC]
     rollout_paths = _codex_rollout_paths(cdx_list)
+    proc_res = data.get("process_resources") if isinstance(data.get("process_resources"), dict) else {}
+    proc_table = proc_res.get("procs") or {}
+    from check_all_usage import merge_resources
+
+    def _worker_res(node: dict) -> dict | None:
+        if node.get("resources"):
+            return node["resources"]
+        workers = proc_res.get("workers") or {}
+        for key in ("session_id", "thread_id", "registry_id", "id"):
+            if node.get(key) and node[key] in workers:
+                return workers[node[key]]
+        return (proc_res.get("pids") or {}).get(str(node.get("pid") or ""))
+
+    def _conv_res(cid_val: str) -> dict | None:
+        return (proc_res.get("conversations") or {}).get(cid_val or "")
+
+    def _first_line(value, fallback: str) -> str:
+        line = (str(value or "").splitlines() or [""])[0]
+        return re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", line).strip() or fallback
+
     running_codex = [
         c for c in cdx_list
         if c.get("source") == "exec" and _codex_worker_is_active(c, live_codex_ids, rollout_paths, now_sec)
@@ -3162,6 +3336,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         det_id = f"det-act-{cid8}"
 
         subagent_items: list[tuple[int, float, str]] = []
+        res_children: list[tuple[str, str, dict | None]] = []
         for c in extra_claude_workers:
             sid = c.get("session_id") or c.get("id") or ""
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
@@ -3169,6 +3344,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             if not c_live and (not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed):
                 continue
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            c = {**c, "resources": _worker_res(c)}
+            res_children.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
 
         sub_slot_idx = 0
@@ -3204,6 +3381,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
             sub_slot_idx += 1
             c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
+            c_res = _worker_res(repo_codex)
+            res_children.append(("SUB", c_disp, c_res))
             c_html = (
                 f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
@@ -3213,6 +3392,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(c_disp)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
+                f'{_res_slot_html(f"res-{c_node_id}", c_res)}'
                 f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
                 f'<span class="row-actions">'
                 f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
@@ -3262,6 +3442,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_icon, c_pill, _ = _provider_icon_and_pill(ch.get("model", ""), "antigravity")
             c_repo = _repo_from_uris_or_cwd(ch.get("workspaces"))[0] if ch.get("workspaces") else repo
             c_ts = _parse_any_ts(ch.get("last_modified_time")) or 0.0
+            c_res = ch.get("resources") or _conv_res(ccid)
+            res_children.append(("SUB", c_role, c_res))
             c_html = (
                 f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
                 f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-{ccid8}\')">'
@@ -3271,6 +3453,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(c_role)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
+                f'{_res_slot_html(f"res-{c_node_id}", c_res)}'
                 f'{c_pill}'
                 f'{_context_pill_html(c_used, c_pct, "blue", ch, c_running, c_dot)}'
                 f'<span class="row-actions">'
@@ -3307,6 +3490,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             if is_dmn_or_tmr and not show_bg_daemons:
                 node_cls += " hidden"
             bt_dot = "busy" if bt_kind == "job" else "idle-fresh"
+            bt_res = bgt.get("resources") or (proc_res.get("tasks") or {}).get(f"{cid}/{bt_id}")
+            res_children.append((bt_tag, bt_desc, bt_res))
             if bt_kind == "cron":
                 bt_pill = ""
             else:
@@ -3345,6 +3530,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<span class="agent-name">{_html_esc(bt_desc)}</span>'
                 f'</div>'
                 f'<div class="agent-right">'
+                f'{_res_slot_html(f"res-{bt_node_id}", bt_res)}'
                 f'{bt_pill}'
                 f'{bt_time_pill}'
                 f'<span class="row-actions bg-actions">'
@@ -3374,6 +3560,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
         br_cls = "tree-children hidden" if state.get("allCollapsed") is True else "tree-children"
         children_block = f'<div class="{br_cls}" id="{br_id}">{_finalize_child_rows(child_rows_html)}</div>' if child_rows_html else ""
+        # Main rollup: own conversation, every descendant conversation, attached workers and jobs.
+        ag_rollup = merge_resources(proc_table, [ag.get("rollup_resources"), _conv_res(cid)]
+                                    + [_conv_res(ch.get("conversation_id")) for ch in (ag.get("children") or [])]
+                                    + [res for _, _, res in res_children])
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         has_running_job = any(t.get("kind") == "job" for t in bg_tree_jobs)
@@ -3391,6 +3581,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'{bg_parent_chip}'
             f'</div>'
             f'<div class="agent-right">'
+            f'{_res_slot_html(f"res-{node_id}", ag_rollup, rollup=True)}'
             f'{model_pill}'
             f'{_context_pill_html(used_k, pct, "blue", ag, is_busy_ag, root_dot)}'
             f'<span class="row-actions">'
@@ -3413,6 +3604,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": cid == "521b781e-43da-4647-b411-585e65e5f002",
             "updated_ts": updated_ts,
             "html": parent_html,
+            "res": {"kind": "MAIN", "label": disp_title, "rollup": ag_rollup, "children": res_children},
         })
 
     active_cdx_sorted = sorted(active_cdx, key=lambda x: 0 if x.get("source") == "vscode" else 1)
@@ -3447,6 +3639,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         claude_children = attached_claude_workers_by_parent.get(tid, [])
         is_live_running = is_live_running or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in claude_children)
         subagent_items_cdx: list[tuple[int, float, str]] = []
+        res_children_cdx: list[tuple[str, str, dict | None]] = []
         for c in claude_children:
             sid = c.get("session_id") or c.get("id") or ""
             if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
@@ -3454,6 +3647,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            c = {**c, "resources": _worker_res(c)}
+            res_children_cdx.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items_cdx.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
 
         if not cdx.get("agy_origin") or cdx.get("source") == "vscode":
@@ -3499,13 +3694,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
                 child_dot = "busy" if c_live_child else "idle-fresh"
                 child_ts = float(ch.get("updated_at") or 0.0)
+                child_res = _worker_res(ch)
+                res_children_cdx.append(("SUB", child_disp, child_res))
                 row_html = (
                     f'<div class="tree-node sub-node" data-node-id="{child_node_id}">'
                     f'<div class="agent-row child" onclick="toggleDetail(\'{child_det_id}\')">'
                     f'<div class="agent-left">{_sub_prefix_html(child_dot)}'
                     f'{child_icon}'
                     f'<span class="agent-name">{_html_esc(child_disp)}</span></div>'
-                    f'<div class="agent-right">{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, c_live_child, child_dot)}'
+                    f'<div class="agent-right">{_res_slot_html(f"res-{child_node_id}", child_res)}'
+                    f'{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, c_live_child, child_dot)}'
                     f'<span class="row-actions">'
                     f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{child_tid}\', \'{_html_esc(child_disp[:28])}\', \'{_html_esc(child_cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
                     f'</span>'
@@ -3525,6 +3723,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         is_keep_alive_cdx = is_live_running or root_dot == "idle-fresh"
+        cdx_rollup = merge_resources(proc_table, [cdx.get("rollup_resources"), _worker_res(cdx)]
+                                     + [res for _, _, res in res_children_cdx])
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
@@ -3536,6 +3736,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<span class="agent-name">{_html_esc(disp)}</span>'
             f'</div>'
             f'<div class="agent-right">'
+            f'{_res_slot_html(f"res-{node_id}", cdx_rollup, rollup=True)}'
             f'{model_pill}'
             f'{_context_pill_html(used_k, pct, "green", cdx, is_live_running, root_dot)}'
             f'<span class="row-actions">'
@@ -3555,6 +3756,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": False,
             "updated_ts": updated_ts,
             "html": parent_html,
+            "res": {"kind": "MAIN", "label": disp, "rollup": cdx_rollup, "children": res_children_cdx},
         })
 
     active_entries.sort(key=lambda item: (
@@ -3562,6 +3764,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         0 if item["is_live_running"] else 1,
         -item["updated_ts"],
     ))
+    if proc_res and "error" not in proc_res:
+        active_parts.append(_res_board_html(active_entries, proc_table))
     active_parts.extend(item["html"] for item in active_entries)
     active_parts.append("<!--__ACTIVE_TREE_HTML_END__-->")
 
@@ -3941,7 +4145,7 @@ def inject_live_data(template: str, data: dict) -> str:
 
     html = re.sub(r'(id="badge-active-cnt">)\d+(<)', rf"\g<1>{act_cnt}\g<2>", html, count=1)
     html = re.sub(r'(id="badge-closed-cnt">)\d+(<)', rf"\g<1>{cls_cnt}\g<2>", html, count=1)
-    return html
+    return _inject_resource_assets(html)
 
 
 def compact_widget_html(html: str) -> str:
