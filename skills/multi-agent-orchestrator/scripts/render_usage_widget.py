@@ -2046,8 +2046,8 @@ def _context_pill_html(used: str, percent: float, color: str, node: dict | None 
 
 RES_MARK_START, RES_MARK_END = "<!--__RES__-->", "<!--__RES_END__-->"
 # Display order CPU -> GPU -> RAM -> send (tx) -> receive (rx); (on, hot) thresholds:
-# CPU % (one core = 100), GPU % of total VRAM, RAM % of system memory, KB/s.
-_RES_LEVELS = {"cpu_pct": (5.0, 50.0), "gpu_pct": (0.01, 50.0), "ram_pct": (1.0, 10.0),
+# CPU % of all logical CPUs, GPU % of total VRAM, RAM % of system memory, KB/s.
+_RES_LEVELS = {"cpu_pct": (0.2, 25.0), "gpu_pct": (0.01, 50.0), "ram_pct": (1.0, 10.0),
                "tx_kbps": (64.0, 10240.0), "rx_kbps": (64.0, 10240.0)}
 _RES_CLASSES = {"cpu_pct": "r-cpu", "gpu_pct": "r-gpu", "ram_pct": "r-ram", "tx_kbps": "r-tx", "rx_kbps": "r-rx"}
 _RES_TAGS = {"cpu_pct": "CPU", "gpu_pct": "GPU", "ram_pct": "RAM", "tx_kbps": "↑", "rx_kbps": "↓"}
@@ -2086,8 +2086,8 @@ def _res_metrics(res: dict) -> list[tuple[str, float, str]]:
     """(field, level value, text) of the non-zero metrics in CPU, GPU, RAM, send, receive order."""
     out = []
     cpu = float(res.get("cpu_pct") or 0)
-    if cpu > 0.04:
-        out.append(("cpu_pct", cpu, f"{cpu:.1f}%"))
+    if cpu >= 0.1 or float(res.get("cpu_core_pct", cpu) or 0) > 0.04:  # 2.1% of one core / 24 still shows 0.1%
+        out.append(("cpu_pct", cpu, _fmt_res_pct(cpu, True)))
     for field, mb_key in (("gpu_pct", "gpu_mb"), ("ram_pct", "ram_mb")):
         mb, pct = float(res.get(mb_key) or 0), res.get(field)
         if mb > 0 or float(pct or 0) > 0:  # without a known total the exact MB is shown instead of a percentage
@@ -2110,7 +2110,10 @@ def _res_active(res) -> bool:
 
 def _res_title(res: dict, rollup: bool = False) -> str:
     scope = "합산: 메인 + 하위 에이전트·잡·데몬 프로세스 트리" if rollup else "프로세스 트리 (루트 + 모든 자식)"
-    parts = [scope, f"CPU {float(res.get('cpu_pct') or 0):.1f}% (코어 1개 = 100%)"]
+    cpu = f"CPU {_fmt_res_pct(res.get('cpu_pct'))}"
+    if res.get("cpu_core_pct") is not None:
+        cpu += f" (코어 기준 {float(res['cpu_core_pct']):.1f}% / {int(res.get('cpu_count') or 1)}스레드)"
+    parts = [scope, cpu]
     for field, mb_key, unit in (("gpu_pct", "gpu_mb", "VRAM"), ("ram_pct", "ram_mb", "RSS")):
         mb = float(res.get(mb_key) or 0)
         if field == "ram_pct" or mb > 0:

@@ -439,6 +439,11 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn("✦ ✦", html2)
 
 
+def usage_merge(procs, pids, totals):
+    from check_all_usage import merge_resources
+    return merge_resources(procs, [{'pids': pids}], totals)
+
+
 class ResourceRenderingTests(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch.object(widget, '_worker_registry', return_value={})
@@ -454,7 +459,8 @@ class ResourceRenderingTests(unittest.TestCase):
         return dict(cpu_pct=cpu, ram_mb=ram, gpu_mb=gpu, tx_kbps=tx, rx_kbps=rx, ram_pct=round(ram / 163.84, 2),
                     gpu_pct=round(gpu / 81.92, 2), proc_count=len(pids), pids=pids)
 
-    TOTALS = {'mem_total_mb': 16384.0, 'gpu_total_mb': 8192.0}
+    # One logical CPU keeps per-core fixture values equal to the normalized cpu_pct.
+    TOTALS = {'cpu_count': 1, 'mem_total_mb': 16384.0, 'gpu_total_mb': 8192.0}
 
     @staticmethod
     def tags(pill):
@@ -480,18 +486,18 @@ class ResourceRenderingTests(unittest.TestCase):
 
     def test_rows_show_own_trees_and_main_rolls_up_by_pid_union(self):
         procs = {'1': [10.0, 100.0, 0.0, 1.0, 0.0, 'bash'], '2': [30.0, 300.0, 2048.0, 150.0, 50.0, 'pytest'],
-                 '3': [1.0, 50.0, 0.0, 0.0, 0.0, 'node']}
+                 '3': [0.1, 50.0, 0.0, 0.0, 0.0, 'node']}
         active = self.render({
             'procs': procs, **self.TOTALS,
             'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2], 40.0, 400.0, 2048.0, 151.0, 50.0),
-                              'ressub-0001': self.res([3], 1.0, 50.0)},
+                              'ressub-0001': self.res([3], 0.1, 50.0)},
             'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([2], 30.0, 300.0, 2048.0, 150.0, 50.0)},
             'workers': {}, 'pids': {},
         })
         main = self.slot(active, 'res-node-agy-resparen')
         # Subagent pid 3 joins the rollup; the job's pid 2 is not counted twice. Order: CPU, GPU, RAM, send, receive.
         self.assertEqual(self.tags(main), ['CPU', 'GPU', 'RAM', '↑', '↓'])
-        self.assertIn('<b class="rl">CPU</b>41.0%', main)
+        self.assertIn('<b class="rl">CPU</b>40.1%', main)
         self.assertIn('<b class="rl">GPU</b>25.0%', main)  # 2048 of 8192 MiB
         self.assertIn('<b class="rl">RAM</b>2.8%', main)  # 450 of 16384 MiB = 2.75%
         self.assertIn('<b class="rl">↑</b>151KB/s', main)
@@ -504,7 +510,7 @@ class ResourceRenderingTests(unittest.TestCase):
         self.assertEqual(self.tags(sub), ['CPU', 'RAM'])  # zero GPU / send / receive omitted
         self.assertIn('idle', sub)  # below every activity threshold
         job = self.slot(active, 'res-node-bg-resparen-task-42')
-        self.assertIn('<span class="r-cpu r-on"><b class="rl">CPU</b>30.0%</span>', job)
+        self.assertIn('<span class="r-cpu r-hot"><b class="rl">CPU</b>30.0%</span>', job)  # 30% of the whole PC
         self.assertIn('r-gpu r-on', job)
         self.assertIn('r-tx r-on', job)
         # The board precedes the first tree node and carries the breakdown drawer.
@@ -605,6 +611,19 @@ class ResourceRenderingTests(unittest.TestCase):
         self.assertNotIn('<0.1%', pill)
         # A known RAM percentage with no MB sample still shows RAM.
         self.assertEqual(self.tags(widget._res_pill_html(dict(cpu_pct=9.0, ram_pct=0.6, proc_count=1))), ['CPU', 'RAM'])
+
+    def test_cpu_is_a_share_of_all_threads_with_the_core_sum_in_the_tooltip(self):
+        procs = {'1': [164.6, 100.0, 0.0, 0.0, 0.0, 'node'], '2': [2.1, 10.0, 0.0, 0.0, 0.0, 'bash'],
+                 '3': [3000.0, 10.0, 0.0, 0.0, 0.0, 'stress']}
+        totals = {**self.TOTALS, 'cpu_count': 24}
+        busy = usage_merge(procs, [1], totals)
+        pill = widget._res_pill_html(busy)
+        self.assertIn('<b class="rl">CPU</b>6.9%', pill)  # 164.6 / 24, never above 100
+        self.assertIn('CPU 6.9% (코어 기준 164.6% / 24스레드)', pill)
+        light = widget._res_pill_html(usage_merge(procs, [2], totals))
+        self.assertEqual(self.tags(light), ['CPU', 'RAM'])
+        self.assertIn('<b class="rl">CPU</b>0.1%', light)  # 2.1 / 24 = 0.09 still reads 0.1%
+        self.assertIn('<b class="rl">CPU</b>100.0%', widget._res_pill_html(usage_merge(procs, [3], totals)))
 
     def test_without_process_data_no_resource_markup_is_rendered(self):
         active = self.render(None)

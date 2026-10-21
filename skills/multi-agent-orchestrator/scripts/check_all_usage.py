@@ -2134,6 +2134,9 @@ PROC_SNAPSHOT_TTL_SEC = 2.5
 GPU_SNAPSHOT_TTL_SEC = 3.0
 GPU_TOTAL_TTL_SEC = 300.0
 # tx = bytes sent/written (wchar), rx = bytes received/read (rchar).
+# Per-PID rows carry Linux per-core CPU% (one logical core = 100, so 24 threads
+# max out at 2400); summaries rescale it to cpu_pct on the 0-100 total-system
+# scale shared with ram_pct / gpu_pct and keep the raw sum as cpu_core_pct.
 RESOURCE_FIELDS = ("cpu_pct", "ram_mb", "gpu_mb", "tx_kbps", "rx_kbps")
 _ENV_STEP_RE = re.compile(rb'"stepIndex"\s*:\s*(\d+)')
 _TASK_LOG_FD_RE = re.compile(r"/brain/([^/]+)/\.system_generated/tasks/(task-\d+)\.log(?: \(deleted\))?$")
@@ -2262,6 +2265,10 @@ def _mem_total_mb(proc_root: str = "/proc") -> float:
     return 0.0
 
 
+def _cpu_count() -> int:
+    return max(1, os.cpu_count() or 1)
+
+
 def process_snapshot(proc_root: str = "/proc", *, force: bool = False) -> dict:
     """Cached system process snapshot with per-PID CPU% (delta against the previous pass)."""
     now = time.monotonic()
@@ -2291,7 +2298,7 @@ def process_snapshot(proc_root: str = "/proc", *, force: bool = False) -> dict:
     for pid, p in procs.items():
         children.setdefault(p["ppid"], []).append(pid)
     gpu = _gpu_process_memory()
-    totals = {"mem_total_mb": round(_mem_total_mb(proc_root), 1),
+    totals = {"cpu_count": _cpu_count(), "mem_total_mb": round(_mem_total_mb(proc_root), 1),
               "gpu_total_mb": round(_gpu_total_memory(), 1) if gpu or shutil.which("nvidia-smi") else 0.0}
     snap = {"proc_root": proc_root, "mono": now, "sampled_at": time.time(), "procs": procs,
             "children": children, "gpu": gpu, "totals": totals, "state": state, "stats": {}}
@@ -2315,7 +2322,7 @@ def _descendants(snap: dict, roots) -> set[int]:
 
 
 def _pid_stats(snap: dict, pid: int) -> tuple[float, float, float, float, float]:
-    """(cpu_pct, ram_mb, gpu_mb, tx_kbps, rx_kbps); /proc/<pid>/io is read only for attributed PIDs."""
+    """(per-core cpu %, ram_mb, gpu_mb, tx_kbps, rx_kbps); /proc/<pid>/io is read only for attributed PIDs."""
     stats = snap["stats"].get(pid)
     if stats is not None:
         return stats
@@ -2342,9 +2349,15 @@ def _pid_stats(snap: dict, pid: int) -> tuple[float, float, float, float, float]
 
 
 def _resource_summary(stats, pids, totals=None) -> dict:
-    """Field sums plus ram_pct / gpu_pct of system RAM and total VRAM when those totals are known."""
+    """Field sums plus ram_pct / gpu_pct of system RAM and total VRAM when those totals are known.
+
+    cpu_pct is the share of the whole machine (per-core sum / logical CPUs, capped at 100);
+    cpu_core_pct keeps the per-core sum (164.6 = 1.65 cores busy).
+    """
     sums = [sum(values) for values in zip(*stats)] if stats else [0.0] * len(RESOURCE_FIELDS)
     summary = {key: round(value, 1) for key, value in zip(RESOURCE_FIELDS, sums)}
+    ncpu = max(1, int((totals or {}).get("cpu_count") or 0) or _cpu_count())
+    summary.update(cpu_pct=round(min(100.0, sums[0] / ncpu), 2), cpu_core_pct=round(sums[0], 1), cpu_count=ncpu)
     for pct_key, field, total_key in (("ram_pct", 1, "mem_total_mb"), ("gpu_pct", 2, "gpu_total_mb")):
         total = float((totals or {}).get(total_key) or 0)
         if total > 0:
@@ -2362,7 +2375,7 @@ def merge_resources(proc_table: dict, resources, totals=None) -> dict | None:
     """Roll up resource summaries by PID union using process_resources['procs'].
 
     Nested trees (a worker under its conversation's shell) are counted once.
-    `totals` (process_resources itself works) supplies mem_total_mb / gpu_total_mb.
+    `totals` (process_resources itself works) supplies cpu_count / mem_total_mb / gpu_total_mb.
     """
     pids = set()
     for res in resources:
@@ -2503,7 +2516,8 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         "ttl_sec": PROC_SNAPSHOT_TTL_SEC,
         "gpu_available": bool(snap["gpu"]) or bool(shutil.which("nvidia-smi")),
         **snap["totals"],
-        # pid -> [cpu_pct, ram_mb, gpu_mb, tx_kbps, rx_kbps, comm]; only attributed PIDs.
+        # pid -> [per-core cpu %, ram_mb, gpu_mb, tx_kbps, rx_kbps, comm]; only attributed PIDs.
+        # Raw per-core values keep rows additive; merge_resources normalizes the sum.
         "procs": {str(pid): [round(v, 2) for v in _pid_stats(snap, pid)] + [procs[pid]["comm"]]
                   for pid in sorted(attributed)},
         "conversations": conversations,

@@ -439,7 +439,7 @@ class ProcessResourceTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
-        for name, value in (("_gpu_process_memory", {101: 512.0}), ("_gpu_total_memory", 8192.0)):
+        for name, value in (("_gpu_process_memory", {101: 512.0}), ("_gpu_total_memory", 8192.0), ("_cpu_count", 4)):
             patcher = mock.patch.object(usage, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -494,9 +494,10 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertEqual(root["rollup_resources"]["gpu_pct"], 6.25)  # 512 of 8192 MiB VRAM
         self.assertAlmostEqual(root["rollup_resources"]["ram_pct"],
                                round((256 * 4 + 512) * page_mb / 16384 * 100, 2))
-        self.assertEqual((pr["mem_total_mb"], pr["gpu_total_mb"]), (16384.0, 8192.0))
-        # First pass: lifetime average, 50 CPU seconds over a 500 s old process.
-        self.assertAlmostEqual(pr["conversations"]["conv-a"]["cpu_pct"], 10.0)
+        self.assertEqual((pr["cpu_count"], pr["mem_total_mb"], pr["gpu_total_mb"]), (4, 16384.0, 8192.0))
+        # First pass: lifetime average, 50 CPU seconds over a 500 s old process = 10% of one core, 2.5% of 4.
+        self.assertAlmostEqual(pr["conversations"]["conv-a"]["cpu_core_pct"], 10.0)
+        self.assertAlmostEqual(pr["conversations"]["conv-a"]["cpu_pct"], 2.5)
 
     def test_second_pass_uses_cpu_and_io_deltas(self):
         self.proc(100, 1, cpu_sec=50, cid="conv-a", step=1, io=(10 * 1024, 0))
@@ -508,7 +509,8 @@ class ProcessResourceTests(unittest.TestCase):
         with mock.patch.object(usage.time, "monotonic", return_value=104.0):
             pr = self.build({})
         res = pr["conversations"]["conv-a"]
-        self.assertAlmostEqual(res["cpu_pct"], 25.0)  # 1 CPU second in 4 s
+        self.assertAlmostEqual(res["cpu_core_pct"], 25.0)  # 1 CPU second in 4 s
+        self.assertAlmostEqual(res["cpu_pct"], 6.25)  # of 4 logical CPUs
         self.assertAlmostEqual(res["rx_kbps"], 5.0)  # 20 KiB read (rchar) in 4 s
         self.assertAlmostEqual(res["tx_kbps"], 2.5)  # 10 KiB written (wchar) in 4 s
         self.assertNotIn("io_kbps", res)
@@ -531,7 +533,7 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertNotIn("worker_pids", job)
         self.assertFalse(set(worker["pids"]) & set(wrapper["pids"]))
         rollup = trees["antigravity"][0]["rollup_resources"]
-        for field in ("cpu_pct", "ram_mb", "rx_kbps", "tx_kbps", "proc_count"):
+        for field in ("cpu_pct", "cpu_core_pct", "ram_mb", "rx_kbps", "tx_kbps", "proc_count"):
             self.assertAlmostEqual(rollup[field], worker[field] + wrapper[field] + job[field], places=1)
 
     def test_worker_spawn_detection_ignores_heredoc_bodies(self):
@@ -563,9 +565,13 @@ class ProcessResourceTests(unittest.TestCase):
     def test_merge_resources_unions_pids(self):
         table = {"1": [1.0, 10.0, 0.0, 1.0, 4.0, "a"], "2": [2.0, 20.0, 5.0, 2.0, 0.0, "b"]}
         merged = usage.merge_resources(table, [{"pids": [1, 2]}, {"pids": [2]}, None],
-                                       {"mem_total_mb": 1000.0, "gpu_total_mb": 0.0})
+                                       {"cpu_count": 2, "mem_total_mb": 1000.0, "gpu_total_mb": 0.0})
         self.assertEqual((merged["cpu_pct"], merged["ram_mb"], merged["gpu_mb"], merged["tx_kbps"], merged["rx_kbps"]),
-                         (3.0, 30.0, 5.0, 3.0, 4.0))
+                         (1.5, 30.0, 5.0, 3.0, 4.0))
+        self.assertEqual((merged["cpu_core_pct"], merged["cpu_count"]), (3.0, 2))
+        # Per-core rows above the thread count cap at 100% of the machine.
+        busy = usage.merge_resources({"1": [350.0, 1.0, 0.0, 0.0, 0.0, "x"]}, [{"pids": [1]}], {"cpu_count": 2})
+        self.assertEqual((busy["cpu_pct"], busy["cpu_core_pct"]), (100.0, 350.0))
         self.assertEqual(merged["ram_pct"], 3.0)
         self.assertNotIn("gpu_pct", merged)  # unknown VRAM total: no percentage
         self.assertEqual((merged["proc_count"], merged["active_procs"], merged["pids"]), (2, 2, [1, 2]))
