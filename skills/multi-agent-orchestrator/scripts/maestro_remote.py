@@ -42,8 +42,8 @@ def checked(argv):
 
 
 def validate(node_id, port, hub):
-    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', node_id):
-        raise ValueError('node-id must be 1-48 lowercase letters, digits or hyphens')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,47}', node_id):
+        raise ValueError('node-id must be 1-48 lowercase letters, digits, hyphens or underscores')
     if not 1024 <= port <= 65534:
         raise ValueError('port must be 1024-65534')
     if not re.fullmatch(r'(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9][A-Za-z0-9.-]*', hub):
@@ -149,14 +149,22 @@ def build_plan(node_id, port=None, hub=None, system=None,
     if system not in ('Linux', 'Darwin', 'Windows'):
         raise ValueError(f'Unsupported platform: {system}')
     home = Path(home or Path.home())
-    state = home / '.local' / 'state' / 'ai-maestro' / 'remote' / node_id
     orca = orca or discover_orca(system)
     config = dict(node_id=node_id, port=port, widget_port=widget_port, hub=hub,
                   requested_port=requested_port, requested_widget_port=requested_widget_port,
-                  system=system, state_dir=str(state), orca=orca,
+                  system=system, home=str(home), orca=orca,
                   orca_url=orca_url, script=str(SCRIPT), python=sys.executable, identity_file=identity_file, registration_token=registration_token)
     config.update({k:v for k,v in hub_options.items() if v is not None})
     rebuild_tunnel(config)
+    return retarget(config, node_id)
+
+
+def retarget(config, node_id):
+    """(Re)derive the per-node state directory and service units for node_id."""
+    system, home = config['system'], Path(config['home'])
+    validate(node_id, config['port'], config['hub'])
+    state = home / '.local' / 'state' / 'ai-maestro' / 'remote' / node_id
+    config.update(node_id=node_id, state_dir=str(state))
     config['services'] = []
     for role in ('orca', 'widget', 'tunnel', 'heartbeat'):
         name = f'ai-maestro-remote-{node_id}-{role}'
@@ -304,6 +312,10 @@ def provision(config, dry_run=False):
     else:
         try:
             route=adapter.preflight(config)
+            if route.get('node_id',config['node_id']) != config['node_id']:
+                # Name taken by another machine: the hub assigns name_2, name_3, ...
+                result['assigned_node_id']=route['node_id']
+                retarget(config,route['node_id'])
             for requested, allocated in (('requested_port','port'),('requested_widget_port','widget_port')):
                 if config.get(requested) is not None and config[requested] != route.get(allocated,config[allocated]):
                     raise ValueError('Requested port differs from allocated fleet slot')
@@ -326,9 +338,14 @@ def provision(config, dry_run=False):
     except Exception as exc:
         result['blockers'].append(f'Codex configuration checkpoint failed: {type(exc).__name__}')
         return result
+    saved=Path(config['state_dir'])/'config.json'
     atomic_private(saved, json.dumps(config,indent=2))
     registered=adapter.register(config)
-    if any(registered.get(k) != config[k] for k in ('port','widget_port')):
+    result['node_id']=registered.get('node_id',config['node_id'])
+    if any(registered.get(k,config[k]) != config[k] for k in ('node_id','port','widget_port')):
+        if result['node_id'] != config['node_id']:
+            retarget(config,result['node_id'])
+            saved=Path(config['state_dir'])/'config.json'
         config.update(registered)
         rebuild_tunnel(config)
         atomic_private(saved,json.dumps(config,indent=2))
@@ -498,8 +515,10 @@ def remote_status(node_id, home=None):
             'verification':'Service and TCP reachability only; URLs are candidates, not browser verification'}
 
 
-def default_node_id():
-    return socket.gethostname().lower().replace('_','-').split('.')[0]
+def default_node_id(hostname=None):
+    """This PC's short hostname as a fleet name ([a-z0-9_-]); the hub may suffix _2, _3, ..."""
+    name=re.sub(r'[^a-z0-9_-]+','-',(hostname or socket.gethostname()).split('.')[0].lower())
+    return re.sub(r'^[^a-z0-9]+','',name)[:44].rstrip('-_') or 'node'
 
 
 def resolve_settings(args, saved=None):
@@ -591,6 +610,10 @@ def main(argv=None):
                        hub_python=settings.get('hub_python'),hub_probe_url=settings.get('hub_probe_url'),
                        orca_service=settings.get('orca_service'),
                        fleet_access_token=args.fleet_access_token),dry_run=args.dry_run)
+            if result.get('node_id') and result['node_id'] != settings['node_id']:
+                # Keep the hub-assigned name so reruns reuse this machine's state and credential.
+                remote_config.save({'node_id':result['node_id']})
+                settings['node_id']=result['node_id']
         if args.show_pairing and not args.dry_run and args.action in ('status','up','install-node'):
             state=Path.home()/'.local/state/ai-maestro/remote'/settings['node_id']/'pairing.json'
             if state.exists():

@@ -59,10 +59,20 @@ class HubTests(unittest.TestCase):
         self.assertFalse(Path(str(self.db)+'.maestro-enroll.lock').exists())
 
     def test_enrollment_idempotent_and_credential_bound(self):
+        base=self.config['node_id']
         self.assertEqual(self.remote('register')['slot'],0)
         self.assertEqual(self.remote('register')['slot'],0)
+        # Same name from another machine (credential): hostname_2, hostname_3, ...
         self.config['node_token']='b'*48
-        with self.assertRaisesRegex(RuntimeError,'another credential'): self.remote('register')
+        self.assertEqual(self.remote('preflight')['node_id'],base+'_2')
+        self.assertEqual(self.remote('register'),dict(node_id=base+'_2',slot=1,port=16702,widget_port=18702))
+        self.config['node_token']='c'*48
+        self.assertEqual(self.remote('register')['node_id'],base+'_3')
+        # A rerun with the original credential keeps its ID even when asking for another name.
+        self.config.update(node_token='b'*48,node_id=base)
+        self.assertEqual(self.remote('register')['node_id'],base+'_2')
+        db=sqlite3.connect(self.db)
+        self.assertEqual(db.execute('SELECT count(*) FROM nodes').fetchone()[0],3);db.close()
 
     def test_fleet_scales_past_ten_nodes_without_placeholder_slots(self):
         db=sqlite3.connect(self.db)

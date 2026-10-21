@@ -307,3 +307,32 @@ def test_temporary_file_removed_when_replace_fails(tmp_path,monkeypatch):
     with pytest.raises(OSError):
         remote.atomic_private(tmp_path/'config.json','{}')
     assert list(tmp_path.iterdir())==[]
+
+
+def test_default_node_id_is_sanitized_hostname():
+    assert remote.default_node_id('My_PC.local')=='my_pc'
+    assert remote.default_node_id('DESKTOP-AB12CD')=='desktop-ab12cd'
+    assert remote.default_node_id('--')=='node'
+    assert len(remote.default_node_id('a'*80))==44
+    remote.validate('office_2',16701,'hub')
+
+
+def test_taken_hostname_is_retargeted_to_hub_assigned_id(tmp_path,monkeypatch):
+    import codex_config_safe
+    config=remote.build_plan('office',hub='ubuntu@hub.example.com',home=tmp_path,orca='/opt/orca-ide',
+        registry_url='https://hub.example.com')
+    route={'node_id':'office_2','port':16702,'widget_port':18702,'orca_url':'wss://hub.example.com/orca/office_2/'}
+    adapter=Mock()
+    adapter.preflight.return_value=route
+    adapter.register.return_value=route
+    monkeypatch.setattr(remote.importlib,'import_module',lambda _:adapter)
+    monkeypatch.setattr(remote,'local_preflight',lambda _:[])
+    monkeypatch.setattr(codex_config_safe,'ensure_codex_config_safe',lambda:None)
+    monkeypatch.setattr(remote,'install_services',lambda _:None)
+    monkeypatch.setattr(remote,'wait_for_pairing',lambda _:True)
+    result=remote.provision(config)
+    assert result['ok'] and result['node_id']=='office_2' and result['assigned_node_id']=='office_2'
+    state=tmp_path/'.local/state/ai-maestro/remote/office_2'
+    assert config['state_dir']==str(state) and json.loads((state/'config.json').read_text())['node_id']=='office_2'
+    assert not (tmp_path/'.local/state/ai-maestro/remote/office').exists()
+    assert {s['name'] for s in config['services']}=={f'ai-maestro-remote-office_2-{r}' for r in ('orca','widget','tunnel','heartbeat')}

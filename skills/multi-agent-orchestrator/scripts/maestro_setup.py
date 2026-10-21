@@ -20,7 +20,6 @@ from pathlib import Path
 import platform
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 
@@ -283,7 +282,8 @@ class Wizard:
             updates['identity_file'] = settings['identity_file'] = str(Path(identity).expanduser())
         if self.args.node_id:
             updates['node_id'] = settings['node_id'] = self.args.node_id
-        node = settings.get('node_id') or socket.gethostname().lower().replace('_', '-').split('.')[0]
+        import maestro_remote
+        node = settings.get('node_id') or maestro_remote.default_node_id()
         if not (self.args.dry_run or self.args.check_only):
             path = remote_config.save(updates)
             self.out(f'  ✓ 저장: {path}')
@@ -298,7 +298,6 @@ class Wizard:
         if self.interactive and not self.confirm('지금 `maestro remote up`으로 터널·페어링을 연결할까요?'):
             self.out(f'  다음 단계: maestro remote up --hub {address}')
             return
-        import maestro_remote
         argv = ['up', '--node-id', node, '--hub', settings['hub']]
         for flag, key in (('--registry-url', 'registry_url'), ('--identity-file', 'identity_file')):
             if settings.get(key):

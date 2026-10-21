@@ -64,12 +64,18 @@ with guard():
     con.close()
     if {(x[0],x[2]) for x in rows} != {(x['node_id'],x['slot']) for x in served}:
         raise RuntimeError('Configured database differs from serving fleet registry; retry or correct hub_db')
-    row = next((x for x in rows if x[0] == c['node_id']), None)
+    # The persistent node credential identifies this machine: it keeps its ID on rerun.
+    # Another machine asking for a taken name (usually its hostname) gets name_2, name_3, ...
+    digest = hashlib.sha256(c['node_token'].encode()).hexdigest()
+    row = next((x for x in rows if hmac.compare_digest(x[1], digest)), None)
     if row:
-        if not hmac.compare_digest(row[1], hashlib.sha256(c['node_token'].encode()).hexdigest()):
-            raise RuntimeError('Node id already belongs to another credential')
+        node_id = row[0]
         slot = row[2]
     else:
+        taken = {x[0] for x in rows}
+        base = c['node_id']
+        node_id = next(n for n in itertools.chain([base], (base[:c.get('max_id',48)-len('_%d' % i)] + '_%d' % i
+                       for i in itertools.count(2))) if n not in taken)
         used = {x[2] for x in rows if x[2] is not None}
         slot = next(i for i in itertools.count() if i not in used)
     if slot is None or not 0 <= slot < c['max_slots']:
@@ -89,19 +95,23 @@ with guard():
         module = importlib.import_module('fleet')
         registry = module.Registry(str(db), origin=c['registry_url'])
         try:
-            registry.provision(c['node_id'], c['node_token'])
-            node = registry.get(c['node_id'])
+            registry.provision(node_id, c['node_token'])
+            node = registry.get(node_id)
             if node['slot'] != slot:
                 # Another enrollment tool may not honor our file lock.
                 raise RuntimeError('Slot changed during enrollment; retry to obtain current allocation')
         finally: registry.db.close()
-    print(json.dumps({'slot':slot, 'port':c['orca_port_base']+slot, 'widget_port':c['widget_port_base']+slot}))
+    print(json.dumps({'node_id':node_id, 'slot':slot, 'port':c['orca_port_base']+slot, 'widget_port':c['widget_port_base']+slot}))
 '''
+
+
+NODE_ID = re.compile(r'[a-z0-9][a-z0-9_-]{0,47}')
+MAX_ID = 48
 
 
 def settings(config):
     c = dict(config)
-    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', c.get('node_id', '')):
+    if not NODE_ID.fullmatch(c.get('node_id', '')):
         raise ValueError('Invalid node id')
     if not re.fullmatch(r'(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9][A-Za-z0-9.-]*', c.get('hub', '')):
         raise ValueError('Invalid SSH hub')
@@ -129,7 +139,7 @@ def settings(config):
 def ssh_request(config, action):
     c = settings(config)
     payload = {k:c[k] for k in ('node_id','node_token','registry_url','hub_project','hub_db','hub_probe_url')}
-    payload.update(action=action, orca_port_base=ORCA_PORT_BASE, widget_port_base=WIDGET_PORT_BASE, max_slots=MAX_SLOTS)
+    payload.update(action=action, orca_port_base=ORCA_PORT_BASE, widget_port_base=WIDGET_PORT_BASE, max_slots=MAX_SLOTS, max_id=MAX_ID)
     if c.get('fleet_access_token'):
         payload['fleet_access_token'] = c['fleet_access_token']
     argv = ['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10']
@@ -153,15 +163,19 @@ def ssh_request(config, action):
             raise ValueError()
         if allocation['port'] != ORCA_PORT_BASE+slot or allocation['widget_port'] != WIDGET_PORT_BASE+slot:
             raise ValueError()
+        # Older hub scripts omit node_id: the requested ID was used unchanged.
+        node_id = allocation.get('node_id', c['node_id'])
+        if not isinstance(node_id, str) or not NODE_ID.fullmatch(node_id):
+            raise ValueError()
     except (ValueError, KeyError, TypeError):
         raise RuntimeError('Invalid fleet allocation response') from None
     for key, allocated in (('requested_port', allocation['port']), ('requested_widget_port', allocation['widget_port'])):
         if c.get(key) is not None and c[key] != allocated:
             raise RuntimeError('Requested tunnel port differs from fleet allocation')
     base = c['registry_url']
-    return dict(port=allocation['port'], widget_port=allocation['widget_port'],
-                registry_url=base, orca_url='wss'+base[5:]+'/orca/'+c['node_id']+'/',
-                widget_url=base+'/orca/'+c['node_id']+'-maestro/')
+    return dict(node_id=node_id, port=allocation['port'], widget_port=allocation['widget_port'],
+                registry_url=base, orca_url='wss'+base[5:]+'/orca/'+node_id+'/',
+                widget_url=base+'/orca/'+node_id+'-maestro/')
 
 
 def preflight(config):
