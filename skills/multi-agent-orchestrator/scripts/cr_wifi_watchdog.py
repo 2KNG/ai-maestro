@@ -2,7 +2,7 @@
 """
 cr_wifi_watchdog — Monitors CR_WIFI / internet connectivity every 30s.
 If CR_WIFI is connected without internet (or internet is unreachable) for >= 5 minutes (300s):
-1. Switches Wi-Fi from CR_WIFI back to STARPORT (/home/u24c9g5090r64/.local/bin/cr-wifi off).
+1. Switches Wi-Fi from CR_WIFI back to STARPORT (~/.local/bin/cr-wifi off).
 2. Resumes the 3D Camera / Robot Antigravity agent (4500bbbc-e155-49f9-b324-88364ca9b84b)
    via LanguageServer SendUserCascadeMessage so its work continues without stalling.
 """
@@ -17,12 +17,11 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
-MAESTRO_SCRIPTS_DIR = "/home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts"
-if MAESTRO_SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, MAESTRO_SCRIPTS_DIR)
 
 STATE_FILE = "/tmp/cr_wifi_watchdog_state.json"
-LOG_FILE = "/home/u24c9g5090r64/.gemini/antigravity/cr_wifi_watchdog.log"
+LOG_FILE = os.path.expanduser("~/.gemini/antigravity/cr_wifi_watchdog.log")
+CR_WIFI_BIN = os.path.expanduser("~/.local/bin/cr-wifi")
+AI_USAGE_REMOTE_BIN = os.path.expanduser("~/.local/bin/ai-usage-remote")
 TARGET_CASCADE_ID = "4500bbbc-e155-49f9-b324-88364ca9b84b"
 OFFLINE_LIMIT_SEC = 300  # 5 minutes
 
@@ -113,7 +112,7 @@ def resume_3d_agent(reason: str = "인터넷 복구 알림") -> bool:
 
         prompt = (
             f"[자동 복구 알림: {reason}] CR_WIFI 전환 후 인터넷 단절이 5분 이상 지속되어 "
-            f"자동으로 STARPORT(외부 인터넷 172.20.1.252)로 복구 완료했습니다. "
+            f"자동으로 STARPORT(외부 인터넷)로 복구 완료했습니다. "
             f"진행 중이던 3D 카메라/로봇 작업을 이어서 계속 수행해 주세요."
         )
         log(f"Resuming 3D agent {TARGET_CASCADE_ID[:8]} ({status}, model={plan_model})...")
@@ -197,7 +196,7 @@ def check_once(dry_run: bool = False) -> None:
         if offline_dur >= OFFLINE_LIMIT_SEC:
             log(f"Internet offline for {int(offline_dur)}s (>= 300s) on wifi={wifi}. Switching to STARPORT!")
             if not dry_run:
-                subprocess.run(["/home/u24c9g5090r64/.local/bin/cr-wifi", "off"], check=False)
+                subprocess.run([CR_WIFI_BIN, "off"], check=False)
                 time.sleep(4)
                 if has_internet():
                     log("STARPORT reconnected and internet restored!")
@@ -216,7 +215,7 @@ def check_once(dry_run: bool = False) -> None:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f)
         subprocess.run(
-            ["/home/u24c9g5090r64/.local/bin/ai-usage-remote"],
+            [AI_USAGE_REMOTE_BIN],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=15,

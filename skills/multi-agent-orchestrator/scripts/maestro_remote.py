@@ -23,6 +23,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+import remote_config
+
 SCRIPT = Path(__file__).resolve()
 MARKER = '# Managed by ai-maestro remote v1'
 
@@ -51,16 +53,9 @@ def validate(node_id, port, hub):
 
 
 def discover_orca(system):
-    explicit = os.environ.get('ORCA_CLI_COMMAND')
-    if explicit:
-        return explicit
-    # Never invoke Linux GNOME screen reader /usr/bin/orca.
-    candidates = ['orca-ide'] if system == 'Linux' else ['orca', 'orca-ide']
-    for name in candidates:
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    # Never invokes the Linux GNOME screen reader /usr/bin/orca.
+    import orca_bridge
+    return orca_bridge.discover(system)
 
 
 def regular_snapshot(path):
@@ -140,8 +135,10 @@ def rebuild_tunnel(config):
     config['tunnel_command']=argv
 
 
-def build_plan(node_id, port=None, hub='ubuntu@2kng.com', system=None,
+def build_plan(node_id, port=None, hub=None, system=None,
                home=None, orca=None, orca_url=None, identity_file=None, widget_port=None, registration_token=None, **hub_options):
+    if not hub:
+        raise ValueError('No hub configured: run `maestro setup` or pass --hub <your-server-domain-or-ip>')
     requested_port, requested_widget_port = port, widget_port
     port = 16701 if port is None else port
     validate(node_id, port, hub)
@@ -214,14 +211,12 @@ def local_preflight(config):
     for port, role in ((6768,'orca'),(18765,'widget')):
         owned = existing.exists() and any(Path(s['path']).exists() for s in config['services'] if s['role']==role)
         if port_open(port) and not owned:
-            if role=='widget' and config['system']=='Linux':
-                unit='agy-widget-bridge.service'
-                probe=run(['systemctl','--user','show',unit,'--property=ActiveState,ExecStart'])
-                if probe.returncode==0 and 'ActiveState=active' in probe.stdout and str(SCRIPT.parent/'widget_bridge_daemon.py') in probe.stdout:
-                    for item in config['services']:
-                        if item['role']=='widget':
-                            item['reused_unit']=unit
-                    continue
+            unit=reusable_unit(role,config.get('orca_service')) if config['system']=='Linux' else None
+            if unit:
+                for item in config['services']:
+                    if item['role']==role:
+                        item['reused_unit']=unit
+                continue
             errors.append(f'Local port {port} already occupied; existing {role} is preserved')
     if config['system']=='Windows':
         for item in config['services']:
@@ -234,6 +229,20 @@ def local_preflight(config):
         if result.returncode:
             errors.append('No systemd user manager; log into a user session first')
     return errors
+
+
+def reusable_unit(role, orca_service=None):
+    """Active user unit that already serves the role's fixed local port, if owned by us or Orca."""
+    if role=='widget':
+        unit, marker = 'agy-widget-bridge.service', str(SCRIPT.parent/'widget_bridge_daemon.py')
+    else:
+        # Orca's own remote-control unit (linked by `maestro setup` step 2).
+        unit, marker = orca_service or 'orca-remote.service', '6768'
+    probe=run(['systemctl','--user','show',unit,'--property=ActiveState,ExecStart'])
+    if probe.returncode==0 and 'ActiveState=active' in probe.stdout and marker in probe.stdout \
+            and (role=='widget' or 'orca' in probe.stdout):
+        return unit
+    return None
 
 
 def install_services(config):
@@ -326,6 +335,11 @@ def provision(config, dry_run=False):
         result['blockers'].append('Fleet slot changed during registration; saved current allocation, rerun setup before starting services')
         return result
     install_services(config)
+    reused={s['role']:s['reused_unit'] for s in config['services'] if s.get('reused_unit')}
+    if reused:
+        result['reused_services']=reused
+        if 'orca' in reused:
+            result['pairing_note']=f"Orca runs under {reused['orca']}; its pairing address is set by that unit"
     result.update(ok=True, state='services_started', pairing='available' if wait_for_pairing(config['state_dir']) else 'pending',
                   **node_urls(config['node_id'],config.get('orca_url')),
                   note='Service start is not end-to-end desktop or browser verification')
@@ -397,10 +411,16 @@ def node_urls(node_id, orca_url=None):
                 break
         except ValueError:
             continue
-    host=urlsplit(orca_url).netloc if orca_url else '2kng.com'
+    host=urlsplit(orca_url).netloc if orca_url else None
+    if not host:
+        try:
+            origin=remote_config.resolve().get('registry_url')
+        except (OSError,ValueError):
+            origin=None
+        host=urlsplit(origin).netloc if origin else None
     return {'local_lan_url':f'http://{lan}:6768/' if lan else None,
-            'fleet_url':f'https://{host}/orca/{node_id}/',
-            'fleet_home_url':f'https://{host}/orca'}
+            'fleet_url':f'https://{host}/orca/{node_id}/' if host else None,
+            'fleet_home_url':f'https://{host}/orca' if host else None}
 
 
 def wait_for_pairing(state, timeout=8):
@@ -448,29 +468,87 @@ def remote_status(node_id, home=None):
                                  ('rtc2kng-tunnel.service','tunnel',None)]:
             legacy.append({'name':name,'role':role,'local_port':port,'active':service_active(system,name)})
     pairing=wait_for_pairing(state,timeout=0)
+    try:
+        import orca_bridge
+        snap=orca_bridge.snapshot()
+        orca={'available':snap.get('available',False),'running':snap.get('running',False),
+              'summary':orca_bridge.summary_line(snap),'worktrees':snap.get('worktrees',0),
+              'terminals':[{k:t.get(k) for k in ('handle','title','agent','worktree','branch','connected')}
+                           for t in snap.get('terminals',[])]}
+    except Exception as exc:
+        orca={'available':False,'error':type(exc).__name__}
+    try:
+        hub=remote_config.public_view(remote_config.resolve())
+    except (OSError,ValueError):
+        hub={}
     return {'ok':bool(statuses) and all(s['active'] for s in statuses),'node_id':node_id,
             'state':'installed' if config else 'not_installed','services':statuses,'legacy_services':legacy,
             'local_ports':{'orca':port_open(6768),'widget':port_open(18765)},
             'pairing_available':pairing,'pairing':'available' if pairing else 'pending',
             'orca_url':config.get('orca_url'),'widget_url':config.get('widget_url'),
+            'hub':{k:hub[k] for k in ('hub','registry_url','identity_file') if k in hub},
+            'orca':orca,
             **node_urls(node_id,config.get('orca_url')),
             'verification':'Service and TCP reachability only; URLs are candidates, not browser verification'}
 
 
+def default_node_id():
+    return socket.gethostname().lower().replace('_','-').split('.')[0]
+
+
+def resolve_settings(args, saved=None):
+    """CLI > MAESTRO_* env > ~/.config/ai-maestro/remote.json. Returns (settings, updates_to_save)."""
+    saved=remote_config.resolve() if saved is None else saved
+    settings={k:saved.get(k) for k in remote_config.FIELDS}
+    updates={}
+    if args.hub:
+        updates.update(remote_config.apply_server(args.hub,args.ssh_user,saved))
+        settings.update(updates)
+    for key in ('registry_url','identity_file','hub_project','hub_db','hub_python','hub_probe_url'):
+        value=getattr(args,key,None)
+        if value:
+            if key=='identity_file':
+                value=str(Path(value).expanduser())
+            settings[key]=updates[key]=value
+    if args.node_id:
+        settings['node_id']=args.node_id
+    settings['node_id']=settings.get('node_id') or default_node_id()
+    return settings, updates
+
+
+def fleet_nodes(settings, fleet_access_token=None, timeout=8):
+    """Nodes currently registered at the hub (only real entries; no empty slots)."""
+    import urllib.request
+    origin=settings.get('hub_probe_url') or settings.get('registry_url')
+    if not origin:
+        raise ValueError('No registry origin configured: run `maestro remote configure --hub <domain>`')
+    headers={'Authorization':'Bearer '+fleet_access_token} if fleet_access_token else {}
+    request=urllib.request.Request(origin.rstrip('/')+'/api/orca/nodes',headers=headers)
+    try:
+        with urllib.request.urlopen(request,timeout=timeout) as response:
+            nodes=json.loads(response.read(1<<20)).get('nodes',[])
+    except (OSError,ValueError) as exc:
+        raise RuntimeError(f'Fleet registry unreachable: {type(exc).__name__}') from None
+    keep=('node_id','slot','orca_port','maestro_port','online','last_seen','status','hostname')
+    rows=[{k:n[k] for k in keep if k in n} for n in nodes if isinstance(n,dict) and n.get('node_id')]
+    return sorted(rows,key=lambda n:(n.get('slot') is None,n.get('slot') or 0,n['node_id']))
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['status','up','install-node','_run'],nargs='?',default='status')
-    parser.add_argument('--node-id',default=socket.gethostname().lower().replace('_','-').split('.')[0])
+    parser.add_argument('action',choices=['status','up','install-node','configure','nodes','_run'],nargs='?',default='status')
+    parser.add_argument('--node-id')
     parser.add_argument('--port',type=int)
-    parser.add_argument('--hub',default='ubuntu@2kng.com')
+    parser.add_argument('--hub',help='Hub server: domain, IP, user@host or https:// URL (saved to ~/.config/ai-maestro/remote.json)')
+    parser.add_argument('--ssh-user',help='SSH user when --hub has none (default ubuntu)')
     parser.add_argument('--dry-run',action='store_true')
     parser.add_argument('--identity-file')
     parser.add_argument('--widget-port',type=int)
-    parser.add_argument('--registration-token',default=os.environ.get('RTC2KNG_REGISTRATION_TOKEN'))
+    parser.add_argument('--registration-token',default=os.environ.get('MAESTRO_REGISTRATION_TOKEN') or os.environ.get('RTC2KNG_REGISTRATION_TOKEN'))
     parser.add_argument('--show-pairing',action='store_true')
     for option in ('registry-url','hub-project','hub-db','hub-python','hub-probe-url'):
         parser.add_argument('--'+option)
-    parser.add_argument('--fleet-access-token',default=os.environ.get('RTC2KNG_FLEET_ACCESS_TOKEN'))
+    parser.add_argument('--fleet-access-token',default=os.environ.get('MAESTRO_FLEET_ACCESS_TOKEN') or os.environ.get('RTC2KNG_FLEET_ACCESS_TOKEN'))
     parser.add_argument('--config')
     parser.add_argument('--role',choices=['orca','widget','tunnel','heartbeat'])
     parser.add_argument('--json',action='store_true')
@@ -480,19 +558,41 @@ def main(argv=None):
             if not args.config or not args.role:
                 parser.error('_run requires --config and --role')
             return run_role(read_private_json(args.config),args.role)
-        result=remote_status(args.node_id) if args.action=='status' else provision(
-            build_plan(args.node_id,args.port,args.hub,identity_file=args.identity_file,widget_port=args.widget_port,registration_token=args.registration_token,
-                       registry_url=args.registry_url,hub_project=args.hub_project,hub_db=args.hub_db,
-                       hub_python=args.hub_python,hub_probe_url=args.hub_probe_url,
+        settings,updates=resolve_settings(args)
+        if args.action=='status':
+            result=remote_status(settings['node_id'])
+        elif args.action=='configure':
+            if not args.hub and not updates:
+                parser.error('configure requires --hub <your-server-domain-or-ip>')
+            if args.node_id:
+                updates['node_id']=args.node_id
+            path=remote_config.config_path() if args.dry_run else remote_config.save(updates)
+            result={'ok':True,'dry_run':args.dry_run,'config_file':str(path),
+                    'settings':remote_config.public_view({k:v for k,v in settings.items() if v}),
+                    **node_urls(settings['node_id'],None if settings.get('registry_url') is None else
+                                'wss'+settings['registry_url'][5:]+'/orca/'+settings['node_id']+'/')}
+            if not settings.get('registry_url'):
+                result['next']='IP hubs need an HTTPS domain for wss pairing: add --registry-url https://<your-domain>'
+        elif args.action=='nodes':
+            nodes=fleet_nodes(settings,args.fleet_access_token)
+            result={'ok':True,'registry_url':settings.get('registry_url'),'count':len(nodes),'nodes':nodes}
+        else:
+            if updates and not args.dry_run:
+                remote_config.save(updates)
+            result=provision(build_plan(settings['node_id'],args.port,settings.get('hub'),
+                       identity_file=settings.get('identity_file'),widget_port=args.widget_port,registration_token=args.registration_token,
+                       registry_url=settings.get('registry_url'),hub_project=settings.get('hub_project'),hub_db=settings.get('hub_db'),
+                       hub_python=settings.get('hub_python'),hub_probe_url=settings.get('hub_probe_url'),
+                       orca_service=settings.get('orca_service'),
                        fleet_access_token=args.fleet_access_token),dry_run=args.dry_run)
-        if args.show_pairing and not args.dry_run:
-            state=Path.home()/'.local/state/ai-maestro/remote'/args.node_id/'pairing.json'
+        if args.show_pairing and not args.dry_run and args.action in ('status','up','install-node'):
+            state=Path.home()/'.local/state/ai-maestro/remote'/settings['node_id']/'pairing.json'
             if state.exists():
                 result['pairing']=read_private_json(state)
-        print(json.dumps(result,indent=2))
+        print(json.dumps(result,indent=2,ensure_ascii=False))
         return 0 if result.get('ok') or args.dry_run else 1
     except (ValueError,OSError,RuntimeError,subprocess.SubprocessError) as exc:
-        print(json.dumps({'ok':False,'error':str(exc)}))
+        print(json.dumps({'ok':False,'error':str(exc)},ensure_ascii=False))
         return 1
 
 

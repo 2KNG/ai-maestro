@@ -2092,7 +2092,25 @@ def collect_usage(include_agent_trees=True) -> dict:
             "codex": get_codex_agent_tree(),
             "claude": get_claude_agent_tree(),
         }
+        report["orca"] = get_orca_summary()
     return report
+
+
+def get_orca_summary() -> dict:
+    """Live Orca terminals/worktrees (cached ~20s); never raises."""
+    try:
+        import orca_bridge
+        snap = orca_bridge.snapshot()
+    except Exception as exc:
+        return {"available": False, "error": type(exc).__name__}
+    return {
+        "available": snap.get("available", False),
+        "running": snap.get("running", False),
+        "summary": orca_bridge.summary_line(snap),
+        "worktrees": snap.get("worktrees", 0),
+        "terminals": [{k: t.get(k) for k in ("handle", "title", "agent", "worktree", "branch", "connected")}
+                      for t in snap.get("terminals", [])],
+    }
 
 
 def main():

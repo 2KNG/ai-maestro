@@ -4,7 +4,7 @@ Audit date: 2026-10-21. This is a static inspection of installed code, not a rep
 
 ## Installed build and evidence notation
 
-Orca installed under `/home/u24c9g5090r64/.local/opt/orca/resources/app.asar.unpacked` reports version **1.4.232**, commit `49109f362f057cd2dc3d81cd378cb84d140c3dc5` in `out/package.json:5–6`.
+Orca installed under `~/.local/opt/orca/resources/app.asar.unpacked` reports version **1.4.232**, commit `49109f362f057cd2dc3d81cd378cb84d140c3dc5` in `out/package.json:5–6`.
 
 References below are relative to `out/main/chunks/`. These are minified installed bundles: line numbers are original physical lines, and function symbols disambiguate multiple operations on one line. Names and offsets are build-specific.
 

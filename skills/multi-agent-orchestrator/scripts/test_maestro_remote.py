@@ -91,7 +91,7 @@ def test_capture_only_real_pairing_and_keep_private(tmp_path):
 
 
 def test_identity_file_is_argv_not_shell(tmp_path):
-    config=remote.build_plan('test',identity_file=str(tmp_path/'key with spaces'))
+    config=remote.build_plan('test',hub='ubuntu@hub.example.com',identity_file=str(tmp_path/'key with spaces'))
     assert config['tunnel_command'][1:3]==['-i',str(tmp_path/'key with spaces')]
 
 
@@ -135,7 +135,7 @@ def test_status_reports_legacy_services_when_uninstalled(tmp_path,monkeypatch):
     monkeypatch.setattr(remote.platform,'system',lambda:'Linux')
     monkeypatch.setattr(remote,'service_active',lambda system,name:name=='orca-remote.service')
     monkeypatch.setattr(remote,'port_open',lambda port:port==6768)
-    monkeypatch.setattr(remote,'node_urls',lambda *args:{'local_lan_url':'http://192.168.1.2:6768/','fleet_url':'https://2kng.com/orca/pc2/'})
+    monkeypatch.setattr(remote,'node_urls',lambda *args:{'local_lan_url':'http://192.168.1.2:6768/','fleet_url':'https://hub.example.com/orca/pc2/'})
     result=remote.remote_status('pc2',home=tmp_path)
     assert result['state']=='not_installed'
     assert len(result['legacy_services'])==3
@@ -154,7 +154,7 @@ def test_pairing_wait_is_bounded_and_validates_payload(tmp_path):
 
 
 def test_default_ports_are_allocated_not_requested(tmp_path):
-    config=remote.build_plan('pc2',home=tmp_path)
+    config=remote.build_plan('pc2',hub='ubuntu@hub.example.com',home=tmp_path)
     assert config['requested_port'] is None
     assert config['requested_widget_port'] is None
     assert config['port']==16701
@@ -211,11 +211,11 @@ def test_successful_provision_and_rerun_preserve_private_credentials(tmp_path,mo
     import codex_config_safe
     token='node-token-'+'x'*32
     access='fleet-access-'+'y'*32
-    config=remote.build_plan('pc2',home=tmp_path,orca='/opt/orca-ide',
+    config=remote.build_plan('pc2',hub='ubuntu@hub.example.com',home=tmp_path,orca='/opt/orca-ide',
         identity_file=str(tmp_path/'identity key'),registration_token=token,
-        fleet_access_token=access,registry_url='https://2kng.com',hub_project='/srv/fleet',
+        fleet_access_token=access,registry_url='https://hub.example.com',hub_project='/srv/fleet',
         hub_db='/srv/fleet/fleet.db',hub_python='/srv/fleet/.venv/bin/python',hub_probe_url='http://127.0.0.1:8000')
-    route={'port':16702,'widget_port':18702,'orca_url':'wss://2kng.com/orca/pc2/','widget_url':'https://2kng.com/orca/pc2/widget/'}
+    route={'port':16702,'widget_port':18702,'orca_url':'wss://hub.example.com/orca/pc2/','widget_url':'https://hub.example.com/orca/pc2/widget/'}
     adapter=Mock()
     adapter.preflight.return_value=route
     adapter.register.return_value=route
@@ -224,7 +224,7 @@ def test_successful_provision_and_rerun_preserve_private_credentials(tmp_path,mo
     monkeypatch.setattr(codex_config_safe,'ensure_codex_config_safe',lambda:None)
     monkeypatch.setattr(remote,'install_services',lambda _:None)
     monkeypatch.setattr(remote,'wait_for_pairing',lambda _:True)
-    monkeypatch.setattr(remote,'node_urls',lambda *args:{'fleet_url':'https://2kng.com/orca/pc2/'})
+    monkeypatch.setattr(remote,'node_urls',lambda *args:{'fleet_url':'https://hub.example.com/orca/pc2/'})
     first=remote.provision(config)
     assert first['ok'] and first['pairing']=='available'
     saved=Path(config['state_dir'])/'config.json'
@@ -236,7 +236,7 @@ def test_successful_provision_and_rerun_preserve_private_credentials(tmp_path,mo
     assert token not in json.dumps(first) and access not in json.dumps(first)
     if os.name!='nt':
         assert saved.stat().st_mode & 0o777==0o600
-    again=remote.build_plan('pc2',home=tmp_path,orca='/opt/orca-ide')
+    again=remote.build_plan('pc2',hub='ubuntu@hub.example.com',home=tmp_path,orca='/opt/orca-ide')
     second=remote.provision(again)
     assert second['ok']
     for key in ('node_token','identity_file','registry_url','hub_project','hub_db','hub_python','hub_probe_url','fleet_access_token'):

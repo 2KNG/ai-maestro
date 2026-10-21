@@ -9,6 +9,13 @@
 #      curl -fsSL https://raw.githubusercontent.com/2KNG/ai-maestro/main/install.sh | bash
 #   2) Local clone:
 #      git clone https://github.com/2KNG/ai-maestro.git ~/dev/ai-maestro && ~/dev/ai-maestro/install.sh
+#
+# After installing, runs the 3-step onboarding (`maestro setup`):
+#   [1/3] Antigravity / Codex / Claude CLIs  [2/3] Orca  [3/3] remote hub address
+# Arguments are passed to `maestro setup`, e.g.:
+#   ./install.sh --yes --hub <your-server-domain-or-ip>
+#   curl -fsSL .../install.sh | bash -s -- --check-only
+# Set MAESTRO_SETUP=0 to skip onboarding.
 # ==============================================================================
 set -euo pipefail
 
@@ -120,12 +127,12 @@ for sub_skill in codex claude; do
 done
 echo "   ✓ Linked Antigravity skills & codex-claude-bridge plugin to $INSTALL_DIR"
 
-# 4. Install global agent rules (rewriting /home/u24c9g5090r64 -> current $HOME)
+# 4. Install global agent rules (rewriting the __HOME__ token -> current $HOME)
 mkdir -p "$HOME/.gemini" "$HOME/.codex" "$HOME/.claude" "$HOME/dev"
-sed "s|/home/u24c9g5090r64|$HOME|g" "$INSTALL_DIR/rules/GEMINI.md" > "$HOME/.gemini/GEMINI.md"
-sed "s|/home/u24c9g5090r64|$HOME|g" "$INSTALL_DIR/rules/AGENTS.workspace.md" > "$HOME/dev/AGENTS.md"
-sed "s|/home/u24c9g5090r64|$HOME|g" "$INSTALL_DIR/rules/AGENTS.codex.md" > "$HOME/.codex/AGENTS.md"
-sed "s|/home/u24c9g5090r64|$HOME|g" "$INSTALL_DIR/rules/CLAUDE.md" > "$HOME/.claude/CLAUDE.md"
+sed "s|__HOME__|$HOME|g" "$INSTALL_DIR/rules/GEMINI.md" > "$HOME/.gemini/GEMINI.md"
+sed "s|__HOME__|$HOME|g" "$INSTALL_DIR/rules/AGENTS.workspace.md" > "$HOME/dev/AGENTS.md"
+sed "s|__HOME__|$HOME|g" "$INSTALL_DIR/rules/AGENTS.codex.md" > "$HOME/.codex/AGENTS.md"
+sed "s|__HOME__|$HOME|g" "$INSTALL_DIR/rules/CLAUDE.md" > "$HOME/.claude/CLAUDE.md"
 echo "   ✓ Installed global rules (~/.gemini/GEMINI.md, ~/dev/AGENTS.md, ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md)"
 
 # 5. Configure & start systemd user service for the live widget bridge daemon (port 18765)
@@ -160,8 +167,23 @@ else
   echo "   ✓ Started background daemon: widget_bridge_daemon.py (http://127.0.0.1:18765)"
 fi
 
+# 6. 3-step onboarding: core CLIs -> Orca -> remote hub address (maestro setup)
+if [[ "${MAESTRO_SETUP:-1}" != "0" ]]; then
+  if [[ -t 0 ]]; then
+    python3 "$SCRIPTS_DIR/maestro.py" setup "$@" || echo "   ⚠ maestro setup did not finish; rerun: maestro setup"
+  elif (exec </dev/tty) 2>/dev/null; then
+    # curl | bash: stdin is the script itself, so prompt on the terminal.
+    python3 "$SCRIPTS_DIR/maestro.py" setup "$@" </dev/tty || echo "   ⚠ maestro setup did not finish; rerun: maestro setup"
+  else
+    python3 "$SCRIPTS_DIR/maestro.py" setup --check-only "$@" || true
+    echo "   ℹ No terminal for prompts. Run 'maestro setup' (or pass --yes --hub <address>) to finish onboarding."
+  fi
+fi
+
 echo ""
 echo "✅ [ai-maestro] Installation Complete!"
 echo "   • Live Dashboard : http://127.0.0.1:18765"
 echo "   • CLI Usage Check: ~/.local/bin/ai-usage"
 echo "   • Auto Worker CLI: ~/.local/bin/maestro worker-start --pool auto --difficulty high --cwd \"\$PWD\" --wait --spec \"...\""
+echo "   • Onboarding     : maestro setup  (CLIs · Orca · remote hub)"
+echo "   • Orca terminals : maestro orca-list · maestro remote status"

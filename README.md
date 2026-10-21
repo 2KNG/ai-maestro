@@ -9,13 +9,19 @@
 ## 설치
 
 ### 방법 A. AI 에이전트(Antigravity / Claude Code / Codex)에게 지시
-채팅창에 아래 명령을 전달하면 클론, 심볼릭 링크, 데몬 등록, 글로벌 룰 설정을 자동으로 진행합니다.
+채팅창에 아래 명령을 전달하면 클론, 심볼릭 링크, 데몬 등록, 글로벌 룰 설정 후 3단계 온보딩(CLI → Orca → 서버 주소 매칭)까지 대신 진행합니다.
 
-> "https://github.com/2KNG/ai-maestro 설치해줘"
+> "https://github.com/2KNG/ai-maestro 설치해줘. 설치할 때 서버 주소나 IP 물어보고 매칭해줘"
 
 ### 방법 B. 터미널 스크립트 실행
 ```bash
 curl -fsSL https://raw.githubusercontent.com/2KNG/ai-maestro/main/install.sh | bash
+```
+
+Windows(PowerShell):
+```powershell
+git clone https://github.com/2KNG/ai-maestro.git $HOME\dev\ai-maestro
+powershell -ExecutionPolicy Bypass -File $HOME\dev\ai-maestro\install.ps1
 ```
 
 ### 방법 C. Git 클론 후 심볼릭 링크 연동
@@ -25,7 +31,44 @@ chmod +x ~/dev/ai-maestro/install.sh
 ~/dev/ai-maestro/install.sh
 ```
 
-`install.sh`는 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{maestro,ai-usage,ai-usage-widget,ai-usage-web}`를 `~/dev/ai-maestro` 저장소 내부로 심볼릭 링크 연결합니다. 기능 수정 후 `~/dev/ai-maestro`에서 커밋 및 푸시하여 지속 관리할 수 있습니다.
+`install.sh`는 `~/.gemini/config/skills/multi-agent-orchestrator`, `~/.gemini/config/plugins/codex-claude-bridge`, `~/.local/bin/{maestro,ai-usage,ai-usage-widget,ai-usage-web}`를 `~/dev/ai-maestro` 저장소 내부로 심볼릭 링크 연결한 뒤 `maestro setup`을 실행합니다. 기능 수정 후 `~/dev/ai-maestro`에서 커밋 및 푸시하여 지속 관리할 수 있습니다.
+
+### 3단계 온보딩 (`maestro setup`)
+
+`install.sh`, `install.ps1`의 마지막 단계이며 언제든 `maestro setup`으로 다시 실행할 수 있습니다.
+
+| 단계 | 질문 | 동작 |
+| :--- | :--- | :--- |
+| 1. 기본 CLI | "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?" | `[x] Antigravity` `[x] OpenAI Codex CLI` `[x] Claude Code CLI`(기본 전체 선택). 설치된 `agy`·`codex`·`claude`를 확인하고 없는 것만 설치합니다. 기존 `~/.codex/config.toml`, `~/.claude/settings.json`은 설치 전 스냅샷을 떠 두고 변경되면 바이트 그대로 복원합니다. |
+| 2. Orca | "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?" | `orca`/`orca-ide`를 찾고(없으면 [Orca 릴리스](https://github.com/stablyai/orca/releases/latest) 안내), Linux에서는 화면 읽기 프로그램 `/usr/bin/orca`와 겹치지 않는 `~/.local/bin/orca` shim을 만들고, 기존 `orca-remote.service`를 연결합니다. macOS LaunchAgent와 Windows 예약 작업은 3단계 `maestro remote up`이 등록합니다. |
+| 3. 서버 주소 | "원격 관제 허브로 사용할 서버 주소(도메인)나 IP를 입력해 주세요 (AI에게 '내 서버 주소는 xxx야, 매칭해줘'라고 말해도 자동 세팅됩니다):" | 입력값을 `~/.config/ai-maestro/remote.json`에 저장하고 `maestro remote up --hub <주소>`로 SSH 터널과 페어링 엔드포인트(`wss://<도메인>/orca/<node_id>/`)를 맞춥니다. |
+
+비대화형 실행 예:
+
+```bash
+maestro setup --yes --hub hub.example.com --identity-file ~/.ssh/hub_key   # 전체 자동
+maestro setup --check-only                                                  # 확인만, 변경 없음
+maestro setup --cli codex,claude --skip-orca --no-remote-up                 # 일부만
+./install.sh --yes --hub <your-server-domain-or-ip>                         # 설치 + 온보딩 인자 전달
+```
+
+<AI_SETUP_ONBOARDING>
+
+### AI 에이전트용 설치 안내
+
+사용자가 설치 중 "설치할 때 서버 주소나 IP 물어보고 매칭해줘"라고 하면 에이전트는 아래 순서를 그대로 따릅니다. 각 단계는 사용자에게 한 번 묻고 답에 따라 실행합니다.
+
+1. 기본 CLI: "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?"라고 묻습니다. `[x] Antigravity` `[x] OpenAI Codex CLI` `[x] Claude Code CLI`가 기본 선택입니다. 동의하면 `maestro setup --yes --skip-orca --skip-remote` 또는 `--cli <선택>`을 실행합니다. 기존 `~/.codex/config.toml`과 `~/.claude/settings.json`은 직접 수정하지 않습니다.
+2. Orca: "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?"라고 묻고 `maestro setup --yes --skip-cli --skip-remote`를 실행합니다. Orca가 없으면 릴리스 페이지를 안내하고 설치 후 같은 명령을 다시 실행합니다. `maestro orca-status`로 연동을 확인합니다.
+3. 서버 주소: "서버로 사용할 주소(도메인)나 IP를 말해주세요"라고 묻습니다. 사용자가 "내 서버 주소는 xxx야, 매칭해줘"라고 답하면 다음을 실행합니다.
+   ```bash
+   maestro remote up --hub <address>
+   ```
+   IP만 받은 경우 wss 페어링용 HTTPS 도메인을 한 번 더 묻고 `--registry-url https://<domain>`을 붙입니다. SSH 키가 따로 있으면 `--identity-file <path>`를 붙입니다. 결과 JSON의 `blockers`가 있으면 그대로 사용자에게 전달하고, 성공하면 `fleet_url`과 `maestro remote status`를 보고합니다.
+
+주소, IP, SSH 키 경로는 `~/.config/ai-maestro/remote.json`에만 저장합니다. 저장소 파일이나 커밋에 넣지 않습니다.
+
+</AI_SETUP_ONBOARDING>
 
 ## Codex 설정 보호와 복구
 
@@ -40,32 +83,67 @@ maestro doctor --fix-codex-config
 
 `doctor` 기본 동작은 읽기 전용입니다. 문법상 정상인 축소 설정은 사용자의 편집일 수 있으므로 자동으로 되돌리지 않습니다. 외부 프로그램의 지속적인 쓰기를 차단하는 기능은 아닙니다. [설정 쓰기 감사](docs/codex-config-audit.md)에 설치된 Orca의 시스템·관리 홈 동기화, 훅 설정, WSL 직접 쓰기 경로와 확인 범위를 기록했습니다. Codex의 사용자 설정 위치와 설정 계층은 [공식 설정 문서](https://learn.chatgpt.com/docs/config-file/config-basic)를 기준으로 합니다.
 
-## Orca와 2kng.com fleet 연결
+## Orca 기반 운영과 원격 허브(fleet) 연결
+
+### Orca 워크트리·터미널 연동
+
+`maestro`는 Orca 터미널 안팎에서 그대로 동작하며 Orca CLI(`orca terminal ...`, `orca worktree ...`)를 감쌉니다.
 
 ```bash
-maestro remote status --node-id pc2
-maestro remote up --node-id pc2 --dry-run
-maestro remote up --node-id pc2 --hub ubuntu@2kng.com --identity-file ~/.ssh/fleet-key
-maestro remote install-node --node-id pc3 --hub ubuntu@2kng.com --identity-file ~/.ssh/fleet-key
+maestro orca-status                                # Orca 런타임 요약 + 현재 터미널(ORCA_TERMINAL_HANDLE)
+maestro orca-list [--worktree path:<dir>]          # 살아 있는 Orca 터미널 (handle · 제목 · 에이전트 · 워크트리)
+maestro orca-worktrees [--repo name:<repo>]        # Orca 관리 워크트리
+maestro orca-send --terminal <handle> --text "pytest -q" --enter
+maestro orca-read --terminal <handle> [--screen] [--cursor N]
 ```
 
-`remote-setup`, `orca-remote`, `fleet-setup`, `fleet`도 사용할 수 있습니다. `remote-setup`과 `fleet-setup`에서 동작을 생략하면 `up`을 실행합니다. `install-node`는 현재 체크아웃에서 서비스를 등록하는 크로스 플랫폼 진입점입니다. Python, Orca IDE, OpenSSH와 사용자 서비스 관리자가 먼저 설치되어 있어야 합니다. Linux에서는 GNOME 화면 읽기 프로그램과 혼동하지 않도록 `orca-ide`를 사용합니다. 별도 실행 파일은 `ORCA_CLI_COMMAND`에 전체 경로를 지정합니다.
+`ai-usage` JSON의 `orca` 항목, 위젯 상단 호스트 표시, 브리지 `/api/orca`, `maestro remote status`의 `orca` 항목에 Orca 터미널·워크트리 수가 함께 표시됩니다. Linux에서는 GNOME 화면 읽기 프로그램과 혼동하지 않도록 `orca-ide`(또는 사용자 shim)를 사용합니다. 별도 실행 파일은 `ORCA_CLI_COMMAND`에 전체 경로를 지정합니다.
 
-Windows에서는 Python launcher가 설치된 상태에서 다음 명령을 실행합니다. `bin`을 PATH에 추가하면 다른 폴더에서도 `maestro`로 호출할 수 있습니다.
+### 원격 허브 설정 위치
+
+허브 주소, 레지스트리 도메인, SSH 키 경로는 저장소에 없으며 다음 순서로 결정됩니다.
+
+1. 명령행 인자 (`--hub`, `--registry-url`, `--identity-file`, `--node-id`)
+2. 환경 변수 `MAESTRO_REMOTE_HUB`, `MAESTRO_SSH_KEY`, `MAESTRO_REGISTRY_URL`, `MAESTRO_NODE_ID`
+3. `~/.config/ai-maestro/remote.json` (권한 0600, `MAESTRO_REMOTE_CONFIG`로 경로 변경 가능)
+
+```json
+{
+  "hub": "ubuntu@hub.example.com",
+  "registry_url": "https://hub.example.com",
+  "identity_file": "~/.ssh/hub_key",
+  "node_id": "office-pc"
+}
+```
+
+`--hub`에는 도메인(`hub.example.com`), IP(`203.0.113.7`), `user@host`, `https://hub.example.com`을 넣을 수 있습니다. 도메인은 SSH 대상과 레지스트리 주소를 함께 맞추고, IP는 공인 TLS 인증서가 없으므로 `--registry-url https://<도메인>`이 따로 필요합니다. SSH 사용자를 생략하면 `ubuntu`(`--ssh-user`로 변경)를 사용합니다.
+
+```bash
+maestro remote configure --hub <your-server-domain-or-ip>          # 저장만 (서비스 변경 없음)
+maestro remote status                                              # 서비스·페어링·Orca 터미널 상태
+maestro remote up --dry-run                                        # 저장된 허브로 사전 점검
+maestro remote up --hub hub.example.com --identity-file ~/.ssh/hub_key
+maestro remote install-node --node-id office-pc
+maestro remote nodes                                               # 허브 레지스트리에 등록된 노드만 표시
+```
+
+`remote-setup`, `orca-remote`, `fleet-setup`, `fleet`도 사용할 수 있습니다. `remote-setup`과 `fleet-setup`에서 동작을 생략하면 `up`을 실행합니다. `install-node`는 현재 체크아웃에서 서비스를 등록하는 크로스 플랫폼 진입점입니다. Python, Orca IDE, OpenSSH와 사용자 서비스 관리자가 먼저 설치되어 있어야 합니다.
+
+Windows에서는 `install.ps1` 실행 후 다음처럼 호출합니다.
 
 ```powershell
-git clone https://github.com/2KNG/ai-maestro.git
-cd ai-maestro
-.\bin\maestro.cmd remote install-node --node-id pc2 --hub ubuntu@2kng.com --identity-file "$HOME\.ssh\fleet-key"
+maestro remote install-node --node-id office-pc --hub hub.example.com --identity-file "$HOME\.ssh\hub_key"
 ```
 
-Linux는 systemd 사용자 서비스, macOS는 LaunchAgent, Windows는 로그인한 사용자의 Scheduled Task로 Orca, 위젯, SSH 터널과 heartbeat를 유지합니다. Orca는 로컬 6768, 위젯은 18765를 사용합니다. 허브 포트는 실제 `rtc2kng` Registry가 배정하는 Orca `16701–16710`, 위젯 `18701–18710`을 따릅니다. `--port`와 `--widget-port`는 배정된 값과 일치할 때만 허용합니다. 터널은 허브의 loopback에만 바인딩합니다.
+### 노드 1~N 동적 확장
 
-허브에는 fleet 기능이 배포된 `rtc2kng`, 실행 중인 `/api/orca/nodes` 및 `/api/orca/register`, 해당 Registry에 접근 가능한 SSH 계정이 필요합니다. SSH host key를 먼저 신뢰할 수 있는 경로로 등록해야 하며 자동으로 검증을 끄지 않습니다. 신규 노드 자격은 허브의 실제 `Registry.provision`으로 등록하고 로컬 비공개 파일에 저장합니다. 기존 노드는 같은 자격으로 다시 실행할 수 있습니다. 다른 자격이 소유한 노드 ID나 기존 서비스는 덮어쓰지 않습니다. SSH 키와 노드 토큰을 명령 예시나 저장소에 포함하지 마세요.
+노드 수에 고정 상한이나 미리 만들어 둔 빈 슬롯(`pc2..pc10`)이 없습니다. 새 노드는 허브 레지스트리에서 비어 있는 가장 낮은 슬롯을 받고 허브 포트는 Orca `16701+slot`, 위젯 `18701+slot`으로 계산됩니다(포트 대역이 겹치지 않는 범위에서 최대 2000대). `maestro remote nodes`는 실제 등록된 노드만 보여 줍니다. `--port`와 `--widget-port`는 배정된 값과 일치할 때만 허용합니다. 터널은 허브의 loopback에만 바인딩합니다.
 
-기본 허브 체크아웃은 `/home/ubuntu/dev/rtc2kng`, DB는 해당 폴더의 `var/fleet.sqlite3`입니다. 별도 배포 폴더는 `--hub-project`, DB는 `--hub-db`, Python은 `--hub-python`, API 주소는 `--registry-url`과 `--hub-probe-url`로 지정합니다. 접근 제한이 있는 허브는 `RTC2KNG_FLEET_ACCESS_TOKEN`, 이미 발급된 노드 자격은 `RTC2KNG_REGISTRATION_TOKEN` 환경 변수로 전달할 수 있습니다. 다시 실행할 때 저장된 연결 설정과 자격을 재사용합니다.
+Linux는 systemd 사용자 서비스, macOS는 LaunchAgent, Windows는 로그인한 사용자의 Scheduled Task로 Orca, 위젯, SSH 터널과 heartbeat를 유지합니다. Orca는 로컬 6768, 위젯은 18765를 사용합니다. 이미 실행 중인 `agy-widget-bridge.service`와 `orca-remote.service`는 재사용합니다.
 
-접속 주소는 `https://2kng.com/orca/<node_id>/`와 로컬 LAN 주소입니다. 실제 Orca pairing이 준비되면 heartbeat가 허브에 전달해 자동 연결에 사용합니다. fleet의 접근 제어는 허브 배포 설정을 따릅니다. `--show-pairing`은 로컬에 저장된 실제 pairing을 표시하므로 출력 공유에 주의하세요. `--dry-run`과 `status`는 서비스를 변경하지 않습니다. 기존에 실행 중인 다른 Orca가 포트를 사용하면 그대로 두고 충돌을 보고합니다. 서비스 시작 성공과 실제 브라우저·데스크톱 제어 검증은 별도로 표시합니다.
+허브에는 fleet 기능이 배포된 허브 서버(기본 체크아웃 `/home/ubuntu/dev/rtc2kng`, DB `var/fleet.sqlite3`), 실행 중인 `/api/orca/nodes` 및 `/api/orca/register`, 해당 Registry에 접근 가능한 SSH 계정이 필요합니다. 별도 배포 폴더는 `--hub-project`, DB는 `--hub-db`, Python은 `--hub-python`, 내부 API 주소는 `--hub-probe-url`로 지정하거나 `remote.json`에 같은 이름으로 저장합니다. SSH host key를 먼저 신뢰할 수 있는 경로로 등록해야 하며 자동으로 검증을 끄지 않습니다. 신규 노드 자격은 허브의 실제 `Registry.provision`으로 등록하고 로컬 비공개 파일에 저장합니다. 다른 자격이 소유한 노드 ID나 기존 서비스는 덮어쓰지 않습니다. 접근 제한이 있는 허브는 `MAESTRO_FLEET_ACCESS_TOKEN`, 이미 발급된 노드 자격은 `MAESTRO_REGISTRATION_TOKEN` 환경 변수로 전달할 수 있습니다. SSH 키와 노드 토큰을 명령 예시나 저장소에 포함하지 마세요.
+
+접속 주소는 `https://<허브 도메인>/orca/<node_id>/`와 로컬 LAN 주소입니다. 실제 Orca pairing이 준비되면 heartbeat가 허브에 전달해 자동 연결에 사용합니다. `--show-pairing`은 로컬에 저장된 실제 pairing을 표시하므로 출력 공유에 주의하세요. `--dry-run`, `configure`, `status`, `nodes`는 서비스를 변경하지 않습니다. 서비스 시작 성공과 실제 브라우저·데스크톱 제어 검증은 별도로 표시합니다.
 
 ## 핵심 기능
 
@@ -167,13 +245,19 @@ ai-usage-widget /tmp/usage_widget.html
 
 # 6. 실시간 대시보드(http://127.0.0.1:18765) 열기
 ai-usage-web
+
+# 7. 온보딩 · Orca · 원격 허브
+maestro setup
+maestro orca-list
+maestro remote status
 ```
 
 ## 디렉토리 구조
 
 ```text
 ai-maestro/
-├── install.sh                                 # 설치 및 심볼릭 링크/systemd 구성 스크립트
+├── install.sh                                 # 설치 및 심볼릭 링크/systemd 구성 + maestro setup
+├── install.ps1                                # Windows 설치 + maestro setup
 ├── LICENSE                                    # MIT 라이선스
 ├── README.md                                  # 프로젝트 문서
 ├── bin/                                       # ~/.local/bin 실행 래퍼
@@ -194,6 +278,11 @@ ai-maestro/
 │       ├── SKILL.md                           # 스킬 정의서
 │       └── scripts/
 │           ├── maestro.py                     # 워커 스폰·0% 자동 조향·Worktree·품질 게이트 CLI
+│           ├── maestro_setup.py               # 3단계 온보딩 (CLI → Orca → 서버 주소)
+│           ├── maestro_remote.py              # 원격 노드 서비스·터널·페어링
+│           ├── maestro_remote_hub.py          # 허브 Registry 어댑터 (1~N 동적 슬롯)
+│           ├── remote_config.py               # ~/.config/ai-maestro/remote.json 로더
+│           ├── orca_bridge.py                 # Orca 터미널·워크트리 래퍼
 │           ├── maestro_memory.py              # SQLite/FTS5 세션 핸드오버 메모리
 │           ├── benchmark_sync.py              # 12 profiles × 4 domains 벤치마크 매트릭스
 │           ├── check_all_usage.py             # 3대 풀 쿼터·트리·라우팅 수집 엔진
@@ -213,4 +302,4 @@ ai-maestro/
 ## 라이선스 및 보안
 
 - 라이선스: MIT License 하에 배포됩니다.
-- 보안 원칙: 저장소에 API 키, 토큰, 개인 세션 로그를 포함하지 않습니다. 모든 작업은 로컬 머신에 설정된 공식 CLI 세션을 통해 로컬에서 실행됩니다.
+- 보안 원칙: 저장소에 API 키, 토큰, 개인 세션 로그, 서버 주소·IP·SSH 키 경로를 포함하지 않습니다. 개인 설정은 `~/.config/ai-maestro/remote.json`에만 둡니다. 모든 작업은 로컬 머신에 설정된 공식 CLI 세션을 통해 로컬에서 실행됩니다.

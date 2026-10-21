@@ -7,8 +7,8 @@ Supports:
    - Returns fresh ACCOUNTS JSON (live quotas for Antigravity, Codex, Claude) + persisted state
    - Updates usage_widget.html on disk
 2. POST /api/import
-   - Imports an external/archived Codex or Antigravity session into the current workspace (/home/u24c9g5090r64/dev):
-     (a) Creates/bridges a real Antigravity Cascade trajectory in file:///home/u24c9g5090r64/dev via Language Server StartCascade + SendUserCascadeMessage so it immediately appears in the LEFT sidebar of Antigravity IDE!
+   - Imports an external/archived Codex or Antigravity session into the current workspace (~/dev):
+     (a) Creates/bridges a real Antigravity Cascade trajectory in file://$HOME/dev via Language Server StartCascade + SendUserCascadeMessage so it immediately appears in the LEFT sidebar of Antigravity IDE!
      (b) Updates ~/.codex/state_5.sqlite (archived=0, updated_at=now) so archived Codex sessions are restored.
      (c) Saves imported state to ~/.gemini/antigravity/widget_state.json.
 3. POST /api/state
@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -318,9 +319,23 @@ def unarchive_codex_thread(thread_id: str) -> None:
         pass
 
 
+DEV_DIR = os.path.expanduser("~/dev")
+
+
+def _nvm_bin_dirs() -> list[str]:
+    """Node bin directories installed by nvm, newest version first."""
+    import glob
+    def version(path):
+        name = os.path.basename(os.path.dirname(path)).lstrip("v")
+        return tuple(int(x) for x in name.split(".") if x.isdigit())
+    roots = [os.environ.get("NVM_DIR") or os.path.expanduser("~/.nvm"), os.path.expanduser("~/.config/nvm")]
+    dirs = {d for root in roots for d in glob.glob(os.path.join(root, "versions", "node", "*", "bin"))}
+    return sorted(dirs, key=version, reverse=True)
+
+
 def create_antigravity_left_sidebar_cascade(thread_id: str, label: str, cmd_text: str) -> str | None:
     """
-    Creates a real Antigravity Cascade conversation in file:///home/u24c9g5090r64/dev
+    Creates a real Antigravity Cascade conversation in file://$HOME/dev
     so that the imported session immediately appears in the Antigravity IDE LEFT sidebar!
     """
     addr, token = cau.discover_ls_credentials()
@@ -365,9 +380,9 @@ def create_antigravity_left_sidebar_cascade(thread_id: str, label: str, cmd_text
         prompt_text = (
             f"[가져온 세션 · {short_title}]\n"
             f"- 원본 스레드 ID: `{thread_id or 'N/A'}`\n"
-            f"- 원본 경로: `{t_info.get('cwd', '/home/u24c9g5090r64/dev')}`\n"
+            f"- 원본 경로: `{t_info.get('cwd', DEV_DIR)}`\n"
             f"- 재개 명령어: `{cmd_text}`\n\n"
-            f"이 대화창은 위젯에서 [가져오기]를 눌러 현재 워크스페이스(`/home/u24c9g5090r64/dev`) 왼쪽 사이드바 목록으로 가져온 세션입니다. "
+            f"이 대화창은 위젯에서 [가져오기]를 눌러 현재 워크스페이스(`{DEV_DIR}`) 왼쪽 사이드바 목록으로 가져온 세션입니다. "
             f"원본 스레드의 요약만 2줄로 출력하고 대기하세요."
         )
         msg_payload = {
@@ -479,6 +494,18 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         return
             self._set_cors(200)
             self.wfile.write(status_snapshot_payload(snapshot, qs))
+            return
+
+        if parsed.path == "/api/orca":
+            try:
+                import orca_bridge
+                snap = orca_bridge.snapshot()
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": True, "summary": orca_bridge.summary_line(snap), "orca": snap},
+                                            ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False).encode("utf-8"))
             return
 
         if parsed.path == "/api/pc":
@@ -609,7 +636,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if thread_id:
                 unarchive_codex_thread(thread_id)
 
-            # Create or reuse Antigravity Cascade in left sidebar (/home/u24c9g5090r64/dev)
+            # Create or reuse Antigravity Cascade in left sidebar (~/dev)
             cid = st.get("importedCascades", {}).get(node_id)
             if not cid:
                 cid = create_antigravity_left_sidebar_cascade(thread_id, label, cmd_text)
@@ -753,15 +780,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             short_title = f"✦ {clean_first}"
             tagged_prompt = prompt if prompt.lstrip().startswith("✦") else f"{short_title}\n\n{prompt}"
             env = os.environ.copy()
-            extra_paths = [
-                "/home/u24c9g5090r64/.config/nvm/versions/node/v24.21.0/bin",
-                os.path.expanduser("~/.local/bin"),
-                "/usr/local/bin",
-            ]
+            extra_paths = [*_nvm_bin_dirs(), os.path.expanduser("~/.local/bin"), "/usr/local/bin"]
             env["PATH"] = ":".join(extra_paths + [env.get("PATH", "/usr/bin:/bin")])
-            codex_bin = "/home/u24c9g5090r64/.config/nvm/versions/node/v24.21.0/bin/codex"
-            if not os.path.exists(codex_bin):
-                codex_bin = "codex"
+            codex_bin = shutil.which("codex", path=env["PATH"]) or "codex"
             try:
                 if thread_id:
                     unarchive_codex_thread(thread_id)

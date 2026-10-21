@@ -2167,7 +2167,7 @@
     <div class="usage-panel" id="usage-panel" data-density="compact">
       <div class="usage-toolbar">
         <div class="usage-toolbar-left" style="flex-wrap:wrap;gap:5px">
-          <span class="remote-pill" title="현재 SSH 원격 서버(u24c9g5090r64) 연결됨 · GPU: RTX 5090 · RAM: 64GB">🌐 SSH 원격 · u24c9g5090r64 · RTX 5090</span>
+          <!--__HOST_PILL_START__--><span class="remote-pill">🌐 로컬</span><!--__HOST_PILL_END__-->
           <span class="route-pill" id="auto-route-badge" title="실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 자동 스티어링)"><svg width="11" height="10" style="color:var(--amber)"><use href="#ico-bolt-1"/></svg><span id="auto-route-text">자동배분: Codex 6.1-sol · AGY 4 Argon</span></span>
           <span class="usage-hint">바깥 링: 잔여 · 안쪽: 경과율</span>
         </div>
@@ -3366,7 +3366,7 @@
 
     /* ── DIRECT CODEX COMMAND BAR ([+ Codex 직접 명령] / [명령 ▶] / [터미널 ↗]) ── */
     let activeCodexThreadId = '';
-    let activeCodexCwd = '/home/u24c9g5090r64/dev';
+    let activeCodexCwd = '';
 
     function updateCodexPopoverSpace() {
       const bar = document.getElementById('codex-direct-bar');
@@ -3382,7 +3382,7 @@
 
     function openCodexDirectBar(threadId, label, cwd) {
       activeCodexThreadId = threadId || '';
-      activeCodexCwd = cwd || '/home/u24c9g5090r64/dev';
+      activeCodexCwd = cwd || '';
       const bar = document.getElementById('codex-direct-bar');
       const tgt = document.getElementById('codex-direct-target');
       const inp = document.getElementById('codex-prompt-input');
@@ -3470,7 +3470,7 @@
 
     async function openCodexTerminal(cmdTextOverride, cwdOverride) {
       const cmdText = cmdTextOverride || (activeCodexThreadId ? `codex resume ${activeCodexThreadId}` : 'codex -m gpt-6.1-sol');
-      const cwd = cwdOverride || activeCodexCwd || '/home/u24c9g5090r64/dev';
+      const cwd = cwdOverride || activeCodexCwd || '';
       copyText(cmdText);
       try {
         const r = await fetch(`${BRIDGE_URL}/api/open-terminal`, {

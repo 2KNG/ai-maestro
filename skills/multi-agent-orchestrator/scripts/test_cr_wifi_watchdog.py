@@ -115,7 +115,7 @@ class CrWifiWatchdogTests(unittest.TestCase):
             watchdog.check_once(dry_run=False)
 
         # cr-wifi off should be called
-        mock_run.assert_any_call(["/home/u24c9g5090r64/.local/bin/cr-wifi", "off"], check=False)
+        mock_run.assert_any_call([watchdog.CR_WIFI_BIN, "off"], check=False)
         # resume_3d_agent should be called
         self.assertTrue(mock_resume.called)
 

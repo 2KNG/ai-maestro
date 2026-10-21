@@ -1704,9 +1704,9 @@ def _repo_from_uris_or_cwd(workspaces: list[str] | None = None, cwd: str | None 
     if not path:
         return "dev", "current"
     base = os.path.basename(path) or "dev"
-    if path in (os.path.expanduser("~/dev"), os.path.expanduser("~"), "/home/u24c9g5090r64") or "/.gemini/" in path:
+    if path in (os.path.expanduser("~/dev"), os.path.expanduser("~")) or "/.gemini/" in path:
         return "dev", "current"
-    if path.startswith(os.path.expanduser("~/dev/")) or path.startswith("/home/u24c9g5090r64/dev/"):
+    if path.startswith(os.path.expanduser("~/dev/")):
         return base, "current"
     return base, "external"
 
@@ -3187,7 +3187,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             ctc = repo_codex.get("token_count") or {}
             c_used = fmt_k(ctc.get("total_tokens", 0))
             c_pct = float(ctc.get("percent", 0.0) or 0.0)
-            ccwd = repo_codex.get("cwd") or f"/home/u24c9g5090r64/dev/{repo}"
+            ccwd = repo_codex.get("cwd") or os.path.join(os.path.expanduser("~/dev"), repo)
             c_disp = re.sub(
                 r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?",
                 "",
@@ -3868,6 +3868,27 @@ def build_optional_pc_telemetry_html(open_drawer: bool = False) -> str:
     return "<!--__PC_TELEMETRY_HTML_START__--><!--__PC_TELEMETRY_HTML_END__-->"
 
 
+HOST_PILL_BLOCK_RE = re.compile(r"<!--__HOST_PILL_START__-->.*?<!--__HOST_PILL_END__-->", re.S)
+
+
+def build_host_pill_html() -> str:
+    """Host + Orca runtime pill (hostname is read at render time, never stored in the template)."""
+    import socket
+    host = socket.gethostname()
+    try:
+        import orca_bridge
+        snap = orca_bridge.snapshot()
+        orca_text = orca_bridge.summary_line(snap)
+    except Exception:
+        snap, orca_text = {}, ""
+    where = "🌐 SSH 원격" if os.environ.get("SSH_CONNECTION") else "🖥 로컬"
+    label = f"{where} · {host}" + (f" · {orca_text}" if snap.get("running") else "")
+    title = f"{where} · {host}" + (f" · {orca_text}" if orca_text else "")
+    return ("<!--__HOST_PILL_START__-->"
+            f'<span class="remote-pill" title="{_html_esc(title)}">{_html_esc(label)}</span>'
+            "<!--__HOST_PILL_END__-->")
+
+
 def inject_live_data(template: str, data: dict) -> str:
     """Replace all live-data regions (SERVER_STATE, ACCOUNTS, QUOTA_GRID, PC_TELEMETRY, ACTIVE_TREE, CLOSED_TREE) at render time for 0ms first paint."""
     accounts = build_accounts(data)
@@ -3903,6 +3924,10 @@ def inject_live_data(template: str, data: dict) -> str:
     if QUOTA_GRID_BLOCK_RE.search(html):
         static_grid = build_static_quota_grid_html(accounts)
         html = QUOTA_GRID_BLOCK_RE.sub(lambda _m: static_grid, html, count=1)
+
+    if HOST_PILL_BLOCK_RE.search(html):
+        pill_html = build_host_pill_html()
+        html = HOST_PILL_BLOCK_RE.sub(lambda _m: pill_html, html, count=1)
 
     if PC_TELEMETRY_BLOCK_RE.search(html):
         pc_html = build_optional_pc_telemetry_html(open_drawer=bool(state.get('pcMonOpen', False)))

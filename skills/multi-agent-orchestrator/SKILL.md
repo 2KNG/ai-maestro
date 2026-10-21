@@ -5,7 +5,8 @@ description: >-
   local OpenAI Codex CLI (codex 0.162.1), and local Anthropic Claude Code CLI (claude 2.1.296),
   and inspect real-time token/quota usage across all pools. Activate when the user asks to
   delegate tasks to Claude or Codex, run multi-agent workflows, use Mobbin/Context7 MCPs,
-  or check quota/token usage.
+  check quota/token usage, drive Orca terminals/worktrees, or install/set up ai-maestro
+  (CLIs, Orca, remote hub address).
 ---
 
 # Multi-Agent Orchestrator (Antigravity + Codex + Claude Code)
@@ -141,7 +142,49 @@ means `self`) and every other model (including missing model, which means
 
 ## 3. Workspace Discipline Rules
 
-When coordinating across multiple agents in `/home/u24c9g5090r64/dev`:
+When coordinating across multiple agents in `~/dev`:
 - Always check `STATE.md`, `CLAUDE.md`, and `AGENTS.md` in the target repository before dispatching subagents.
 - Assign strict, disjoint file ownership boundaries to each agent (Maestro Codex/Claude workers or read-only Flash research subagents).
 - Never revert or overwrite dirty files owned by other active sessions.
+
+## 4. Orca-Based Operation
+
+`maestro` runs inside and alongside Orca worktrees/terminals. Inside an Orca terminal `ORCA_TERMINAL_HANDLE` and `ORCA_WORKTREE_PATH` are set; `maestro orca-status` reports them.
+
+```bash
+maestro orca-status                          # runtime summary + current Orca terminal
+maestro orca-list [--worktree path:<dir>]    # live terminals: handle, title, agent, worktree
+maestro orca-worktrees                       # Orca-managed worktrees
+maestro orca-send --terminal <handle> --text "<input>" --enter
+maestro orca-read --terminal <handle> [--screen]
+maestro remote status                        # node services + active Orca terminals
+maestro remote nodes                         # registered fleet nodes (1..N, no placeholder slots)
+```
+
+`ai-usage` (key `orca`), the widget host pill, and the bridge endpoint `GET /api/orca` show the same Orca summary.
+
+Remote hub settings are user-local: CLI flags > `MAESTRO_REMOTE_HUB` / `MAESTRO_SSH_KEY` / `MAESTRO_REGISTRY_URL` / `MAESTRO_NODE_ID` > `~/.config/ai-maestro/remote.json`. Never write a server address, IP or key path into repository files.
+
+<AI_SETUP_ONBOARDING>
+
+## 5. AI-Assisted Setup Onboarding
+
+Use this when the user asks to install or set up `ai-maestro`, or says "설치할 때 서버 주소나 IP 물어보고 매칭해줘". Ask one question per step and act on the answer. `maestro setup` implements the same flow for terminals (`install.sh` / `install.ps1` run it last).
+
+1. Core agent CLIs — ask exactly:
+   "오르카(Orca) 및 AI Maestro 구동에 필요한 기본 CLI [Antigravity / Codex / Claude] (기본 전체 선택)를 먼저 확인하고 설치할까요?"
+   Defaults: `[x] Antigravity` `[x] OpenAI Codex CLI` `[x] Claude Code CLI`. On yes run `maestro setup --yes --skip-orca --skip-remote` (or `--cli codex,claude` for a subset). It installs only missing CLIs and restores `~/.codex/config.toml` and `~/.claude/settings.json` byte-for-byte if an installer touched them; do not edit those files yourself.
+2. Orca — ask exactly:
+   "이어서 오르카(Orca)를 설치하고 AI Maestro와 연동할까요?"
+   On yes run `maestro setup --yes --skip-cli --skip-remote`. If Orca is missing, give the user https://github.com/stablyai/orca/releases/latest, wait for the install, and rerun. Confirm with `maestro orca-status`.
+3. Server address — ask:
+   "서버로 사용할 주소(도메인)나 IP를 말해주세요"
+   When the user answers (for example "내 서버 주소는 hub.example.com이야, 매칭해줘"), run:
+   ```bash
+   maestro remote up --hub <address>
+   ```
+   For a bare IP also ask for the hub's HTTPS domain and add `--registry-url https://<domain>` (wss pairing needs a TLS certificate). Add `--identity-file <path>` if the user names an SSH key. Report `blockers` verbatim when present; on success report `fleet_url` and `maestro remote status`.
+
+The address is saved only to `~/.config/ai-maestro/remote.json`.
+
+</AI_SETUP_ONBOARDING>

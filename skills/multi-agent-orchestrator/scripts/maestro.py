@@ -17,6 +17,9 @@ Commands:
   maestro worker-start --spec "<task>" [--pool auto|agy-claude|agy-sonnet|codex|codex-astra|claude|claude-fast|agy-flash] [--model <model>] [--cwd <dir>] [--wait] [--timeout 3600] [--json]
   maestro check --id <cascade_id> [--wait] [--timeout 3600] [--json]
   maestro sync-widgets [--json]
+  maestro setup [--yes] [--hub <server>]          # 3-step onboarding: CLIs -> Orca -> remote hub
+  maestro orca-list|orca-send|orca-read|orca-worktrees|orca-status
+  maestro remote status|up|install-node|configure|nodes [--hub <server>]
 """
 import argparse
 import glob
@@ -1170,6 +1173,14 @@ def main():
         if sys.argv[1] in ("remote-setup", "fleet-setup") and (not argv or argv[0].startswith("-")):
             argv = ["up", *argv]
         raise SystemExit(maestro_remote.main(argv))
+    if len(sys.argv) > 1 and sys.argv[1] in ("setup", "onboard"):
+        import maestro_setup
+        raise SystemExit(maestro_setup.main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1].startswith("orca-") and sys.argv[1] != "orca-remote":
+        import orca_bridge
+        if sys.argv[1] not in orca_bridge.COMMANDS:
+            raise SystemExit(f"maestro: unknown Orca command {sys.argv[1]!r} (use {', '.join(orca_bridge.COMMANDS)})")
+        raise SystemExit(orca_bridge.main(sys.argv[1], sys.argv[2:]))
     parser = argparse.ArgumentParser(prog="maestro")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1186,7 +1197,13 @@ def main():
     p_doctor.add_argument("--config", help="Config path override (default: CODEX_HOME/config.toml)")
     p_doctor.add_argument("--json", action="store_true")
     # Show discoverable help while the remote module handles these arguments above.
-    sub.add_parser("remote", aliases=["remote-setup", "orca-remote", "fleet-setup", "fleet"], help="Provision Orca and the 2kng.com fleet tunnel")
+    sub.add_parser("remote", aliases=["remote-setup", "orca-remote", "fleet-setup", "fleet"],
+                   help="Provision Orca and the fleet hub tunnel (hub from ~/.config/ai-maestro/remote.json or --hub)")
+    sub.add_parser("setup", aliases=["onboard"], help="3-step onboarding: agent CLIs -> Orca -> remote hub address")
+    for name, text in (("orca-list", "List live Orca terminals"), ("orca-send", "Send input to an Orca terminal"),
+                       ("orca-read", "Read Orca terminal output"), ("orca-worktrees", "List Orca worktrees"),
+                       ("orca-status", "Orca runtime summary")):
+        sub.add_parser(name, help=text)
 
     p_start = sub.add_parser("worker-start")
     p_start.add_argument("--spec", default="", help="Task spec string (or '-' / empty to read from --spec-file or stdin)")

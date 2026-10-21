@@ -2,7 +2,7 @@
   "maestro-harness": {
     "PreInvocation": [
       {
-        "command": "python3 /home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/maestro_harness_hook.py PreInvocation"
+        "command": "python3 $HOME/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/maestro_harness_hook.py PreInvocation"
       }
     ],
     "PreToolUse": [
@@ -11,7 +11,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/u24c9g5090r64/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/maestro_harness_hook.py PreToolUse",
+            "command": "python3 $HOME/dev/ai-maestro/skills/multi-agent-orchestrator/scripts/maestro_harness_hook.py PreToolUse",
             "timeout": 5
           }
         ]

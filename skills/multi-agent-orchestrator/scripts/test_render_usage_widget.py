@@ -11,6 +11,8 @@ from unittest import mock
 
 import render_usage_widget as widget
 
+DEV = os.path.expanduser('~/dev')
+
 
 class RenderingTests(unittest.TestCase):
     def setUp(self):
@@ -24,12 +26,12 @@ class RenderingTests(unittest.TestCase):
     def test_unmatched_active_workers_never_become_roots(self):
         now = datetime.now(timezone.utc)
         parent = dict(conversation_id='parent-test', status='RUNNING',
-                      last_modified_time=now.isoformat(), workspaces=['file:///home/u24c9g5090r64/dev'])
+                      last_modified_time=now.isoformat(), workspaces=['file://' + DEV])
         codex = dict(thread_id='standalone-codex', source='exec', agy_origin=True,
                      is_running=True, status='running', updated_at=now.timestamp(),
-                     cwd='/home/u24c9g5090r64/dev')
+                     cwd=DEV)
         claude = dict(session_id='standalone-claude', is_running=True,
-                      updated_at=now.timestamp(), cwd='/home/u24c9g5090r64/dev')
+                      updated_at=now.timestamp(), cwd=DEV)
         with mock.patch.object(widget, '_worker_parent', return_value=None), \
              mock.patch.object(widget, '_running_worker_sessions', return_value=({'standalone-codex'}, set(), {'standalone-claude'})):
             active, closed, _, _ = widget.build_active_and_closed_trees_html(
@@ -52,11 +54,11 @@ class RenderingTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         iso = now.isoformat()
         parent = dict(conversation_id='521b781e-43da-4647-b411-585e65e5f002',
-                      workspaces=['file:///home/u24c9g5090r64/dev'],
+                      workspaces=['file://' + DEV],
                       status='RUNNING', last_modified_time=iso, children=[
                           dict(conversation_id=f'{i:08x}-child', role=f'Child {i}', last_modified_time=iso)
                           for i in range(20)])
-        worker = dict(parent_id=parent['conversation_id'], thread_id='12345678-worker', title='worker', cwd='/home/u24c9g5090r64/dev',
+        worker = dict(parent_id=parent['conversation_id'], thread_id='12345678-worker', title='worker', cwd=DEV,
                       status='closed', source='exec', updated_at=now.timestamp() - 5)
         active, _, _, _ = widget.build_active_and_closed_trees_html(
             {'agent_trees': {'antigravity': [parent], 'codex': [worker]}}, {})

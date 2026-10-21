@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Adapter for rtc2kng's existing fleet Registry and heartbeat HTTP contract.
+"""Adapter for an existing fleet hub Registry and heartbeat HTTP contract.
 
-No nginx configuration, hub code installation, or service lifecycle changes.
+The hub address, registry origin and SSH key come from user-local settings
+(``~/.config/ai-maestro/remote.json`` or MAESTRO_* environment variables); the
+repository ships none. No nginx configuration, hub code installation, or
+service lifecycle changes.
+
+Nodes scale 1..N: each enrolled node takes the lowest free slot in the hub
+registry and its tunnel ports are ORCA_PORT_BASE+slot / WIDGET_PORT_BASE+slot.
+Only registered nodes exist; there are no pre-allocated placeholder slots.
 """
 from __future__ import annotations
 import base64
@@ -18,8 +25,13 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlsplit
 
+ORCA_PORT_BASE = 16701
+WIDGET_PORT_BASE = 18701
+# Port arithmetic bound only (orca ports must stay below the widget port range).
+MAX_SLOTS = WIDGET_PORT_BASE - ORCA_PORT_BASE
+
 REMOTE_CODE = r'''
-import contextlib, fcntl, hashlib, hmac, importlib, json, os, sqlite3, sys, urllib.request
+import contextlib, itertools, fcntl, hashlib, hmac, importlib, json, os, sqlite3, sys, urllib.request
 from pathlib import Path
 c = json.load(sys.stdin)
 project = Path(c['hub_project']).resolve()
@@ -27,7 +39,7 @@ db = Path(c['hub_db'])
 if not db.is_absolute(): db = project / db
 db = db.resolve()
 if not (project / 'fleet.py').is_file() or not db.is_file():
-    raise RuntimeError('rtc2kng fleet code/database is not deployed')
+    raise RuntimeError('fleet hub code/database is not deployed')
 sys.path.insert(0, str(project))
 module = importlib.import_module('fleet')
 if not hasattr(module, 'Registry'):
@@ -59,8 +71,8 @@ with guard():
         slot = row[2]
     else:
         used = {x[2] for x in rows if x[2] is not None}
-        slot = next((i for i in range(10) if i not in used), None)
-    if slot is None or not 0 <= slot < 10:
+        slot = next(i for i in itertools.count() if i not in used)
+    if slot is None or not 0 <= slot < c['max_slots']:
         raise RuntimeError('Fleet has no available tunnel slot')
     if row is None:
         occupied = set()
@@ -69,7 +81,7 @@ with guard():
                 for line in Path(table).read_text().splitlines()[1:]:
                     fields = line.split()
                     if fields[3] == '0A': occupied.add(int(fields[1].rsplit(':',1)[1],16))
-        if occupied.intersection((16701+slot,18701+slot)):
+        if occupied.intersection((c['orca_port_base']+slot,c['widget_port_base']+slot)):
             raise RuntimeError('Allocated hub tunnel port is already occupied')
     if c['action'] == 'register' and row is None:
         os.chdir(project)
@@ -83,7 +95,7 @@ with guard():
                 # Another enrollment tool may not honor our file lock.
                 raise RuntimeError('Slot changed during enrollment; retry to obtain current allocation')
         finally: registry.db.close()
-    print(json.dumps({'slot':slot, 'port':16701+slot, 'widget_port':18701+slot}))
+    print(json.dumps({'slot':slot, 'port':c['orca_port_base']+slot, 'widget_port':c['widget_port_base']+slot}))
 '''
 
 
@@ -96,7 +108,9 @@ def settings(config):
     token = c.get('node_token', '')
     if not isinstance(token, str) or len(token) < 32 or any(x.isspace() for x in token):
         raise ValueError('A persistent node_token of at least 32 characters is required')
-    c.setdefault('registry_url', 'https://2kng.com')
+    if not c.get('registry_url'):
+        raise ValueError('registry_url is required: set the hub HTTPS domain with `maestro remote configure --hub <domain>` '
+                         'or --registry-url https://<your-server-domain>')
     url = urlsplit(c['registry_url'])
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ('', '/'):
         raise ValueError('registry_url must be an HTTPS origin')
@@ -115,7 +129,7 @@ def settings(config):
 def ssh_request(config, action):
     c = settings(config)
     payload = {k:c[k] for k in ('node_id','node_token','registry_url','hub_project','hub_db','hub_probe_url')}
-    payload['action'] = action
+    payload.update(action=action, orca_port_base=ORCA_PORT_BASE, widget_port_base=WIDGET_PORT_BASE, max_slots=MAX_SLOTS)
     if c.get('fleet_access_token'):
         payload['fleet_access_token'] = c['fleet_access_token']
     argv = ['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10']
@@ -135,9 +149,9 @@ def ssh_request(config, action):
     try:
         allocation = json.loads(result.stdout)
         slot = allocation['slot']
-        if type(slot) is not int or not 0 <= slot < 10:
+        if type(slot) is not int or not 0 <= slot < MAX_SLOTS:
             raise ValueError()
-        if allocation['port'] != 16701+slot or allocation['widget_port'] != 18701+slot:
+        if allocation['port'] != ORCA_PORT_BASE+slot or allocation['widget_port'] != WIDGET_PORT_BASE+slot:
             raise ValueError()
     except (ValueError, KeyError, TypeError):
         raise RuntimeError('Invalid fleet allocation response') from None

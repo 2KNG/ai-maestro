@@ -2,6 +2,7 @@ import base64
 import contextlib
 import hashlib
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -23,14 +24,16 @@ class HubTests(unittest.TestCase):
         db = sqlite3.connect(self.db)
         db.execute('CREATE TABLE nodes(id TEXT PRIMARY KEY,token TEXT,slot INTEGER UNIQUE)')
         db.commit(); db.close()
-        self.config = dict(node_id='office',node_token='a'*48,hub='ubuntu@2kng.com',
-            hub_project=str(self.root),hub_db=str(self.db),registry_url='https://2kng.com',
+        self.config = dict(node_id='office',node_token='a'*48,hub='ubuntu@hub.example.com',
+            hub_project=str(self.root),hub_db=str(self.db),registry_url='https://hub.example.com',
             port=16701,widget_port=18701)
 
-    def remote(self, action, served=None):
+    def remote(self, action, served=None, max_slots=None):
         if os.name == 'nt':
             self.skipTest('This code runs on the Linux SSH hub, using flock')
-        c = hub.settings(self.config); c['action'] = action
+        c = hub.settings(self.config)
+        c.update(action=action, orca_port_base=hub.ORCA_PORT_BASE, widget_port_base=hub.WIDGET_PORT_BASE,
+                 max_slots=max_slots or hub.MAX_SLOTS)
         if served is None:
             db = sqlite3.connect(self.db)
             served = [dict(node_id=r[0],slot=r[1]) for r in db.execute('SELECT id,slot FROM nodes')]
@@ -41,7 +44,7 @@ class HubTests(unittest.TestCase):
             def __init__(self,path,origin): self.db=sqlite3.connect(path)
             def provision(self,node,token):
                 used={r[0] for r in self.db.execute('SELECT slot FROM nodes')}
-                slot=next(i for i in range(10) if i not in used)
+                slot=next(i for i in itertools.count() if i not in used)
                 self.db.execute('INSERT INTO nodes VALUES(?,?,?)',(node,hashlib.sha256(token.encode()).hexdigest(),slot));self.db.commit()
             def get(self,node): return {'slot':self.db.execute('SELECT slot FROM nodes WHERE id=?',(node,)).fetchone()[0]}
         with patch('sys.stdin',io.StringIO(json.dumps(c))), contextlib.redirect_stdout(output), patch('urllib.request.urlopen',return_value=response), patch.dict('sys.modules',fleet=types.SimpleNamespace(Registry=Registry)), patch('os.chdir'):
@@ -61,11 +64,37 @@ class HubTests(unittest.TestCase):
         self.config['node_token']='b'*48
         with self.assertRaisesRegex(RuntimeError,'another credential'): self.remote('register')
 
-    def test_existing_slot_and_full_fleet(self):
+    def test_fleet_scales_past_ten_nodes_without_placeholder_slots(self):
         db=sqlite3.connect(self.db)
-        for i in range(10): db.execute('INSERT INTO nodes VALUES(?,?,?)',(f'pc{i}','hash',i))
+        for i in range(12): db.execute('INSERT INTO nodes VALUES(?,?,?)',(f'node-{i}','hash',i))
         db.commit();db.close()
-        with self.assertRaisesRegex(RuntimeError,'no available'): self.remote('preflight')
+        result=self.remote('register')
+        self.assertEqual((result['slot'],result['port'],result['widget_port']),(12,16713,18713))
+        db=sqlite3.connect(self.db)
+        self.assertEqual(db.execute('SELECT count(*) FROM nodes').fetchone()[0],13);db.close()
+
+    def test_lowest_free_slot_is_reused(self):
+        db=sqlite3.connect(self.db)
+        for i in (0,1,3): db.execute('INSERT INTO nodes VALUES(?,?,?)',(f'node-{i}','hash',i))
+        db.commit();db.close()
+        self.assertEqual(self.remote('preflight')['slot'],2)
+
+    def test_port_range_exhaustion_refused(self):
+        db=sqlite3.connect(self.db)
+        for i in range(3): db.execute('INSERT INTO nodes VALUES(?,?,?)',(f'node-{i}','hash',i))
+        db.commit();db.close()
+        with self.assertRaisesRegex(RuntimeError,'no available'): self.remote('preflight',max_slots=3)
+
+    def test_ssh_accepts_high_slots(self):
+        result=types.SimpleNamespace(returncode=0,stdout=json.dumps(dict(slot=40,port=16741,widget_port=18741)))
+        with patch('subprocess.run',return_value=result) as run:
+            route=hub.preflight(self.config)
+        self.assertEqual(route['port'],16741)
+        self.assertIn('"max_slots"',run.call_args.kwargs['input'])
+
+    def test_registry_origin_required(self):
+        config={**self.config}; config.pop('registry_url')
+        with self.assertRaisesRegex(ValueError,'registry_url is required'): hub.settings(config)
 
     def test_occupied_unregistered_tunnel_port_refused(self):
         original=Path.read_text
@@ -89,10 +118,10 @@ class HubTests(unittest.TestCase):
         result=types.SimpleNamespace(returncode=0,stdout=json.dumps(dict(slot=2,port=16703,widget_port=18703)))
         with patch('subprocess.run',return_value=result) as run:
             route=hub.preflight(self.config)
-        self.assertEqual(route['orca_url'],'wss://2kng.com/orca/office/')
+        self.assertEqual(route['orca_url'],'wss://hub.example.com/orca/office/')
         self.assertNotIn(self.config['node_token'],' '.join(run.call_args.args[0]))
         self.assertIn(self.config['node_token'],run.call_args.kwargs['input'])
-        self.assertEqual(route['widget_url'],'https://2kng.com/orca/office-maestro/')
+        self.assertEqual(route['widget_url'],'https://hub.example.com/orca/office-maestro/')
 
     def test_failure_does_not_leak_remote_output(self):
         with patch('subprocess.run',return_value=types.SimpleNamespace(returncode=1,stderr=self.config['node_token'])):
@@ -126,7 +155,7 @@ class HubTests(unittest.TestCase):
         with self.assertRaises(ValueError):hub.validate_pairing('orca://pair?code=invalid')
 
     def test_invalid_origin_and_id(self):
-        for key,value in [('node_id','../bad'),('registry_url','http://2kng.com'),('registry_url','https://user:pass@2kng.com')]:
+        for key,value in [('node_id','../bad'),('registry_url','http://hub.example.com'),('registry_url','https://user:pass@hub.example.com')]:
             with self.subTest(key=key,value=value), self.assertRaises(ValueError): hub.settings({**self.config,key:value})
 
 if __name__=='__main__': unittest.main()

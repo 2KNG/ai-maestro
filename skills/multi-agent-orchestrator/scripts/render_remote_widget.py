@@ -3,13 +3,14 @@
 render_remote_widget.py — Remote-Viewable Artifact Generator (Does NOT touch local usage_widget.html)
 Generates:
 1. remote_usage_widget.html: Uncompressed, self-contained HTML artifact (no document.write/gzip sandbox issues,
-   auto-tries LAN 172.20.1.252:18765 -> 127.0.0.1:18765 -> Static Remote Mode, with PC MON pre-rendered).
+   auto-tries <LAN IP>:18765 -> 127.0.0.1:18765 -> Static Remote Mode, with PC MON pre-rendered).
 2. remote_dashboard.md: Pure Markdown live dashboard artifact for instant remote viewing in any IDE/mobile client.
 """
 import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -21,8 +22,23 @@ import check_all_usage as cau
 import pc_telemetry_ext as pct
 import render_usage_widget as ruw
 
-DEFAULT_BRAIN_DIR = "/home/u24c9g5090r64/.gemini/antigravity/brain/521b781e-43da-4647-b411-585e65e5f002"
-WATCHDOG_LOG = "/home/u24c9g5090r64/.gemini/antigravity/cr_wifi_watchdog.log"
+WATCHDOG_LOG = os.path.expanduser("~/.gemini/antigravity/cr_wifi_watchdog.log")
+
+
+def _default_brain_dir() -> str:
+    """AGY_BRAIN_DIR, else the most recently modified Antigravity conversation directory."""
+    explicit = os.environ.get("AGY_BRAIN_DIR")
+    if explicit:
+        return explicit
+    root = os.path.expanduser("~/.gemini/antigravity/brain")
+    try:
+        dirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        dirs = []
+    return max(dirs, key=os.path.getmtime) if dirs else root
+
+
+DEFAULT_BRAIN_DIR = _default_brain_dir()
 
 
 def _get_lan_ip() -> str:
@@ -36,7 +52,7 @@ def _get_lan_ip() -> str:
                     return ip
     except Exception:
         pass
-    return "172.20.1.252"
+    return "127.0.0.1"
 
 
 def build_remote_html(data: dict, lan_ip: str, target_path: str) -> str:
@@ -183,13 +199,13 @@ def build_remote_markdown(data: dict, lan_ip: str) -> str:
         f"> **최종 갱신**: `{now_kst}` · **워치독 데몬**: `{wd_active.upper()}` · **사내망 웹 접속**: `http://{lan_ip}:18765`",
         "",
         "## 🛡️ 1. `CR_WIFI` ↔ `STARPORT` 자동 복구 & 3D 에이전트(`4500bbbc`) 감시 상태",
-        "- **감시 규칙**: `CR_WIFI` 전환 후 **5분(300초) 이상 인터넷 단절 시** 자동으로 `STARPORT`(`172.20.1.252`) 복구 및 3D 에이전트(`4500bbbc-e155-49f9-b324-88364ca9b84b`) 자동 재개",
+        "- **감시 규칙**: `CR_WIFI` 전환 후 **5분(300초) 이상 인터넷 단절 시** 자동으로 `STARPORT` 복구 및 3D 에이전트(`4500bbbc-e155-49f9-b324-88364ca9b84b`) 자동 재개",
         "- **최근 워치독 로그**:",
         "```text",
         *(wd_lines if wd_lines else ["[대기 중] 현재 STARPORT 인터넷 연결 정상 유지 중 (오프라인 이벤트 없음)"]),
         "```",
         "",
-        "## 💻 2. PC 하드웨어 & 네트워크 텔레메트리 (`u24c9g5090r64`)",
+        f"## 💻 2. PC 하드웨어 & 네트워크 텔레메트리 (`{socket.gethostname()}`)",
         "| 항목 | 실시간 상태 |",
         "| :--- | :--- |",
         f"| **CPU** | {cpu_s} |",
