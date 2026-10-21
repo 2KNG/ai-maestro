@@ -2388,6 +2388,7 @@ def _fmt_bg_badge_and_timing(bgt: dict, now_sec: float) -> tuple[str, str, str, 
 
 
 def _parse_render_background_tasks(tpath):
+    from check_all_usage import BG_TASK_DESC_RE, is_worker_spawn_command, task_log_is_worker_result
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
     step_cron_hints: dict[int, str] = {}
@@ -2424,7 +2425,7 @@ def _parse_render_background_tasks(tpath):
                             cm_cmd = re.search(r'"CommandLine"\s*:\s*"([^"]+)"', targs)
                             if cm_cmd:
                                 cmd_line = cm_cmd.group(1)
-                        if any(k in cmd_line for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start")):
+                        if is_worker_spawn_command(cmd_line):
                             step_worker_spawn_hints[sidx] = True
                             step_worker_spawn_hints[sidx + 1] = True
                             step_worker_spawn_hints[sidx + 2] = True
@@ -2454,16 +2455,20 @@ def _parse_render_background_tasks(tpath):
                                 (not mentioned and (not event_time or (started and started <= event_time)))):
                             tv["done"] = True
 
-                m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
+                m = BG_TASK_DESC_RE.search(c)
                 if m:
-                    tid, desc = m.group(1).strip(), m.group(2).strip()
+                    tid, command = m.group(1).strip(), m.group(2).strip()
+                    desc = (command.splitlines() or [""])[0].strip()
                     short_id = tid.split("/")[-1]
                     num_m = re.search(r"task-(\d+)", short_id)
                     tnum = int(num_m.group(1)) if num_m else sidx
+                    # A worker-start wrapper is already its worker's SUB row; listing it again as a JOB
+                    # would show the same process tree twice.
                     if (
                         step_worker_spawn_hints.get(tnum, False)
                         or step_worker_spawn_hints.get(sidx, False)
-                        or any(k in desc for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start"))
+                        or is_worker_spawn_command(command)
+                        or task_log_is_worker_result(tpath, short_id)
                     ):
                         continue
                     is_timer = desc.startswith("Timer:")
@@ -3139,6 +3144,23 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     def _conv_res(cid_val: str) -> dict | None:
         return (proc_res.get("conversations") or {}).get(cid_val or "")
 
+    def _claim(claimed: set, res) -> dict | None:
+        """A child row's exclusive share: PIDs an earlier sibling (SUB before JOB/CRON) owns are dropped,
+        so the child rows under one main agent add up instead of repeating a shared tree."""
+        if not res:
+            return None
+        pids = [int(pid) for pid in res.get("pids") or ()]
+        own = [pid for pid in pids if pid not in claimed]
+        claimed.update(own)
+        if len(own) == len(pids):
+            return res
+        return merge_resources(proc_table, [{"pids": own}], proc_res) if own else None
+
+    def _is_worker_wrapper(cid_val: str, task: dict) -> bool:
+        # The task's process tree holds a live CLI worker: its SUB row already shows that usage.
+        res = (proc_res.get("tasks") or {}).get(f"{cid_val}/{task.get('short_id')}") or {}
+        return task.get("kind") not in ("cron", "timer") and bool(res.get("worker_pids"))
+
     def _first_line(value, fallback: str) -> str:
         line = (str(value or "").splitlines() or [""])[0]
         return re.sub(r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?", "", line).strip() or fallback
@@ -3149,7 +3171,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     ]
 
     def _bg_daemon_chip_and_detail(cid_val: str, br_id_val: str = "") -> tuple[list[dict], str, str]:
-        bg_all = _extract_active_bg_tasks(cid_val, now_sec)
+        bg_all = [t for t in _extract_active_bg_tasks(cid_val, now_sec) if not _is_worker_wrapper(cid_val, t)]
         if not bg_all:
             return [], "", ""
         daemons = [t for t in bg_all if t.get("kind") == "daemon"]
@@ -3387,6 +3409,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
         subagent_items: list[tuple[int, float, str]] = []
         res_children: list[tuple[str, str, dict | None]] = []
+        claimed_pids: set[int] = set()
         for c in extra_claude_workers:
             sid = c.get("session_id") or c.get("id") or ""
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
@@ -3394,7 +3417,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             if not c_live and (not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed):
                 continue
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
-            c = {**c, "resources": _worker_res(c)}
+            c = {**c, "resources": _claim(claimed_pids, _worker_res(c))}
             res_children.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
 
@@ -3431,7 +3454,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
             sub_slot_idx += 1
             c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
-            c_res = _worker_res(repo_codex)
+            c_res = _claim(claimed_pids, _worker_res(repo_codex))
             res_children.append(("SUB", c_disp, c_res))
             c_html = (
                 f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
@@ -3492,7 +3515,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             c_icon, c_pill, _ = _provider_icon_and_pill(ch.get("model", ""), "antigravity")
             c_repo = _repo_from_uris_or_cwd(ch.get("workspaces"))[0] if ch.get("workspaces") else repo
             c_ts = _parse_any_ts(ch.get("last_modified_time")) or 0.0
-            c_res = ch.get("resources") or _conv_res(ccid)
+            c_res = _claim(claimed_pids, ch.get("resources") or _conv_res(ccid))
             res_children.append(("SUB", c_role, c_res))
             c_html = (
                 f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_running else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
@@ -3540,7 +3563,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             if is_dmn_or_tmr and not show_bg_daemons:
                 node_cls += " hidden"
             bt_dot = "busy" if bt_kind == "job" else "idle-fresh"
-            bt_res = bgt.get("resources") or (proc_res.get("tasks") or {}).get(f"{cid}/{bt_id}")
+            bt_res = _claim(claimed_pids, bgt.get("resources") or (proc_res.get("tasks") or {}).get(f"{cid}/{bt_id}"))
             res_children.append((bt_tag, bt_desc, bt_res))
             if bt_kind == "cron":
                 bt_pill = ""
@@ -3610,7 +3633,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
 
         br_cls = "tree-children hidden" if state.get("allCollapsed") is True else "tree-children"
         children_block = f'<div class="{br_cls}" id="{br_id}">{_finalize_child_rows(child_rows_html)}</div>' if child_rows_html else ""
-        # Main rollup: own conversation, every descendant conversation, attached workers and jobs.
+        # Main rollup: child rows are disjoint, so it is their sum plus the main's unclaimed PIDs
+        # (own conversation, descendant conversations without a row).
         ag_rollup = merge_resources(proc_table, [ag.get("rollup_resources"), _conv_res(cid)]
                                     + [_conv_res(ch.get("conversation_id")) for ch in (ag.get("children") or [])]
                                     + [res for _, _, res in res_children], proc_res)
@@ -3690,6 +3714,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_live_running = is_live_running or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in claude_children)
         subagent_items_cdx: list[tuple[int, float, str]] = []
         res_children_cdx: list[tuple[str, str, dict | None]] = []
+        claimed_pids_cdx: set[int] = set()
         for c in claude_children:
             sid = c.get("session_id") or c.get("id") or ""
             if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
@@ -3697,7 +3722,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
-            c = {**c, "resources": _worker_res(c)}
+            c = {**c, "resources": _claim(claimed_pids_cdx, _worker_res(c))}
             res_children_cdx.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
             subagent_items_cdx.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
 
@@ -3744,7 +3769,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
                 child_dot = "busy" if c_live_child else "idle-fresh"
                 child_ts = float(ch.get("updated_at") or 0.0)
-                child_res = _worker_res(ch)
+                child_res = _claim(claimed_pids_cdx, _worker_res(ch))
                 res_children_cdx.append(("SUB", child_disp, child_res))
                 row_html = (
                     f'<div class="tree-node sub-node" data-node-id="{child_node_id}">'

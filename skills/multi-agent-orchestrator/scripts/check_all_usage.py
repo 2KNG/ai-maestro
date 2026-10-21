@@ -987,6 +987,48 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
     return out
 
 
+WORKER_SPAWN_MARKERS = ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start")
+# The tool result carries the whole multi-line command; only its first line is the display description.
+BG_TASK_DESC_RE = re.compile(
+    r"background task with task id:\s*(\S+)\s*\nTask Description:\s*(.*?)(?:\nTask logs are available at:|\nYOU MUST TAKE|\Z)",
+    re.S)
+_HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
+_WORKER_RESULT_RE = re.compile(rb'\A\s*\{\s*"pool"\s*:')
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies so a spec that merely mentions worker-start is not taken as the command."""
+    out, delim = [], None
+    for line in command.replace("\\n", "\n").splitlines():
+        if delim is not None:
+            if line.strip() == delim:
+                delim = None
+            continue
+        out.append(line)
+        match = _HEREDOC_START_RE.search(line)
+        if match:
+            delim = match.group(1)
+    return "\n".join(out)
+
+
+def is_worker_spawn_command(command: str) -> bool:
+    """True for a run_command that launches a CLI worker (rendered as its own SUB row)."""
+    text = _strip_heredocs(command or "")
+    return any(marker in text for marker in WORKER_SPAWN_MARKERS)
+
+
+def task_log_is_worker_result(transcript_path: str, short_id: str) -> bool:
+    """A finished `maestro worker-start --wait` leaves its JSON result (`{"pool": ...`) as the task log."""
+    if not transcript_path or not short_id:
+        return False
+    log = os.path.join(os.path.dirname(os.path.dirname(transcript_path)), "tasks", f"{short_id}.log")
+    try:
+        with open(log, "rb") as f:
+            return bool(_WORKER_RESULT_RE.match(f.read(256)))
+    except OSError:
+        return False
+
+
 def _parse_background_tasks(tpath):
     tasks: dict[str, dict] = {}
     step_daemon_hints: dict[int, bool] = {}
@@ -1024,7 +1066,7 @@ def _parse_background_tasks(tpath):
                             cm_cmd = re.search(r'"CommandLine"\s*:\s*"([^"]+)"', targs)
                             if cm_cmd:
                                 cmd_line = cm_cmd.group(1)
-                        if any(k in cmd_line for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start")):
+                        if is_worker_spawn_command(cmd_line):
                             step_worker_spawn_hints[sidx] = True
                             step_worker_spawn_hints[sidx + 1] = True
                             step_worker_spawn_hints[sidx + 2] = True
@@ -1063,16 +1105,20 @@ def _parse_background_tasks(tpath):
                         if (explicitly_named and not after_restart) or before_restart:
                             tv["done"] = True
 
-                m = re.search(r"background task with task id:\s*([^\s\n]+)\s*\nTask Description:\s*([^\n]+)", c)
+                m = BG_TASK_DESC_RE.search(c)
                 if m:
-                    tid, desc = m.group(1).strip(), m.group(2).strip()
+                    tid, command = m.group(1).strip(), m.group(2).strip()
+                    desc = (command.splitlines() or [""])[0].strip()
                     short_id = tid.split("/")[-1]
                     num_m = re.search(r"task-(\d+)", short_id)
                     tnum = int(num_m.group(1)) if num_m else sidx
+                    # A worker-start wrapper is already its worker's SUB row; listing it again as a JOB
+                    # would show the same process tree twice.
                     if (
                         step_worker_spawn_hints.get(tnum, False)
                         or step_worker_spawn_hints.get(sidx, False)
-                        or any(k in desc for k in ("maestro worker-start", "orca worker-start", "agy-orca worker-start", "maestro.py worker-start"))
+                        or is_worker_spawn_command(command)
+                        or task_log_is_worker_result(tpath, short_id)
                     ):
                         continue
                     is_timer = desc.startswith("Timer:")
@@ -2361,7 +2407,6 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
             task_roots.setdefault(f"{p['cid']}/{p['task']}", []).append(pid)
     conv_pids = {cid: _descendants(snap, roots) for cid, roots in conv_roots.items()}
     conversations = {cid: summarize_pids(snap, pids) for cid, pids in conv_pids.items()}
-    tasks = {key: summarize_pids(snap, _descendants(snap, roots)) for key, roots in task_roots.items()}
 
     if live_workers is None:
         try:
@@ -2381,6 +2426,17 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
         for key in ("session_id", "registry_id"):
             if record.get(key):
                 workers[record[key]] = res
+
+    # Worker trees belong to their SUB rows only: a background task keeps just the
+    # PIDs no worker owns, and records the worker PIDs it wraps so the widget can
+    # drop a pure `maestro worker-start` wrapper instead of showing it twice.
+    worker_pids = set().union(*(set(res["pids"]) for res in by_pid.values()))
+    tasks = {}
+    for key, roots in task_roots.items():
+        pids = _descendants(snap, roots)
+        tasks[key] = summarize_pids(snap, pids - worker_pids)
+        if pids & worker_pids:
+            tasks[key]["worker_pids"] = sorted(pids & worker_pids)
 
     def agy_cids(node, seen):
         cid = node.get("conversation_id")

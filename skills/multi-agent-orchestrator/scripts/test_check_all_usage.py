@@ -478,8 +478,10 @@ class ProcessResourceTests(unittest.TestCase):
 
         root = trees["antigravity"][0]
         self.assertEqual(pr["conversations"]["conv-a"]["pids"], [100, 101, 200, 201])
-        self.assertEqual(pr["tasks"]["conv-a/task-42"]["pids"], [100, 101, 200, 201])
-        self.assertEqual(root["background_tasks"][0]["resources"]["pids"], [100, 101, 200, 201])
+        # The claude worker tree (200, 201) belongs to its SUB row, not to the job that launched it.
+        self.assertEqual(pr["tasks"]["conv-a/task-42"]["pids"], [100, 101])
+        self.assertEqual(pr["tasks"]["conv-a/task-42"]["worker_pids"], [200, 201])
+        self.assertEqual(root["background_tasks"][0]["resources"]["pids"], [100, 101])
         self.assertEqual(root["children"][0]["resources"]["pids"], [400])
         self.assertEqual(root["rollup_resources"]["pids"], [100, 101, 200, 201, 400])
         self.assertEqual(root["rollup_resources"]["active_procs"], 5)
@@ -510,6 +512,35 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertAlmostEqual(res["rx_kbps"], 5.0)  # 20 KiB read (rchar) in 4 s
         self.assertAlmostEqual(res["tx_kbps"], 2.5)  # 10 KiB written (wchar) in 4 s
         self.assertNotIn("io_kbps", res)
+
+    def test_job_and_worker_partition_the_conversation_tree(self):
+        # task-9 shell -> maestro worker-start -> claude -> node; task-10 is an unrelated job.
+        self.proc(100, 1, cpu_sec=5, cid="conv-a", step=9, comm="bash")
+        self.proc(101, 100, cpu_sec=10, cid="conv-a", step=9, comm="maestro")
+        self.proc(102, 101, cpu_sec=20, cid="conv-a", step=9, comm="claude")
+        self.proc(103, 102, cpu_sec=40, cid="conv-a", step=9, comm="node")
+        self.proc(110, 1, cpu_sec=15, cid="conv-a", step=10, comm="pytest")
+        trees = {"antigravity": [{"conversation_id": "conv-a", "children": [],
+                                  "background_tasks": [{"short_id": "task-9"}, {"short_id": "task-10"}]}]}
+        pr = self.build(trees, [{"pid": 101, "provider": "maestro", "registry_id": "reg-1"},
+                                {"pid": 102, "provider": "claude", "session_id": "sess-1"}])
+        worker, wrapper, job = pr["workers"]["sess-1"], pr["tasks"]["conv-a/task-9"], pr["tasks"]["conv-a/task-10"]
+        self.assertEqual(worker["pids"], [101, 102, 103])
+        self.assertEqual(wrapper["pids"], [100])
+        self.assertEqual(wrapper["worker_pids"], [101, 102, 103])
+        self.assertNotIn("worker_pids", job)
+        self.assertFalse(set(worker["pids"]) & set(wrapper["pids"]))
+        rollup = trees["antigravity"][0]["rollup_resources"]
+        for field in ("cpu_pct", "ram_mb", "rx_kbps", "tx_kbps", "proc_count"):
+            self.assertAlmostEqual(rollup[field], worker[field] + wrapper[field] + job[field], places=1)
+
+    def test_worker_spawn_detection_ignores_heredoc_bodies(self):
+        spawn = "cat <<'EOF' > /tmp/spec.md\nRun pytest\nEOF\n~/.local/bin/maestro worker-start --pool claude --spec-file /tmp/spec.md"
+        self.assertTrue(usage.is_worker_spawn_command(spawn))
+        self.assertTrue(usage.is_worker_spawn_command(spawn.replace("\n", "\\n")))  # escaped transcript args
+        mention = "cat <<'EOF' > /tmp/notes.md\nuse maestro worker-start later\nEOF\npytest -q"
+        self.assertFalse(usage.is_worker_spawn_command(mention))
+        self.assertFalse(usage.is_worker_spawn_command("pytest -q"))
 
     def test_maestro_wrapper_and_cli_are_one_worker(self):
         self.proc(10, 1, comm="python3")

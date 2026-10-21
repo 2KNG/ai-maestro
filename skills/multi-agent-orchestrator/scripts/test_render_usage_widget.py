@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -506,6 +508,65 @@ class ResourceRenderingTests(unittest.TestCase):
         self.assertIn('리소스 상세', active)
         self.assertIn('<span class="res-kind">JOB</span>pytest loop', active)
         self.assertIn('에이전트 1 · 프로세스 3', active)
+
+    def test_child_rows_partition_pids_and_add_up_to_the_main_rollup(self):
+        procs = {'1': [2.0, 10.0, 0.0, 0.0, 0.0, 'bash'], '2': [30.0, 300.0, 0.0, 40.0, 0.0, 'node'],
+                 '3': [5.0, 50.0, 0.0, 0.0, 0.0, 'node'], '4': [7.0, 70.0, 0.0, 0.0, 0.0, 'pytest']}
+        active = self.render({
+            'procs': procs, **self.TOTALS,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2, 3, 4], 44.0, 430.0, tx=40.0),
+                              'ressub-0001': self.res([2, 3], 35.0, 350.0, tx=40.0)},
+            # The job shell (4) also contains the subagent's pid 2: that PID stays with the SUB row.
+            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': self.res([2, 4], 37.0, 370.0, tx=40.0)},
+            'workers': {}, 'pids': {},
+        })
+        sub = self.slot(active, 'res-node-sub-ressub-0')
+        job = self.slot(active, 'res-node-bg-resparen-task-42')
+        main = self.slot(active, 'res-node-agy-resparen')
+        self.assertIn('#ri-cpu"/></svg>35.0%', sub)
+        self.assertIn('#ri-cpu"/></svg>7.0%', job)  # only pid 4
+        self.assertNotIn('#ri-up', job)
+        # SUB 35 + JOB 7 + the main's own shell 2 = 44.
+        self.assertIn('#ri-cpu"/></svg>44.0%', main)
+
+    def test_worker_start_wrapper_job_is_not_a_second_row(self):
+        procs = {'1': [1.0, 10.0, 0.0, 0.0, 0.0, 'bash'], '2': [20.0, 200.0, 0.0, 9.0, 9.0, 'claude']}
+        active = self.render({
+            'procs': procs, **self.TOTALS,
+            'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1, 2], 21.0, 210.0, tx=9.0, rx=9.0),
+                              'ressub-0001': self.res([2], 20.0, 200.0, tx=9.0, rx=9.0)},
+            'tasks': {'resparent-0001-0000-0000-000000000001/task-42': {**self.res([1], 1.0, 10.0), 'worker_pids': [2]}},
+            'workers': {}, 'pids': {},
+        })
+        self.assertNotIn('node-bg-resparen-task-42', active)
+        self.assertNotIn('pytest loop', active)
+        self.assertIn('#ri-cpu"/></svg>20.0%', self.slot(active, 'res-node-sub-ressub-0'))
+        self.assertIn('#ri-cpu"/></svg>21.0%', self.slot(active, 'res-node-agy-resparen'))
+
+    def test_background_parser_skips_worker_start_wrappers(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        logs, task_logs = os.path.join(tmp, 'logs'), os.path.join(tmp, 'tasks')
+        os.makedirs(logs)
+        os.makedirs(task_logs)
+
+        def started(step, command):
+            return json.dumps({'step_index': step, 'type': 'GENERIC', 'created_at': '2026-10-21T06:24:46Z',
+                               'content': f'Tool is running as a background task with task id: c/task-{step}\n'
+                                          f'Task Description: {command}\nTask logs are available at: file:///x'})
+        # Planner args truncated the command, so only the tool result shows the worker-start line.
+        spawn = "cat <<'EOF' > /tmp/spec.md\nfix it\nEOF\n~/.local/bin/maestro worker-start --pool claude --wait --spec-file /tmp/spec.md"
+        lines = [started(10, spawn), started(20, 'python3 long_job.py'), started(30, 'SPEC_FILE=$(mktemp)')]
+        with open(os.path.join(task_logs, 'task-30.log'), 'w') as f:
+            f.write('{\n  "pool": "codex",\n  "ok": true\n}\n')
+        tpath = os.path.join(logs, 'transcript.jsonl')
+        with open(tpath, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        tasks = widget._parse_render_background_tasks(tpath)
+        self.assertEqual(list(tasks), ['c/task-20'])
+        self.assertEqual(tasks['c/task-20']['desc'], 'python3 long_job.py')
+        import check_all_usage
+        self.assertEqual(list(check_all_usage._parse_background_tasks(tpath)), ['c/task-20'])
 
     def test_idle_rows_get_no_pill_and_zero_metrics_are_omitted(self):
         active = self.render({
