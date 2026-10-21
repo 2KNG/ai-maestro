@@ -457,6 +457,10 @@ class ResourceRenderingTests(unittest.TestCase):
     TOTALS = {'mem_total_mb': 16384.0, 'gpu_total_mb': 8192.0}
 
     @staticmethod
+    def tags(pill):
+        return re.findall(r'<b class="rl">(.*?)</b>', pill)
+
+    @staticmethod
     def slot(html, key):
         return re.search(rf'data-res-key="{key}"><!--__RES__-->(.*?)<!--__RES_END__-->', html).group(1)
 
@@ -486,21 +490,21 @@ class ResourceRenderingTests(unittest.TestCase):
         })
         main = self.slot(active, 'res-node-agy-resparen')
         # Subagent pid 3 joins the rollup; the job's pid 2 is not counted twice. Order: CPU, GPU, RAM, send, receive.
-        self.assertEqual(re.findall(r'#ri-(\w+)', main), ['cpu', 'gpu', 'ram', 'up', 'dn'])
-        self.assertIn('<use href="#ri-cpu"/></svg>41.0%', main)
-        self.assertIn('#ri-gpu"/></svg>25.0%', main)  # 2048 of 8192 MiB
-        self.assertIn('#ri-ram"/></svg>2.8%', main)  # 450 of 16384 MiB = 2.75%
-        self.assertIn('#ri-up"/></svg>151KB/s', main)
-        self.assertIn('#ri-dn"/></svg>50KB/s', main)
+        self.assertEqual(self.tags(main), ['CPU', 'GPU', 'RAM', '↑', '↓'])
+        self.assertIn('<b class="rl">CPU</b>41.0%', main)
+        self.assertIn('<b class="rl">GPU</b>25.0%', main)  # 2048 of 8192 MiB
+        self.assertIn('<b class="rl">RAM</b>2.8%', main)  # 450 of 16384 MiB = 2.75%
+        self.assertIn('<b class="rl">↑</b>151KB/s', main)
+        self.assertIn('<b class="rl">↓</b>50KB/s', main)
         self.assertIn('GPU 25.0% (VRAM 2048MB)', main)  # exact sizes stay in the tooltip
         self.assertIn('RAM 2.8% (RSS 450MB)', main)
         self.assertIn('res-pill rollup', main)
         self.assertNotIn('I/O', main)
         sub = self.slot(active, 'res-node-sub-ressub-0')
-        self.assertEqual(re.findall(r'#ri-(\w+)', sub), ['cpu', 'ram'])  # zero GPU / send / receive omitted
+        self.assertEqual(self.tags(sub), ['CPU', 'RAM'])  # zero GPU / send / receive omitted
         self.assertIn('idle', sub)  # below every activity threshold
         job = self.slot(active, 'res-node-bg-resparen-task-42')
-        self.assertIn('<span class="r-cpu r-on"><svg class="ri"><use href="#ri-cpu"/></svg>30.0%</span>', job)
+        self.assertIn('<span class="r-cpu r-on"><b class="rl">CPU</b>30.0%</span>', job)
         self.assertIn('r-gpu r-on', job)
         self.assertIn('r-tx r-on', job)
         # The board precedes the first tree node and carries the breakdown drawer.
@@ -523,11 +527,11 @@ class ResourceRenderingTests(unittest.TestCase):
         sub = self.slot(active, 'res-node-sub-ressub-0')
         job = self.slot(active, 'res-node-bg-resparen-task-42')
         main = self.slot(active, 'res-node-agy-resparen')
-        self.assertIn('#ri-cpu"/></svg>35.0%', sub)
-        self.assertIn('#ri-cpu"/></svg>7.0%', job)  # only pid 4
-        self.assertNotIn('#ri-up', job)
+        self.assertIn('<b class="rl">CPU</b>35.0%', sub)
+        self.assertIn('<b class="rl">CPU</b>7.0%', job)  # only pid 4
+        self.assertNotIn('<b class="rl">↑</b>', job)
         # SUB 35 + JOB 7 + the main's own shell 2 = 44.
-        self.assertIn('#ri-cpu"/></svg>44.0%', main)
+        self.assertIn('<b class="rl">CPU</b>44.0%', main)
 
     def test_worker_start_wrapper_job_is_not_a_second_row(self):
         procs = {'1': [1.0, 10.0, 0.0, 0.0, 0.0, 'bash'], '2': [20.0, 200.0, 0.0, 9.0, 9.0, 'claude']}
@@ -540,8 +544,8 @@ class ResourceRenderingTests(unittest.TestCase):
         })
         self.assertNotIn('node-bg-resparen-task-42', active)
         self.assertNotIn('pytest loop', active)
-        self.assertIn('#ri-cpu"/></svg>20.0%', self.slot(active, 'res-node-sub-ressub-0'))
-        self.assertIn('#ri-cpu"/></svg>21.0%', self.slot(active, 'res-node-agy-resparen'))
+        self.assertIn('<b class="rl">CPU</b>20.0%', self.slot(active, 'res-node-sub-ressub-0'))
+        self.assertIn('<b class="rl">CPU</b>21.0%', self.slot(active, 'res-node-agy-resparen'))
 
     def test_background_parser_skips_worker_start_wrappers(self):
         tmp = tempfile.mkdtemp()
@@ -579,18 +583,28 @@ class ResourceRenderingTests(unittest.TestCase):
         # RAM alone is not activity: the idle job/shell rows render no slot at all.
         self.assertNotIn('res-node-bg-resparen-task-42', active)
         sub = self.slot(active, 'res-node-sub-ressub-0')
-        self.assertEqual(re.findall(r'#ri-(\w+)', sub), ['ram', 'dn'])
+        self.assertEqual(self.tags(sub), ['RAM', '↓'])
         self.assertIn('2.0KB/s', sub)
-        self.assertNotIn('#ri-cpu', sub)
+        self.assertNotIn('<b class="rl">CPU</b>', sub)
         board = self.slot(active, 'res-board')
-        self.assertNotIn('#ri-gpu', board)
+        self.assertNotIn('<b class="rl">GPU</b>', board)
 
         quiet = self.render({'procs': {'1': [0.0, 5.0, 0.0, 0.0, 0.0, 'bash']}, **self.TOTALS,
                              'conversations': {'resparent-0001-0000-0000-000000000001': self.res([1], 0.0, 5.0)},
                              'tasks': {}, 'workers': {}, 'pids': {}})
         self.assertNotIn('res-slot', quiet)
         # The summary bar still shows the attributed total (RAM only).
-        self.assertEqual(re.findall(r'#ri-(\w+)', self.slot(quiet, 'res-board')), ['ram'])
+        self.assertEqual(self.tags(self.slot(quiet, 'res-board')), ['RAM'])
+
+    def test_pill_uses_text_labels_and_arrows_with_a_ram_floor(self):
+        pill = widget._res_pill_html(dict(cpu_pct=2.3, gpu_mb=336.0, gpu_pct=4.1, ram_mb=5.0, ram_pct=0.03,
+                                          tx_kbps=70.0, rx_kbps=2560.0, proc_count=2))
+        text = re.sub(r'<[^>]+>', ' ', pill.split('>', 1)[1])
+        self.assertEqual(' '.join(text.split()), 'CPU 2.3% GPU 4.1% RAM 0.1% ↑ 70KB/s ↓ 2.5MB/s')
+        self.assertNotIn('<svg', pill)
+        self.assertNotIn('<0.1%', pill)
+        # A known RAM percentage with no MB sample still shows RAM.
+        self.assertEqual(self.tags(widget._res_pill_html(dict(cpu_pct=9.0, ram_pct=0.6, proc_count=1))), ['CPU', 'RAM'])
 
     def test_without_process_data_no_resource_markup_is_rendered(self):
         active = self.render(None)
@@ -608,8 +622,8 @@ class ResourceRenderingTests(unittest.TestCase):
         self.assertLess(once.index('RES_ASSETS_CSS_START'), once.index('</head>'))
         self.assertLess(once.index('RES_ASSETS_JS_START'), once.index('</body>'))
         self.assertIn('max-width:clamp(980px,92vw,1380px)', once)
-        for icon in ('cpu', 'gpu', 'ram', 'up', 'dn'):
-            self.assertEqual(once.count(f'<symbol id="ri-{icon}"'), 1)
+        self.assertNotIn('<symbol id="ri-', once)  # text labels replaced the icon sprites
+        self.assertIn('.rl{', once)
         # The script must not contain a literal HTML comment opener.
         script = once[once.index('<script>(function'):once.index('RES_ASSETS_JS_END')]
         self.assertNotIn('<!--__RES__', script)

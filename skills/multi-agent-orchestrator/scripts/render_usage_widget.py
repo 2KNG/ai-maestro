@@ -2050,7 +2050,7 @@ RES_MARK_START, RES_MARK_END = "<!--__RES__-->", "<!--__RES_END__-->"
 _RES_LEVELS = {"cpu_pct": (5.0, 50.0), "gpu_pct": (0.01, 50.0), "ram_pct": (1.0, 10.0),
                "tx_kbps": (64.0, 10240.0), "rx_kbps": (64.0, 10240.0)}
 _RES_CLASSES = {"cpu_pct": "r-cpu", "gpu_pct": "r-gpu", "ram_pct": "r-ram", "tx_kbps": "r-tx", "rx_kbps": "r-rx"}
-_RES_ICONS = {"cpu_pct": "cpu", "gpu_pct": "gpu", "ram_pct": "ram", "tx_kbps": "up", "rx_kbps": "dn"}
+_RES_TAGS = {"cpu_pct": "CPU", "gpu_pct": "GPU", "ram_pct": "RAM", "tx_kbps": "↑", "rx_kbps": "↓"}
 _RES_LABELS = {"cpu_pct": "CPU", "gpu_pct": "GPU", "ram_pct": "RAM", "tx_kbps": "↑ 보냄", "rx_kbps": "↓ 받음"}
 
 
@@ -2066,9 +2066,12 @@ def _fmt_res_rate(kbps) -> str:
     return f"{kbps:.1f}KB/s" if kbps < 10 else f"{kbps:.0f}KB/s"
 
 
-def _fmt_res_pct(pct) -> str:
+def _fmt_res_pct(pct, present: bool = False) -> str:
+    """One decimal; a non-zero (or present) value never reads below 0.1%."""
     pct = float(pct or 0)
-    return f"{pct:.1f}%" if pct >= 0.05 else "<0.1%"
+    if present or pct > 0:
+        pct = max(0.1, round(pct, 1))
+    return f"{pct:.1f}%"
 
 
 def _res_cls(field: str, value) -> str:
@@ -2087,8 +2090,8 @@ def _res_metrics(res: dict) -> list[tuple[str, float, str]]:
         out.append(("cpu_pct", cpu, f"{cpu:.1f}%"))
     for field, mb_key in (("gpu_pct", "gpu_mb"), ("ram_pct", "ram_mb")):
         mb, pct = float(res.get(mb_key) or 0), res.get(field)
-        if mb > 0:  # without a known total the exact MB is shown instead of a percentage
-            out.append((field, float(pct or 0), _fmt_res_pct(pct) if pct is not None else _fmt_res_mb(mb)))
+        if mb > 0 or float(pct or 0) > 0:  # without a known total the exact MB is shown instead of a percentage
+            out.append((field, float(pct or 0), _fmt_res_pct(pct, True) if pct is not None else _fmt_res_mb(mb)))
     for field in ("tx_kbps", "rx_kbps"):
         rate = float(res.get(field) or 0)
         if rate >= 0.05:
@@ -2113,24 +2116,24 @@ def _res_title(res: dict, rollup: bool = False) -> str:
         if field == "ram_pct" or mb > 0:
             pct = res.get(field)
             exact = f"{unit} {mb:.0f}MB"
-            parts.append(f"{_RES_LABELS[field]} " + (f"{_fmt_res_pct(pct)} ({exact})" if pct is not None else exact))
+            parts.append(f"{_RES_LABELS[field]} " + (f"{_fmt_res_pct(pct, mb > 0)} ({exact})" if pct is not None else exact))
     parts += [f"↑ 보냄 {_fmt_res_rate(res.get('tx_kbps'))}", f"↓ 받음 {_fmt_res_rate(res.get('rx_kbps'))}",
               f"프로세스 {int(res.get('proc_count') or 0)}개"]
     return " · ".join(parts)
 
 
-def _res_icon(field: str) -> str:
-    return f'<svg class="ri"><use href="#ri-{_RES_ICONS[field]}"/></svg>'
+def _res_tag(field: str) -> str:
+    return f'<b class="rl">{_RES_TAGS[field]}</b>'
 
 
 def _res_pill_html(res, rollup: bool = False, force: bool = False) -> str:
-    """Inline icon pill (CPU, GPU, RAM, send, receive; zeros omitted); empty for idle trees unless forced."""
+    """Inline pill "CPU 2.3% GPU 4.1% RAM 0.6% ↑ 70KB/s ↓ 2.5MB/s" (zeros omitted); empty for idle trees unless forced."""
     if not (_res_active(res) or (force and _has_res(res))):
         return ""
     metrics = _res_metrics(res)
     classes = [_res_cls(field, value) for field, value, _ in metrics]
     cls = "res-pill" + (" rollup" if rollup else "") + ("" if any(" r-" in c for c in classes) else " idle")
-    inner = "".join(f'<span class="{c}">{_res_icon(field)}{text}</span>'
+    inner = "".join(f'<span class="{c}">{_res_tag(field)}{text}</span>'
                     for c, (field, _, text) in zip(classes, metrics))
     return f'<span class="{cls}" title="{_html_esc(_res_title(res, rollup))}">{inner}</span>'
 
@@ -2187,8 +2190,8 @@ RES_ASSETS_CSS = (
     "border-radius:4px;border:1px solid var(--bdr);white-space:nowrap}"
     ".res-pill,.res-meta,.res-table{color:var(--muted);font:9.5px ui-monospace,Menlo,monospace}"
     ".res-pill.rollup{border-color:#22d3ee55}.res-pill.idle{opacity:.55}"
-    ".res-pill>span{display:inline-flex;align-items:center;gap:2px}"
-    ".ri{width:10px;height:10px;flex:none;fill:none;stroke:currentColor;stroke-width:1.1;stroke-linecap:round;stroke-linejoin:round}"
+    ".res-pill>span{display:inline-flex;align-items:baseline;gap:3px}"
+    ".rl{font-weight:700;opacity:.85}"
     ".r-on.r-cpu{color:#22d3ee}.r-on.r-gpu{color:#a78bfa}.r-on.r-ram{color:#34d399}.r-on.r-tx{color:#f472b6}.r-on.r-rx{color:#38bdf8}"
     ".r-hot{color:#fbbf24!important;font-weight:700}html.light :is(.r-on,.r-hot){filter:brightness(.7)}"
     ".res-board{margin:0 0 4px;border:1px solid var(--bdr);border-radius:6px}"
@@ -2209,15 +2212,7 @@ RES_ASSETS_CSS = (
 # Resource numbers change every pass: keep them out of the tree signature, then
 # patch keyed slots (insert / refresh / drop) after the regular reconcile.
 RES_ASSETS_JS = (
-    "<!--__RES_ASSETS_JS_START__--><svg width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\">"
-    "<symbol id=\"ri-cpu\" viewBox=\"0 0 10 10\"><rect x=\"2.5\" y=\"2.5\" width=\"5\" height=\"5\" rx=\".7\"/>"
-    "<path d=\"M4 1v1.5M6 1v1.5M4 7.5V9M6 7.5V9M1 4h1.5M1 6h1.5M7.5 4H9M7.5 6H9\"/></symbol>"
-    "<symbol id=\"ri-gpu\" viewBox=\"0 0 10 10\"><rect x=\".7\" y=\"2.2\" width=\"8.6\" height=\"5\" rx=\".7\"/>"
-    "<circle cx=\"6.3\" cy=\"4.7\" r=\"1.3\"/><path d=\"M2.5 4h1M2.5 5.5h1M2.2 7.2v1.6M4.5 7.2v1.6\"/></symbol>"
-    "<symbol id=\"ri-ram\" viewBox=\"0 0 10 10\"><rect x=\".7\" y=\"2.5\" width=\"8.6\" height=\"4.2\" rx=\".5\"/>"
-    "<path d=\"M2.8 3.9v1.4M5 3.9v1.4M7.2 3.9v1.4M2 6.7v1.6M4 6.7v1.6M6 6.7v1.6M8 6.7v1.6\"/></symbol>"
-    "<symbol id=\"ri-up\" viewBox=\"0 0 10 10\"><path d=\"M5 8.8V1.6M2.1 4.4 5 1.4l2.9 3\"/></symbol>"
-    "<symbol id=\"ri-dn\" viewBox=\"0 0 10 10\"><path d=\"M5 1.2v7.2M2.1 5.6 5 8.6l2.9-3\"/></symbol></svg>"
+    "<!--__RES_ASSETS_JS_START__-->"
     "<script>(function(){"
     "try{if(localStorage.getItem('agy_res_open_v1')==1)document.documentElement.classList.add('res-open')}catch(e){}"
     "var S=new RegExp('<!'+'--__RES__-->[\\\\s\\\\S]*?<!'+'--__RES_END__-->','g'),o=window.smartPatchTree;"
