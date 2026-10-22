@@ -9,6 +9,7 @@ Usage:
 import base64
 import gzip
 import glob
+import html as html_lib
 import json
 import math
 import os
@@ -1700,6 +1701,22 @@ def _age_label_from_days(days: int, updated_ts: int | None = None) -> str:
     return f"{days}일 전"
 
 
+ORCA_WORKTREE_ROOTS = ("~/orca/workspaces/", "~/.config/orca/worktrees/")
+
+
+def _orca_worktree(*paths: str | None) -> tuple[str, str] | None:
+    """(repo, worktree) of the first path inside an Orca worktree. Accepts ORCA_WORKTREE_ID
+    ("<uuid>::<path>") and cwds below the worktree root."""
+    for path in paths:
+        path = (path or "").rsplit("::", 1)[-1]
+        for root in ORCA_WORKTREE_ROOTS:
+            root = os.path.expanduser(root)
+            parts = path[len(root):].split("/") if path.startswith(root) else []
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                return parts[0], parts[1]
+    return None
+
+
 def _repo_from_uris_or_cwd(workspaces: list[str] | None = None, cwd: str | None = None) -> tuple[str, str]:
     """Returns (repo_short_name, scope: 'current' | 'external')."""
     path = ""
@@ -1713,11 +1730,11 @@ def _repo_from_uris_or_cwd(workspaces: list[str] | None = None, cwd: str | None 
     base = os.path.basename(path) or "dev"
     if path in (os.path.expanduser("~/dev"), os.path.expanduser("~")) or "/.gemini/" in path:
         return "dev", "current"
-    # Orca worktrees (~/orca/workspaces/<repo>/<worktree>) are the user's own repos too;
-    # name them <repo>/<worktree> so the repo stays visible next to the worktree.
-    orca_ws = os.path.expanduser("~/orca/workspaces/")
-    if path.startswith(orca_ws):
-        return "/".join(path[len(orca_ws):].split("/")[:2]), "current"
+    # Orca worktrees are the user's own repos too; the badge is the repo alone because the
+    # worktree is the folder row its sessions are grouped under.
+    orca = _orca_worktree(path)
+    if orca:
+        return orca[0], "current"
     if path.startswith(tuple(os.path.expanduser(p) for p in ("~/dev/", "~/orca/", "~/.config/orca/worktrees/"))):
         return base, "current"
     return base, "external"
@@ -2327,7 +2344,7 @@ def _sub_prefix_html(
         dot_cls = dot_cls_or_is_last
         tag_lbl = tag_lbl_or_dot_cls
         elbow = "├─"
-    is_bg = tag_lbl != "SUB"
+    is_bg = tag_lbl not in ("SUB", "LEAD")
     tip = dot_tip or ("하위 백그라운드 태스크 (클릭 시 상세·시작 시각 표시)" if is_bg else "하위 서브에이전트 워커 (완료 후 15초 뒤 자동 증발)")
     t_cls = "sub-tag bg-tag" if is_bg else "sub-tag"
     return (
@@ -3109,6 +3126,55 @@ def _codex_root_activity(node: dict, live_ids: set[str], paths: dict[str, str], 
                        or has_running_child
                        or node.get("thread_id", "") in live_ids)
     return is_live_running, max(updated_ts, rollout_ts)
+
+
+def _main_prefix_html(dot: str, dot_tip: str, repo: str, in_folder: bool, repo_tip: str = "") -> str:
+    """Status dot + repo badge of a main card; inside an Orca worktree folder, a LEAD branch prefix."""
+    if in_folder:
+        return _sub_prefix_html(dot, "LEAD", f"Orca 워크트리의 리드 패인 · {dot_tip}")
+    tip = f' title="{_html_esc(repo_tip)}"' if repo_tip else ""
+    return (f'<span class="status-dot {dot}" title="{_html_esc(dot_tip)}"></span>'
+            f'<span class="repo-tag"{tip}>{_html_esc(repo)}</span>')
+
+
+def _pill_label(model_pill: str) -> tuple[str, str] | None:
+    """(full, short) model names shown by a model pill."""
+    m = re.search(r'class="mp-full">([^<]*)</span><span class="mp-short">([^<]*)<', model_pill or "")
+    return (html_lib.unescape(m.group(1)), html_lib.unescape(m.group(2))) if m else None
+
+
+def _orca_folder_html(key: tuple[str, str], members: list[dict], proc_table: dict, proc_res: dict,
+                      now_sec: float) -> str:
+    """Folder card for one Orca worktree: [repo] 📁 worktree, then its lead cards as LEAD rows."""
+    from check_all_usage import merge_resources
+    repo, worktree = key
+    folder_id = "orca-" + re.sub(r"[^\w-]", "-", f"{repo}-{worktree}")
+    busy = any(m.get("busy") for m in members)
+    newest = max((m.get("updated_ts") or 0.0) for m in members)
+    dot, dot_tip = _status_dot_from_age(busy, max(0.0, now_sec - newest))
+    rollup = merge_resources(proc_table, [m["res"].get("rollup") for m in members], proc_res)
+    sessions = len(members) + sum(kind == "SUB" for m in members for kind, _, _ in m["res"].get("children") or ())
+    models = list(dict.fromkeys(m["model"] for m in members if m.get("model")))
+    short = "+".join(name for _, name in models)
+    run_attr = ' data-running="1"' if any(m.get("is_live_running") for m in members) else ""
+    # Spacers keep the folder's pills in the same columns as its rows (ctx pill = session count).
+    right = (f'<span class="model-pill" title="리드 모델: {_html_esc(" + ".join(name for name, _ in models))}">{_html_esc(short)}</span>'
+             f'<span class="ctx-pill" title="리드 {len(members)} · 전체 세션 {sessions}">세션 {sessions}</span>'
+             f'<span class="row-actions"></span>')
+    return (
+        f'<div class="tree-node orca-folder" data-node-id="{folder_id}" data-scope="current"{run_attr}>'
+        f'<div class="agent-row parent" onclick="toggleFolder(\'{folder_id}\')">'
+        f'<div class="agent-left">'
+        f'<span class="status-dot {dot}" title="{_html_esc(dot_tip)}"></span>'
+        f'<span class="repo-tag" title="Orca 워크트리 · {_html_esc(repo)}/{_html_esc(worktree)}">{_html_esc(repo)}</span>'
+        f'<span class="fold-chev" style="transition:transform .15s">▾</span>'
+        f'<span class="agent-name">📁 {_html_esc(worktree)}</span>'
+        f'</div>'
+        f'<div class="agent-right">{_res_slot_html(f"res-{folder_id}", rollup, rollup=True)}{right}</div>'
+        f'</div>'
+        f'<div class="tree-children folder-body" id="br-{folder_id}">{_finalize_child_rows([m["html"] for m in members])}</div>'
+        f'</div>'
+    )
 
 
 def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, str, int, int]:
@@ -3914,12 +3980,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         cdx_self = merge_resources(proc_table, [{"pids": own_pids_cdx}], proc_res) if own_pids_cdx else None
         cdx_kids = merge_resources(proc_table, [{"pids": sorted(claimed_pids_cdx)}], proc_res) if claimed_pids_cdx else None
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
+        orca = _orca_worktree(cdx.get("orca_worktree"), cwd)
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'det-cdx-{tid8}\')">'
             f'<div class="agent-left">'
-            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
-            f'<span class="repo-tag">{_html_esc(repo)}</span>'
+            f'{_main_prefix_html(root_dot, root_dot_tip, repo, bool(orca))}'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp)}</span>'
             f'</div>'
@@ -3944,6 +4010,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": False,
             "updated_ts": updated_ts,
             "html": parent_html,
+            "orca": orca, "busy": is_live_running, "model": _pill_label(model_pill),
             "res": {"kind": "MAIN", "label": disp, "rollup": cdx_rollup,
                     "children": ([("SELF", "메인 본체 (Codex 세션)", cdx_self)] if claimed_pids_cdx else []) + res_children_cdx},
         })
@@ -3997,12 +4064,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         pin_attr = ' data-pinned="1"' if is_pinned else ""
         run_attr = ' data-running="1"' if is_keep_alive_cl else ""
         pid_txt = f" · PID {cl['pid']}" if is_live and cl.get("pid") else ""
+        orca = _orca_worktree(cl.get("orca_worktree"), cwd)
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'det-cl-{sid8}\')">'
             f'<div class="agent-left">'
-            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
-            f'<span class="repo-tag" title="{terminal} · {_html_esc(cwd)}">{_html_esc(repo)}</span>'
+            f'{_main_prefix_html(root_dot, root_dot_tip, repo, bool(orca), f"{terminal} · {cwd}")}'
             f'{icon_svg}'
             f'<span class="agent-name">{_html_esc(disp)}</span>'
             f'</div>'
@@ -4026,6 +4093,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": False,
             "updated_ts": updated_ts,
             "html": parent_html,
+            "orca": orca, "busy": is_busy_cl, "model": _pill_label(model_pill),
             "res": {"kind": "MAIN", "label": disp, "rollup": cl_rollup,
                     "children": [("SELF", f"메인 본체 ({terminal} Claude 세션)", cl_self)] + res_children_cl},
         })
@@ -4037,7 +4105,19 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     ))
     if proc_res and "error" not in proc_res:
         active_parts.append(_res_board_html(active_entries, proc_table, proc_res))
-    active_parts.extend(item["html"] for item in active_entries)
+    # Sessions in one Orca worktree share a folder card at the rank of its first member.
+    folders: dict[tuple[str, str], list[dict]] = {}
+    for item in active_entries:
+        key = item.get("orca")
+        if not key:
+            active_parts.append(item["html"])
+        elif key not in folders:
+            folders[key] = [item]
+            active_parts.append(key)
+        else:
+            folders[key].append(item)
+    active_parts = [_orca_folder_html(part, folders[part], proc_table, proc_res, now_sec)
+                    if isinstance(part, tuple) else part for part in active_parts]
     active_parts.append("<!--__ACTIVE_TREE_HTML_END__-->")
 
     # 2. Build #view-closed (recently worked on & closed/completed within 7d / 30d)

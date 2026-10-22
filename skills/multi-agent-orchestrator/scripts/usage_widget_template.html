@@ -502,6 +502,9 @@
     }
     /* Hierarchy decoration must never consume a row column. */
     .tree-branch-char { display: none; }
+    .folder-collapsed > .tree-children { display: none; }
+    .folder-collapsed > .agent-row .fold-chev { transform: rotate(-90deg); }
+    .folder-body .tree-children .sub-prefix { padding-left: 14px; }
     .tree-children {
       margin: 0 !important;
       padding: 0 !important;
@@ -1134,7 +1137,6 @@
       .model-pill, .ctx-pill { font-size: 10.5px; }
       .open-btn, .import-btn { height: 22px; padding: 0 8px; font-size: 10.5px; }
       .agent-detail { font-size: 10.5px; }
-      #view-archive { max-height: 440px; }
       .mcp-chip { font-size: 11px; padding: 3px 8px; }
     }
     .state-pill {
@@ -2007,12 +2009,6 @@
       <symbol id="ico-bolt-1" viewBox="0 0 12 16">
         <path d="M7.2 0.8L1.0 9.0H6.0L4.6 15.2L11.0 6.8H6.0L7.2 0.8Z" fill="currentColor"/>
       </symbol>
-      <!-- Triple Tightly Overlapping Lightning Bolts (Codex service_tier: ultrafast = Ultrafast) -->
-      <symbol id="ico-bolt-3" viewBox="0 0 19.5 16">
-        <path d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" opacity="0.65"/>
-        <path transform="translate(4.1, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill" opacity="0.88"/>
-        <path transform="translate(8.2, 0)" d="M6.8 1.0L0.8 9.0H5.4L4.2 15.0L10.2 7.0H5.6L6.8 1.0Z" fill="currentColor" stroke="var(--bolt-cut, #111827)" stroke-width="1.35" stroke-linejoin="round" paint-order="stroke fill"/>
-      </symbol>
       <!-- Effort speedometer v6 (viewBox="0 -960 960 960", flat bottom + teardrop needle, open ring gap at needle tip) -->
       <!-- Sweep trails run from the 0% start (bottom-left) to the needle tip -->
       <linearGradient id="grad-max-sweep" x1="180" y1="-220" x2="780" y2="-450" gradientUnits="userSpaceOnUse">
@@ -2053,20 +2049,6 @@
         <path fill="currentColor" transform="rotate(43.2 480 -400)" d="M479.04-325.92q33.58-1.08 49.27-24.23L689.64-583.84q8.59-12.93-1.95-23.47t-23.49-1.97L430.15-448.31q-23.54,15.69-25.42,48.27t19.42,53.88t54.88,20.23Z"/>
         <path fill="currentColor" d="M815-880C815-795 752-732 667-732C752-732 815-669 815-584C815-669 878-732 960-732C878-732 815-795 815-880Z"/>
         <path fill="currentColor" fill-opacity="0.88" d="M625-935C625-892 592-859 549-859C592-859 625-826 625-783C625-826 658-859 701-859C658-859 625-892 625-935Z"/>
-      </symbol>
-      <!-- 5-Hour Rolling Session Stopwatch Icon (크라운 + 우측 푸셔 + 5시간 섹터 웨지 & 시침) -->
-      <symbol id="ico-win-5h" viewBox="0 0 24 24">
-        <path d="M9.2 2H14.8M12 2V4.6M18.2 5.2L20.3 3.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-        <circle cx="12" cy="13.2" r="8.2" fill="none" stroke="currentColor" stroke-width="2.1"/>
-        <path d="M12 13.2L12 6.2A7 7 0 0 1 15.5 19.2Z" fill="currentColor" fill-opacity="0.32"/>
-        <path d="M12 8.2V13.2L15.3 15.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      </symbol>
-      <!-- 7-Day Weekly Calendar Icon (상단 바인더 링 + 헤더 바 + 캘린더 내부 '7' 주간 심볼) -->
-      <symbol id="ico-win-7d" viewBox="0 0 24 24">
-        <rect x="2.5" y="4.5" width="19" height="17" rx="3.2" fill="none" stroke="currentColor" stroke-width="2.1"/>
-        <path d="M2.5 7.7C2.5 5.9 3.9 4.5 5.7 4.5H18.3C20.1 4.5 21.5 5.9 21.5 7.7V9.3H2.5Z" fill="currentColor" fill-opacity="0.35"/>
-        <path d="M2.5 9.3H21.5M7.5 2V5.6M16.5 2V5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-        <path d="M9.2 12.3H15.0L11.2 18.8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
       </symbol>
     </defs>
   </svg>
@@ -2642,9 +2624,10 @@
     }
 
     function applyTreeUiState() {
-      document.querySelectorAll('.tree-children, [id^="br-"]').forEach(el => {
+      document.querySelectorAll('.tree-children:not(.folder-body), [id^="br-"]:not(.folder-body)').forEach(el => {
         el.classList.toggle('hidden', allCollapsed);
       });
+      document.querySelectorAll('.orca-folder').forEach(n => n.classList.toggle('folder-collapsed', foldedSet.has(n.dataset.nodeId)));
       document.querySelectorAll('.agent-detail[id]').forEach(el => {
         el.classList.toggle('open', openDetails.has(el.id));
       });
@@ -2683,6 +2666,13 @@
         br.classList.remove('hidden');
       }
       applyTreeFilters();
+      notifyParentResize();
+    }
+
+    function toggleFolder(id) {
+      if (!foldedSet.delete(id)) foldedSet.add(id);
+      safeSet('agy_folded_orca_v1', JSON.stringify([...foldedSet]));
+      applyTreeUiState();
       notifyParentResize();
     }
 
@@ -2804,6 +2794,7 @@
     let allCollapsed = safeGet(STORAGE_ALL_COLLAPSED, String(SERVER_STATE.allCollapsed === true)) === 'true';
     let showBgDaemons = safeGet(STORAGE_SHOW_BG_DAEMONS, String(SERVER_STATE.showBgDaemons !== false)) !== 'false';
     const openDetails = new Set(storedIdList(STORAGE_OPEN_DETAILS, SERVER_STATE.openDetails));
+    const foldedSet = new Set(storedIdList('agy_folded_orca_v1', []));
     let userTouchedState = false;
     let userTouchedTab = false;
     let lastDismissedId = null;
@@ -2854,10 +2845,6 @@
         openDetails.clear();
         state.openDetails.filter(id => typeof id === 'string').forEach(id => openDetails.add(id));
       }
-    }
-
-    function saveCustomState(extraBody = {}) {
-      saveState(extraBody);
     }
 
     function saveState(extraBody = {}) {
@@ -3004,7 +2991,7 @@
         }
         const inScope = currentScope === 'all' || node.dataset.scope === 'current' || importedSet.has(id) || isPin;
         node.classList.toggle('hidden', !inScope);
-        if (inScope) activeRootCount++;
+        if (inScope) activeRootCount += node.querySelectorAll(':scope > .folder-body > .tree-node').length || 1;
       });
 
       // Child nodes inside #view-active
@@ -3278,14 +3265,6 @@
       showToast(`'${label}' 목록에서 숨김 처리됨`, true);
     }
 
-    function restoreClosedSession(nodeId, label) {
-      dismissedSet.delete(nodeId);
-      saveState({ removeDismissed: [nodeId] });
-      applyTreeFilters();
-      showToast(`'${label}' 세션을 복원했습니다.`);
-      notifyParentResize();
-    }
-
     function undoLastDismiss() {
       const batch = (Array.isArray(lastDismissedBatch) && lastDismissedBatch.length)
         ? lastDismissedBatch
@@ -3353,18 +3332,6 @@
       document.body.classList.remove('codex-popover-open');
       document.body.style.removeProperty('--codex-popover-space');
       notifyHostResize();
-    }
-
-    function closeCodexDirectBar() {
-      hideCodexDirectBar();
-    }
-
-    function openCodexPopover(threadId, label, cwd) {
-      openCodexDirectBar(threadId, label, cwd);
-    }
-
-    function closeCodexPopover() {
-      hideCodexDirectBar();
     }
 
     async function sendCodexDirectCommand() {
@@ -3483,16 +3450,6 @@
       label.classList.toggle('ok', ok);
       input.select();
       if (btn) { btn.textContent = ok ? '✓' : '선택됨'; setTimeout(() => { btn.textContent = '복사'; }, 1200); }
-    }
-
-    function copySessionCmd(nodeId, cmdText, btn) {
-      const ok = copyText(cmdText);
-      showCmdBox(cmdText, ok);
-      if (btn) {
-        const prev = btn.textContent;
-        btn.textContent = ok ? '✓' : '선택됨';
-        setTimeout(() => { btn.textContent = prev; }, 1200);
-      }
     }
 
     async function importOrCopySession(nodeId, cmdText, btn) {
@@ -3848,6 +3805,10 @@
               patchAgentRowInPlace(oRow, nRow, true);
             }
           }
+          const oB = oldChild.querySelector(':scope > .tree-children[id^="br-"]');
+          const nB = newChild.querySelector(':scope > .tree-children[id^="br-"]');
+          if (oB && nB) reconcileBranchChildren(oB, nB);
+          else if (nB) oldChild.appendChild(nB);
           if (newChild.dataset.subAge !== undefined) {
             if (newChild.dataset.subRunning === '1') {
               oldChild.dataset.subAge = '0';

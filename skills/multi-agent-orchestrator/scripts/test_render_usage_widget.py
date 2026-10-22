@@ -43,8 +43,8 @@ class RenderingTests(unittest.TestCase):
 
     def test_orca_terminal_sessions_are_current_main_agents(self):
         orca = os.path.expanduser('~/orca/workspaces/tag_gcdual/로봇-테스트')
-        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca), ('tag_gcdual/로봇-테스트', 'current'))
-        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca + '/src'), ('tag_gcdual/로봇-테스트', 'current'))
+        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca), ('tag_gcdual', 'current'))
+        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca + '/src'), ('tag_gcdual', 'current'))
         self.assertEqual(widget._repo_from_uris_or_cwd(None, '/tmp/elsewhere'), ('elsewhere', 'external'))
         now = datetime.now(timezone.utc).timestamp()
         main = dict(session_id='orca-main', entrypoint='cli', terminal='orca', activity='busy', is_running=True,
@@ -64,7 +64,8 @@ class RenderingTests(unittest.TestCase):
                 {'agent_trees': {'codex': [codex], 'claude': [main, worker, printer, exited]}}, {})
         self.assertIn('data-node-id="node-claude-orca-main" data-scope="current" data-running="1"', active)
         self.assertIn('data-node-id="node-cdx-orca-codex" data-scope="current"', active)
-        self.assertIn('>tag_gcdual/로봇-테스트</span>', active)
+        self.assertIn('>tag_gcdual</span>', active)
+        self.assertIn('📁 로봇-테스트', active)
         card = active.split('data-node-id="node-claude-orca-main"')[1].split('data-node-id="node-cdx-')[0]
         self.assertIn('status-dot busy', card)
         self.assertIn('Opus 5.5', card)
@@ -74,6 +75,58 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('node-claude-orca-exited', active)
         self.assertIn('data-node-id="closed-claude-orca-exi" data-scope="current"', closed)
         self.assertEqual(count, 2)
+
+    def test_orca_worktree_sessions_group_under_one_folder_row(self):
+        robot = os.path.expanduser('~/orca/workspaces/tag_gcdual/로봇-테스트')
+        imp = os.path.expanduser('~/orca/workspaces/tag_gcdual/임피던스-리서치')
+        self.assertEqual(widget._orca_worktree('03312217::' + robot), ('tag_gcdual', '로봇-테스트'))
+        self.assertEqual(widget._orca_worktree('', os.path.expanduser('~/.config/orca/worktrees/r/w/x')), ('r', 'w'))
+        self.assertIsNone(widget._orca_worktree(os.path.expanduser('~/orca/workspaces/tag_gcdual'), '/tmp'))
+        now = datetime.now(timezone.utc).timestamp()
+        cdx_lead = dict(thread_id='cdx-lead', source='cli', cwd=robot, title='구현 tag_gcdual 플랜 B 테스트 콘솔',
+                        updated_at=now - 5)
+        mate = dict(thread_id='cdx-mate', source='cli', cwd=robot, title='Delegate Plan B DRFL code work',
+                    updated_at=now - 30, orca_lead_id='cdx-lead')
+        cl_lead = dict(session_id='cl-lead', entrypoint='cli', terminal='orca', activity='idle', is_running=True,
+                       pid=11, cwd=robot + '/src', title='자코비안 따라가기', updated_at=now - 60)
+        busy = dict(session_id='cl-busy', entrypoint='cli', terminal='orca', activity='busy', is_running=True, pid=12,
+                    cwd=robot, title='You own code-only work', updated_at=now, orca_lead_id='cdx-lead')
+        fast = dict(thread_id='cdx-fast', source='cli', cwd=imp, title='패스트 모드 끄기', updated_at=now - 120)
+        other = dict(thread_id='cdx-other', source='cli', cwd=os.path.expanduser('~/dev/tag_gocart'),
+                     title='Elsewhere', updated_at=now - 10)
+        panes = [dict(pid=20, provider='codex', session_id='cdx-mate', parent_session_id='', parent_conversation_id='')]
+        with mock.patch('live_worker_processes.scan_live_worker_processes', return_value=panes):
+            active, _, count, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'codex': [cdx_lead, mate, fast, other], 'claude': [cl_lead, busy]}}, {})
+        folder = active.split('data-node-id="orca-tag_gcdual-로봇-테스트"')[1].split('data-node-id="orca-tag_gcdual-임피던스')[0]
+        head, body = folder.split('class="tree-children folder-body"', 1)
+        self.assertIn('onclick="toggleFolder(\'orca-tag_gcdual-로봇-테스트\')"', head)
+        self.assertIn('>tag_gcdual</span>', head)
+        self.assertIn('📁 로봇-테스트', head)
+        self.assertIn('세션 4', head)
+        self.assertIn('리드 모델: 6.1-sol + Opus 5.5">6.1-s+O-5.5<', head)
+        self.assertIn('status-dot busy', head)
+        self.assertIn(' data-running="1"', head.split('>', 1)[0])
+        # Both leads are LEAD rows in the folder; their teammates stay SUB rows under them.
+        for lead in ('node-cdx-cdx-lead', 'node-claude-cl-lead'):
+            self.assertIn(f'data-node-id="{lead}"', body)
+        self.assertEqual(body.count('class="sub-tag">LEAD<'), 2)
+        lead_card = body.split('data-node-id="node-cdx-cdx-lead"')[1].split('data-node-id="node-claude-cl-lead"')[0]
+        self.assertIn('node-sub-claude-cl-busy', lead_card)
+        self.assertIn('node-sub-cdx-cdx-lead-cdx-mate', lead_card)
+        self.assertNotIn('class="repo-tag"', body.split('class="agent-row parent"')[1].split('agent-name')[0])
+        self.assertIn('<span class="tree-elbow">└─</span><span class="status-dot', body.split('node-claude-cl-lead')[1])
+        imp_folder = active.split('data-node-id="orca-tag_gcdual-임피던스-리서치"')[1]
+        self.assertIn('📁 임피던스-리서치', imp_folder)
+        self.assertIn('data-node-id="node-cdx-cdx-fast"', imp_folder)
+        # Members sit two levels deep (folder > folder-body); a non-Orca session stays top-level.
+        def depth(node_id):
+            before = active.split(f'data-node-id="{node_id}"')[0]
+            return before.count('<div') - before.count('</div>')
+        self.assertEqual([depth(n) for n in ('node-cdx-cdx-lead', 'node-claude-cl-lead', 'node-cdx-cdx-fast')], [3, 3, 3])
+        self.assertEqual(depth('node-cdx-cdx-other'), 1)
+        self.assertIn('>tag_gocart</span>', active)
+        self.assertEqual(active.count('class="tree-node orca-folder"'), 2)
 
     def test_orca_teammate_panes_nest_as_sub_rows_under_their_lead(self):
         orca = os.path.expanduser('~/orca/workspaces/tag_gcdual/로봇-테스트')
