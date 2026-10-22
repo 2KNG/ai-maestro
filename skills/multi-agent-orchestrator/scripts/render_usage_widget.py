@@ -444,15 +444,16 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .usage-donut > svg {
       width: 100%;
       height: 100%;
-      stroke-width: 5;
-      stroke-linecap: butt;
+      stroke-width: 2.4;
+      stroke-linecap: round;
       fill: none;
     }
     .usage-ring-track { stroke: var(--border); }
     .usage-ring-remaining { stroke: currentColor; }
-    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); stroke-width: 2.2; }
-    .usage-clock-background { fill: #7397c2; fill-opacity: 0.18; stroke: none; }
-    .usage-clock-fill { fill: #436f9f; fill-opacity: 0.88; stroke: none; }
+    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); }
+    .usage-donut.exhausted .usage-ring-remaining { display: none; }
+    .usage-clock-background { fill: rgba(15, 23, 42, 0.45); stroke: rgba(148, 163, 184, 0.16); stroke-width: 1; }
+    .usage-clock-fill { fill: rgba(96, 165, 250, 0.22); stroke: rgba(147, 197, 253, 0.42); stroke-width: 1.5; stroke-linejoin: round; }
 
     .usage-donut-center {
       position: absolute;

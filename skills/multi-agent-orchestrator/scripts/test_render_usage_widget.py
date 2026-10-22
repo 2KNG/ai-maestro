@@ -100,7 +100,7 @@ class RenderingTests(unittest.TestCase):
         for marker in ('__SERVER_STATE_JSON_START__', '__ACCOUNTS_JSON_START__', '__ACTIVE_TREE_HTML_START__'):
             self.assertIn(marker, restored)
         # The template alone bundles to ~54.96 KB; the per-agent resource CSS/JS adds ~1.3 KB and the
-        # dark-theme HUD glow layer (pool rims, donut bloom, telemetry fills) ~0.7 KB after dead-CSS cleanup.
+        # dark-theme quota tint layer (pool rims, thin ring glow, elapsed wedge) ~0.3 KB (bundle ~56.9 KB).
         self.assertLess(len(bundled.encode()), 58000)
 
     def test_child_nodes_ordering_and_cron_at_bottom(self):

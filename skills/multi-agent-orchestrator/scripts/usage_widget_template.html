@@ -277,15 +277,16 @@
     .usage-donut > svg {
       width: 100%;
       height: 100%;
-      stroke-width: 5;
-      stroke-linecap: butt;
+      stroke-width: 2.4;
+      stroke-linecap: round;
       fill: none;
     }
     .usage-ring-track { stroke: var(--bdr); }
     .usage-ring-remaining { stroke: currentColor; }
-    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); stroke-width: 2.2; }
-    .usage-clock-background { fill: #7397c2; fill-opacity: 0.18; stroke: none; }
-    .usage-clock-fill { fill: #436f9f; fill-opacity: 0.85; stroke: none; }
+    .usage-donut.exhausted .usage-ring-track { stroke: var(--red); }
+    .usage-donut.exhausted .usage-ring-remaining { display: none; }
+    .usage-clock-background { fill: rgba(15, 23, 42, 0.45); stroke: rgba(148, 163, 184, 0.16); stroke-width: 1; }
+    .usage-clock-fill { fill: url(#ug-elapsed); stroke: rgba(147, 197, 253, 0.42); stroke-width: 1.5; stroke-linejoin: round; }
 
     .usage-donut-center {
       position: absolute;
@@ -690,7 +691,7 @@
     .model-pill.flash { color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); }
     .model-pill.claude { color: #D97757; border-color: rgba(217, 119, 87, 0.35); }
     .model-pill.codex { color: #34d399; border-color: rgba(52, 211, 153, 0.3); }
-    .tier-bolt{flex:none;margin-left:3px;color:#fbbf24;font-size:10px;letter-spacing:-2px;text-shadow:0 0 6px #fbbf2488}
+    .tier-bolt{flex:none;margin-left:3px;color:#fbbf24;font-size:10px;letter-spacing:-2px}
 
     /* Pure SVG Lightning Speed Badges (1x Bolt = Fast, 3x Overlapping Bolts = Ultra Fast) */
     .bolt-badge {
@@ -1107,7 +1108,7 @@
       background: rgba(194, 65, 12, 0.03);
     }
     html.light .usage-clock-background { fill: #64748b; fill-opacity: 0.15; }
-    html.light .usage-clock-fill { fill: #3b82f6; fill-opacity: 0.28; }
+    html.light .usage-clock-fill { fill: #3b82f6; fill-opacity: 0.22; stroke: rgba(37, 99, 235, 0.38); }
     html.light .seg-group {
       background: #e2e8f0;
       border-color: #cbd5e1;
@@ -2005,48 +2006,24 @@
       letter-spacing: -0.02em;
       transition: color 1.2s ease;
     }
-    /* Tactical HUD glow: crisp specular rim + radial ambient aura + SVG arc bloom (dark theme only). */
+    /* Quota tier tint: thin soft-glow rings, calm 1px pool rims, no pill/text glow (dark theme only). */
     .g-full { --g: 56 189 248; }
     .g-hi { --g: 16 185 129; }
     .g-mid { --g: 245 158 11; }
     .g-low { --g: 244 63 94; }
     .g-mid :is(.usage-donut, .usage-quota-state) { color: var(--amber); }
     .g-low :is(.usage-donut, .usage-quota-state) { color: var(--red); }
-    .usage-account[data-provider="antigravity"] { --a: 56 189 248; --e: #38bdf8, #10b981; }
-    .usage-account[data-provider="codex"] { --a: 16 185 129; --e: #10b981, #34d399; }
-    .usage-account[data-provider="claude"] { --a: 251 146 60; --e: #f59e0b, #fb923c; }
+    .usage-account[data-provider="antigravity"] { --a: 56 189 248; }
+    .usage-account[data-provider="codex"] { --a: 16 185 129; }
+    .usage-account[data-provider="claude"] { --a: 251 146 60; }
     html:not(.light) {
-      .widget-shell {
-        border-color: rgba(129, 140, 248, 0.2);
-        background: linear-gradient(90deg, transparent 15%, #38bdf8, #818cf8, transparent 85%) 0 0 / 100% 1px no-repeat, radial-gradient(ellipse 60% 120px at 50% 0, rgba(56, 189, 248, 0.08), transparent 70%), var(--shell-bg);
-        box-shadow: 0 18px 44px -14px rgba(2, 6, 23, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-      }
       .usage-panel:not([data-density="compact"]) .usage-account {
-        border-color: rgb(var(--a) / 0.3);
-        background: linear-gradient(90deg, transparent 10%, var(--e), transparent 90%) 0 0 / 100% 1.5px no-repeat, radial-gradient(ellipse 80% 55% at 50% 0, rgb(var(--a) / 0.13), transparent 70%), rgba(2, 6, 23, 0.32);
-        box-shadow: 0 10px 30px -6px rgba(2, 8, 23, 0.75), 0 0 22px -4px rgb(var(--a) / 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        border-color: rgb(var(--a) / 0.28);
+        background: radial-gradient(ellipse 80% 55% at 50% 0, rgb(var(--a) / 0.045), transparent 70%), rgba(2, 6, 23, 0.32);
       }
-      .usage-account-heading {
-        padding: 1px 8px;
-        border: 1px solid rgb(var(--a) / 0.42);
-        border-radius: 99px;
-        background: linear-gradient(rgb(var(--a) / 0.13), rgb(var(--a) / 0.05)), #0c1322;
-        box-shadow: 0 0 12px -2px rgb(var(--a) / 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-        > strong { text-shadow: 0 0 8px rgb(var(--a) / 0.65); letter-spacing: 0.03em; }
-      }
-      .usage-donut { background: radial-gradient(circle closest-side, rgb(var(--g) / 0.16), transparent); border-radius: 50%; }
       .usage-donut > svg { overflow: visible; }
       .usage-ring-track { stroke: rgba(148, 163, 184, 0.15); }
-      .usage-ring-remaining { filter: drop-shadow(0 0 2.5px rgb(var(--g) / 0.6)) drop-shadow(0 0 7px rgb(var(--g) / 0.24)); }
-      .g-low :is(.usage-ring-remaining, .exhausted .usage-ring-track) { filter: drop-shadow(0 0 3px rgb(var(--g) / 0.7)) drop-shadow(0 0 9px rgb(var(--g) / 0.3)); }
-      .usage-donut-center > strong { text-shadow: 0 0 10px rgb(var(--g) / 0.55), 0 0 1px #fff6; }
-      .usage-quota-state { text-shadow: 0 0 8px rgb(var(--g) / 0.45); }
-      .remote-pill, .route-pill, .pc-hud-tag, #tab-active.active {
-        box-shadow: inset 0 1px 0 #fff2, 0 0 12px -3px currentColor;
-        text-shadow: 0 0 7px color-mix(in srgb, currentColor 45%, transparent);
-      }
-      .pc-hud-bar { overflow: visible; }
-      .pc-hud-bar > i, .pc-bento-fill { box-shadow: 0 0 6px currentColor; }
+      :is(.usage-ring-remaining, .exhausted .usage-ring-track) { filter: drop-shadow(0 0 4px rgb(var(--g) / 0.45)); }
     }
   </style>
 </head>
@@ -2054,6 +2031,7 @@
   <!-- Reusable SVG Defs for Brand Icons, Official Google Antigravity A-Arch Logo & Lightning Bolts -->
   <svg width="0" height="0" style="position:absolute">
     <defs>
+      <linearGradient id="ug-elapsed" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#60a5fa" stop-opacity=".28"/><stop offset="1" stop-color="#3b82f6" stop-opacity=".16"/></linearGradient>
       <linearGradient id="gem-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
         <stop stop-color="#4E82EE"/>
         <stop offset="0.5" stop-color="#9B72CB"/>
