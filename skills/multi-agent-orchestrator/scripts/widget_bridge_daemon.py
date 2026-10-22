@@ -42,6 +42,12 @@ DEFAULT_DEV_DIR = os.path.join(HOME_DIR, "dev")
 STATE_FILE = os.path.expanduser("~/.gemini/antigravity/widget_state.json")
 WIDGET_HTML = os.path.join(HOME_DIR, ".gemini/antigravity/brain/521b781e-43da-4647-b411-585e65e5f002/usage_widget.html")
 PORT = 18765
+# Widget monospace font, served so remote (proxied) browsers get D2Coding Ligature too.
+FONT_DIR = os.path.join(HOME_DIR, ".local/share/fonts/D2CodingNerdFont")
+FONT_ROUTES = {
+    "/fonts/D2CodingLigature-Regular.ttf": "D2CodingLigatureNerdFont-Regular.ttf",
+    "/fonts/D2CodingLigature-Bold.ttf": "D2CodingLigatureNerdFont-Bold.ttf",
+}
 
 # Auto-provisioning of usage_widget.html into every conversation directory
 BRAIN_DIR = os.path.expanduser("~/.gemini/antigravity/brain")
@@ -489,8 +495,34 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._set_cors(204)
 
+    def _serve_font(self, path, head_only=False):
+        font_path = os.path.join(FONT_DIR, FONT_ROUTES[path])
+        try:
+            with open(font_path, "rb") as fh:
+                body = b"" if head_only else fh.read()
+            size = os.path.getsize(font_path)
+        except OSError:
+            self._set_cors(404, "text/plain; charset=utf-8")
+            if not head_only:
+                self.wfile.write(b"font not installed")
+            return
+        self._set_cors(200, "font/ttf", {"Content-Length": str(size),
+                                          "Cache-Control": "public, max-age=31536000, immutable"})
+        if body:
+            self.wfile.write(body)
+
+    def do_HEAD(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path in FONT_ROUTES:
+            self._serve_font(path, head_only=True)
+        else:
+            self._set_cors(405, "text/plain; charset=utf-8")
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in FONT_ROUTES:
+            self._serve_font(parsed.path)
+            return
         if parsed.path in ("/", "/index.html", "/widget", "/usage_widget.html"):
             snapshot = _http_snapshot
             self._set_cors(200, "text/html; charset=utf-8")

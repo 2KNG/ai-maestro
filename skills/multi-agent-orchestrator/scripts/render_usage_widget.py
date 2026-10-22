@@ -255,7 +255,10 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
+    @font-face{font-family:D2CodingLigature;src:local("D2CodingLigature Nerd Font"),local("D2CodingLigature Nerd Font Mono"),local("D2Coding ligature"),local("D2Coding"),url(fonts/D2CodingLigature-Regular.ttf) format("truetype")}
+    @font-face{font-family:D2CodingLigature;font-weight:700;src:local("D2CodingLigature Nerd Font Bold"),local("D2Coding ligature Bold"),local("D2Coding Bold"),url(fonts/D2CodingLigature-Bold.ttf) format("truetype")}
     :root {
+      --mono: D2CodingLigature, "D2CodingLigature Nerd Font", "D2Coding ligature", D2Coding, ui-monospace, SFMono-Regular, Menlo, monospace;
       --bg: var(--background, #0d131f);
       --panel: var(--card, #111827);
       --surface: rgba(128, 145, 175, 0.06);
@@ -692,7 +695,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       flex: none;
     }
     .model-pill {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 9px;
       padding: 1.5px 5.5px;
       border-radius: 4px;
@@ -739,7 +742,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       margin-left: 1px;
       padding: 1.5px 5.5px;
       border-radius: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 8.5px;
       font-weight: 700;
       line-height: 1.2;
@@ -763,7 +766,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 9px;
       color: var(--muted);
       white-space: nowrap;
@@ -821,7 +824,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       border-width: 0;
       border-radius: 5px;
       background: rgba(15, 23, 42, 0.5);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 9px;
       color: var(--muted);
       line-height: 0;
@@ -970,13 +973,13 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       padding-left: 4px; overflow: hidden; white-space: nowrap;
     }
     .agent-row .sub-prefix .tree-elbow {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 11.5px; font-weight: 700; color: #818cf8;
       width: 14px; text-align: center; line-height: 1; flex: none;
     }
     .agent-row .sub-prefix .status-dot { width: 7.5px; height: 7.5px; flex: none; }
     .agent-row .sub-prefix .sub-tag {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--mono);
       font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
       flex: 1 1 auto; min-width: 0; height: 18px; line-height: 16px;
       padding: 0 5px; border-radius: 4px; box-sizing: border-box;
@@ -2213,7 +2216,7 @@ RES_ASSETS_CSS = (
     ".res-slot{display:inline-flex;flex:none}"
     ".res-pill{display:inline-flex;align-items:center;gap:6px;height:18px;box-sizing:border-box;padding:0 5px;"
     "border-radius:4px;border:1px solid var(--bdr);white-space:nowrap}"
-    ".res-pill,.res-meta,.res-table{color:var(--muted);font:9.5px ui-monospace,Menlo,monospace}"
+    ".res-pill,.res-meta,.res-table{color:var(--muted);font:9.5px var(--mono,monospace)}"
     ".res-pill.rollup{border-color:#22d3ee55}.res-pill.idle{opacity:.55}"
     ".res-pill>span{display:inline-flex;align-items:baseline;gap:3px}"
     ".rl{font-weight:700;opacity:.85}"
