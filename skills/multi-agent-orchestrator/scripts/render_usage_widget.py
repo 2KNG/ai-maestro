@@ -391,8 +391,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     legend.usage-account-heading > strong {
       color: var(--accent, var(--text));
       font-weight: 700;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .usage-state-dot {
       width: 5px;
@@ -414,6 +413,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: flex-start;
       gap: 1px;
       text-align: center;
     }
@@ -452,8 +452,8 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
     .usage-ring-remaining { stroke: currentColor; }
     .usage-donut.exhausted .usage-ring-track { stroke: var(--red); }
     .usage-donut.exhausted .usage-ring-remaining { display: none; }
-    .usage-clock-background { fill: rgba(15, 23, 42, 0.45); stroke: rgba(148, 163, 184, 0.16); stroke-width: 1; }
-    .usage-clock-fill { fill: rgba(96, 165, 250, 0.22); stroke: rgba(147, 197, 253, 0.42); stroke-width: 1.5; stroke-linejoin: round; }
+    .usage-clock-background { fill: rgba(15, 23, 42, 0.3); stroke: rgba(148, 163, 184, 0.12); stroke-width: 1; }
+    .usage-clock-fill { fill: rgba(96, 165, 250, 0.26); stroke: rgba(147, 197, 253, 0.38); stroke-width: 1.1; stroke-linejoin: miter; }
 
     .usage-donut-center {
       position: absolute;
@@ -924,15 +924,16 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       height: 100%;
       padding: 5px 6px 6px;
       flex-direction: column;
-      justify-content: center;
+      justify-content: flex-start;
     }
+    /* Top-align every donut so a taller caption under one gauge cannot shift its circle. */
     .usage-panel .usage-account-windows,
     .usage-panel[data-density="compact"] .usage-account-windows {
       display: grid;
       grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
-      align-items: center;
+      align-items: start;
       justify-items: center;
-      align-content: center;
+      align-content: start;
       flex: 1;
       width: 100%;
     }

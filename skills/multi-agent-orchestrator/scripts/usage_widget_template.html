@@ -234,8 +234,7 @@
     legend.usage-account-heading > strong {
       color: var(--accent, var(--text));
       font-weight: 700;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .usage-account-windows {
       display: grid;
@@ -248,6 +247,7 @@
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: flex-start;
       gap: 1px;
       text-align: center;
     }
@@ -285,19 +285,18 @@
     .usage-ring-remaining { stroke: currentColor; }
     .usage-donut.exhausted .usage-ring-track { stroke: var(--red); }
     .usage-donut.exhausted .usage-ring-remaining { display: none; }
-    .usage-clock-background { fill: rgba(15, 23, 42, 0.45); stroke: rgba(148, 163, 184, 0.16); stroke-width: 1; }
+    .usage-clock-background { fill: rgba(15, 23, 42, 0.3); stroke: rgba(148, 163, 184, 0.12); stroke-width: 1; }
     .usage-clock-fill {
-      fill: rgba(96, 165, 250, 0.5);
-      stroke: rgba(147, 197, 253, 0.72);
+      /* Kept translucent so the white center numbers stay dominant. */
+      fill: rgba(96, 165, 250, 0.26);
+      stroke: rgba(147, 197, 253, 0.38);
       stroke-width: 1.1;
       stroke-linejoin: miter;
       /* Radar sweep: tail at 12 o'clock starts at 0.36 (legible start edge), ramps to full at the elapsed angle --e.
-         The last 4deg before 360 hold the tail alpha so the outer half of the 12 o'clock stroke is not clipped.
-         filter (glow) runs before mask. */
+         The last 4deg before 360 hold the tail alpha so the outer half of the 12 o'clock stroke is not clipped. */
       mask-image: conic-gradient(rgb(0 0 0 / 0.36), rgb(0 0 0 / 0.55) calc(var(--e) * 0.5), rgb(0 0 0 / 0.8) calc(var(--e) * 0.82), #000 var(--e), #000 calc(var(--e) + 8deg), transparent 0deg calc(360deg - 4deg), rgb(0 0 0 / 0.36) 0deg);
       mask-origin: view-box;
       mask-clip: no-clip;
-      filter: drop-shadow(0 0 1.5px rgba(96, 165, 250, 0.55));
     }
 
     .usage-donut-center {
@@ -392,6 +391,7 @@
       font-size: 8.5px;
       line-height: 1.15;
       font-weight: 500;
+      white-space: nowrap;
     }
     .usage-quota-state.unused { color: var(--blue); }
     .usage-quota-state.in-use { color: var(--green); }
@@ -1120,7 +1120,7 @@
       background: rgba(194, 65, 12, 0.03);
     }
     html.light .usage-clock-background { fill: #64748b; fill-opacity: 0.15; }
-    html.light .usage-clock-fill { fill: rgba(59, 130, 246, 0.42); stroke: rgba(37, 99, 235, 0.62); filter: none; }
+    html.light .usage-clock-fill { fill: rgba(59, 130, 246, 0.24); stroke: rgba(37, 99, 235, 0.36); }
     html.light .seg-group {
       background: #e2e8f0;
       border-color: #cbd5e1;
@@ -1357,21 +1357,23 @@
       gap: 6px;
       align-items: stretch;
     }
+    /* Cards never shrink below their content (no "Co..." legends), and every donut is top-aligned
+       so a taller caption under one gauge cannot shift its circle off the shared row. */
     .usage-panel:not([data-density="compact"]) fieldset.usage-account {
       flex: var(--cols, 1) 1 0% !important;
-      min-width: 0;
+      min-width: max-content;
       min-height: 108px;
       height: 100%;
       padding: 5px 6px 6px;
       flex-direction: column;
-      justify-content: center;
+      justify-content: flex-start;
     }
     .usage-panel:not([data-density="compact"]) .usage-account-windows {
       display: grid;
       grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
-      align-items: center;
+      align-items: start;
       justify-items: center;
-      align-content: center;
+      align-content: start;
       flex: 1;
       width: 100%;
     }
