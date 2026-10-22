@@ -3,6 +3,7 @@
 Only executable argv positions identify workers. Prompt text is never searched.
 The cache may retain a departed process for CACHE_TTL seconds.
 """
+import json
 import os
 from pathlib import Path
 import re
@@ -160,6 +161,20 @@ def _speed_tier(provider, args, env):
     return ''
 
 
+def _claude_session_file(proc_root, pid):
+    """An interactive `claude` names its own session only in ~/.claude/sessions/<pid>.json."""
+    if os.path.realpath(proc_root) != '/proc':
+        return ''
+    try:
+        with open(os.path.expanduser(f'~/.claude/sessions/{pid}.json'), encoding='utf-8') as stream:
+            data = json.load(stream)
+    except (OSError, ValueError):
+        return ''
+    if not isinstance(data, dict) or str(data.get('pid')) != str(pid):
+        return ''
+    return str(data.get('sessionId') or '')
+
+
 def _rollout_session(path):
     try:
         with os.scandir(path / 'fd') as entries:
@@ -206,7 +221,7 @@ def _scan(proc_root):
         record = dict(pid=int(pid), ppid=ppid,
                       parent_conversation_id=env.get('ANTIGRAVITY_CONVERSATION_ID', '').strip() or cid,
                       provider=provider, pool='', session_id='', registry_id='', spec='', cwd=cwd,
-                      task_id=task_id, task_log=task_log, tier='')
+                      task_id=task_id, task_log=task_log, tier='', parent_session_id='')
         if provider:
             record['pool'] = _option(args, '--pool') or env.get('MAESTRO_WORKER_POOL', '') or provider
             record['tier'] = _speed_tier(provider, args, env)
@@ -215,6 +230,8 @@ def _scan(proc_root):
             record['session_id'] = _session(provider, args, {})
             if provider == 'codex' and not record['session_id']:
                 record['session_id'] = _rollout_session(path)
+            if provider == 'claude' and not record['session_id']:
+                record['session_id'] = _claude_session_file(proc_root, pid)
             if not record['session_id']:
                 record['session_id'] = _session(provider, args, env)
             record['registry_id'] = env.get('MAESTRO_REGISTRY_ID', '') or _option(args, '--registry-id')
@@ -248,6 +265,12 @@ def _scan(proc_root):
                 for key in ('spec', 'registry_id'):
                     if not record[key]:
                         record[key] = ancestor[key]
+            # The nearest enclosing Claude/Codex session (e.g. an Orca terminal agent
+            # that ran `maestro worker-start`) owns this process; launcher wrappers
+            # without a session of their own are skipped.
+            if (not record['parent_session_id'] and ancestor['provider'] in ('claude', 'codex')
+                    and ancestor['session_id'] and ancestor['session_id'] != record['session_id']):
+                record['parent_session_id'] = ancestor['session_id']
             parent = ancestor['ppid']
         result.append(record)
     return result

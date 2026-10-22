@@ -59,6 +59,8 @@ def fmt_k(tokens: int | float) -> str:
 
 
 SUB_IDLE_RETENTION_SEC = 15
+# An open Claude terminal untouched this long (and not busy) is a forgotten pane, not a main agent.
+CLAUDE_MAIN_STALE_SEC = 86400
 
 
 def _fmt_duration(node: dict) -> str:
@@ -1711,7 +1713,12 @@ def _repo_from_uris_or_cwd(workspaces: list[str] | None = None, cwd: str | None 
     base = os.path.basename(path) or "dev"
     if path in (os.path.expanduser("~/dev"), os.path.expanduser("~")) or "/.gemini/" in path:
         return "dev", "current"
-    if path.startswith(os.path.expanduser("~/dev/")):
+    # Orca worktrees (~/orca/workspaces/<repo>/<worktree>) are the user's own repos too;
+    # name them <repo>/<worktree> so the repo stays visible next to the worktree.
+    orca_ws = os.path.expanduser("~/orca/workspaces/")
+    if path.startswith(orca_ws):
+        return "/".join(path[len(orca_ws):].split("/")[:2]), "current"
+    if path.startswith(tuple(os.path.expanduser(p) for p in ("~/dev/", "~/orca/", "~/.config/orca/worktrees/"))):
         return base, "current"
     return base, "external"
 
@@ -2656,7 +2663,10 @@ def _merge_live_process_workers(nodes: list[dict], provider: str, processes: lis
     nodes = [dict(n) for n in nodes]
     id_key = "thread_id" if provider == "codex" else "session_id"
     for process in processes:
-        if process.get("provider") != provider or not process.get("parent_conversation_id"):
+        # Owned by an Antigravity conversation, or by the Claude/Codex session (e.g. an
+        # Orca terminal agent) whose process tree launched it.
+        if process.get("provider") != provider or not (
+                process.get("parent_conversation_id") or process.get("parent_session_id")):
             continue
         sid = process.get("session_id") or process.get("registry_id")
         exact = [n for n in nodes if (sid and sid in {n.get(id_key), n.get("session_id"), n.get("registry_id")})
@@ -2687,9 +2697,11 @@ def _merge_live_process_workers(nodes: list[dict], provider: str, processes: lis
                     "spec": process.get("spec") or "", "cwd": process.get("cwd") or "",
                     "source": "exec", "agy_origin": True, "registry_only": True}
             nodes.append(node)
-        node.update(parent_conversation_id=process["parent_conversation_id"],
+        node.update(parent_conversation_id=process.get("parent_conversation_id") or "",
                     pid=process["pid"], is_running=True, live_process=True, updated_at=now_sec,
                     status="running", turn_completed=False)
+        if process.get("parent_session_id"):
+            node["parent_session_id"] = process["parent_session_id"]
         if process.get("tier"):
             # The live argv is ground truth for -c service_tier / --model claude-opus-5-fast.
             node["tier"] = resolve_speed_tier(node.get("tier"), process["tier"])
@@ -2757,6 +2769,17 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
                 return identity(matches[0])
             candidates = matches
     return None
+
+
+def _is_claude_main(node: dict) -> bool:
+    """A human-driven Claude Code terminal (Orca pane or shell), not a delegated worker.
+
+    Claude Code records entrypoint "cli" for interactive terminals; `claude -p`
+    workers report "sdk-cli". Any spawn evidence keeps a session a worker.
+    """
+    return (node.get("entrypoint") == "cli" and not node.get("agy_origin") and not node.get("registry_id")
+            and not any(node.get(key) for key in ("parent_id", "parent_cid", "parent_conversation_id",
+                                                   "parent_session_id", "parent_thread_id")))
 
 
 def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
@@ -3144,8 +3167,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     claude_list = _merge_live_process_workers(claude_list, "claude", live_processes, now_sec)
     live_codex_ids.update(n["thread_id"] for n in cdx_list if n.get("live_process"))
     live_claude_ids.update(n["session_id"] for n in claude_list if n.get("live_process"))
-    claude_list = [c for c in claude_list if c.get("session_id") in live_claude_ids
-                   or c.get("is_running") or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC]
+    live_codex_proc_ids = {p.get("session_id") for p in live_processes
+                           if p.get("provider") == "codex" and p.get("session_id")}
+    claude_mains = [c for c in claude_list if _is_claude_main(c)]
+    claude_list = [c for c in claude_list if not _is_claude_main(c) and (
+                   c.get("session_id") in live_claude_ids or c.get("is_running")
+                   or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC)]
     rollout_paths = _codex_rollout_paths(cdx_list)
     proc_res = data.get("process_resources") if isinstance(data.get("process_resources"), dict) else {}
     proc_table = proc_res.get("procs") or {}
@@ -3351,7 +3378,24 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 "role": w_ag.get("role") or w_raw or "maestro worker",
             })
 
-    parents = active_ag + active_cdx
+    # Claude Code terminals (Orca panes, plain CLI) are main agents like Codex CLI threads:
+    # open sessions stay in the active view, exited ones move to the closed list.
+    active_claude = []
+    closed_claude = []
+    for c in claude_mains:
+        sid = c.get("session_id") or ""
+        node_id = f"node-claude-{sid}"
+        is_pinned = node_id in pinned or sid in pinned
+        if not is_pinned and (node_id in dismissed or sid in dismissed):
+            continue
+        is_live = sid in live_claude_ids or c.get("is_running") is True
+        age_sec_cl = now_sec - (_parse_any_ts(c.get("updated_at")) or 0.0)
+        if is_pinned or node_id in imported or (is_live and (age_sec_cl <= CLAUDE_MAIN_STALE_SEC or c.get("activity") == "busy")):
+            active_claude.append(c)
+        elif not is_live:
+            closed_claude.append(c)
+
+    parents = active_ag + active_cdx + active_claude
     for parent in active_cdx:
         path = parent.get("rollout_path") or rollout_paths.get(parent.get("thread_id"))
         if path:
@@ -3376,6 +3420,75 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             target = _worker_parent(worker, parents, maestro_specs_by_cid, now_sec, maestro_activity, launch_owners)
             if target:
                 attached.setdefault(target, []).append({**worker, "parent_cid": target})
+
+    def _codex_sub_row(repo_codex: dict, ctid: str, repo: str, slot_idx: int,
+                       claimed: set, res_children: list) -> tuple[int, float, str] | None:
+        """One delegated Codex worker row under a main card (AGY or Claude); None once it has faded."""
+        ctid_short = ctid[-8:] if len(ctid) >= 8 else ctid
+        c_node_id = f"node-sub-cdx-{ctid}"
+        c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
+        c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
+        if not c_live and (c_node_id in dismissed or ctid in dismissed or c_age_s > SUB_IDLE_RETENTION_SEC):
+            return None
+        ctc = repo_codex.get("token_count") or {}
+        c_used = fmt_k(ctc.get("total_tokens", 0))
+        c_pct = float(ctc.get("percent", 0.0) or 0.0)
+        ccwd = repo_codex.get("cwd") or os.path.join(os.path.expanduser("~/dev"), repo)
+        c_disp = re.sub(
+            r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?",
+            "",
+            (repo_codex.get("display_name") or ((repo_codex.get("title") or "").splitlines() or [""])[0] or "codex-worker"),
+        ).strip()
+        c_repo, _ = _repo_from_uris_or_cwd(None, ccwd)
+        c_tctx = repo_codex.get("turn_context") or {}
+        c_icon, c_pill, _ = _provider_icon_and_pill(
+            c_tctx.get("model") or "gpt-6.1-sol", "codex",
+            resolve_speed_tier(c_tctx.get("service_tier"), repo_codex.get("tier")),
+            c_tctx.get("reasoning_effort") or "high",
+        )
+        c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, slot_idx)
+        c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
+        c_res = _claim(claimed, _worker_res(repo_codex))
+        res_children.append(("SUB", c_disp, c_res))
+        c_html = (
+            f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
+            f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
+            f'<div class="agent-left">'
+            f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
+            f'{c_icon}'
+            f'<span class="agent-name">{_html_esc(c_disp)}</span>'
+            f'</div>'
+            f'<div class="agent-right">'
+            f'{_res_slot_html(f"res-{c_node_id}", c_res, force=c_live)}'
+            f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
+            f'<span class="row-actions">'
+            f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
+            f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_disp[:24])}\')">✕</button>'
+            f'</span>'
+            f'</div></div>'
+            f'<div class="agent-detail" id="det-sub-cdx-{ctid_short}"><div class="agent-detail-row">'
+            f'<span>Codex Subagent: {ctid} · cwd: {_html_esc(ccwd)}{_fmt_duration(repo_codex)}</span>'
+            f'<span>{c_used} / 475k ({c_pct:.1f}%)</span>'
+            f'</div>{_detail_extras_html("codex", ctid, c_repo, False)}</div></div>'
+        )
+        return (0 if c_live else 1, -c_ts, c_html)
+
+    def _claude_sub_items(workers: list[dict], claimed: set, res_children: list) -> list[tuple[int, float, str]]:
+        """Delegated Claude worker rows under a Codex or Claude main card."""
+        items = []
+        for c in workers:
+            sid = c.get("session_id") or c.get("id") or ""
+            if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
+                continue
+            is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
+            c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
+            c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
+            if not c_live and now_sec - c_ts > SUB_IDLE_RETENTION_SEC:
+                continue
+            c = {**c, "resources": _claim(claimed, _worker_res(c))}
+            res_children.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
+            items.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
+        return items
 
     active_parts = ["<!--__ACTIVE_TREE_HTML_START__-->"]
     active_entries = []
@@ -3449,55 +3562,10 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 continue
             seen_ctids.add(ctid)
             rendered_codex_child_ids.add(ctid)
-            ctid_short = ctid[-8:] if len(ctid) >= 8 else ctid
-            c_node_id = f"node-sub-cdx-{ctid}"
-            c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
-            c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
-            if not c_live and (c_node_id in dismissed or ctid in dismissed or c_age_s > SUB_IDLE_RETENTION_SEC):
-                continue
-            ctc = repo_codex.get("token_count") or {}
-            c_used = fmt_k(ctc.get("total_tokens", 0))
-            c_pct = float(ctc.get("percent", 0.0) or 0.0)
-            ccwd = repo_codex.get("cwd") or os.path.join(os.path.expanduser("~/dev"), repo)
-            c_disp = re.sub(
-                r"^(?:✦\s*|🪐\s*)?(?:\[AGY\]\s*)?",
-                "",
-                (repo_codex.get("display_name") or ((repo_codex.get("title") or "").splitlines() or [""])[0] or "codex-worker"),
-            ).strip()
-            c_repo, _ = _repo_from_uris_or_cwd(None, ccwd)
-            c_tctx = repo_codex.get("turn_context") or {}
-            c_icon, c_pill, _ = _provider_icon_and_pill(
-                c_tctx.get("model") or "gpt-6.1-sol", "codex",
-                resolve_speed_tier(c_tctx.get("service_tier"), repo_codex.get("tier")),
-                c_tctx.get("reasoning_effort") or "high",
-            )
-            c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, sub_slot_idx)
-            sub_slot_idx += 1
-            c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
-            c_res = _claim(claimed_pids, _worker_res(repo_codex))
-            res_children.append(("SUB", c_disp, c_res))
-            c_html = (
-                f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
-                f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
-                f'<div class="agent-left">'
-                f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
-                f'{c_icon}'
-                f'<span class="agent-name">{_html_esc(c_disp)}</span>'
-                f'</div>'
-                f'<div class="agent-right">'
-                f'{_res_slot_html(f"res-{c_node_id}", c_res, force=c_live)}'
-                f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
-                f'<span class="row-actions">'
-                f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
-                f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_disp[:24])}\')">✕</button>'
-                f'</span>'
-                f'</div></div>'
-                f'<div class="agent-detail" id="det-sub-cdx-{ctid_short}"><div class="agent-detail-row">'
-                f'<span>Codex Subagent: {ctid} · cwd: {_html_esc(ccwd)}{_fmt_duration(repo_codex)}</span>'
-                f'<span>{c_used} / 475k ({c_pct:.1f}%)</span>'
-                f'</div>{_detail_extras_html("codex", ctid, c_repo, False)}</div></div>'
-            )
-            subagent_items.append((0 if c_live else 1, -c_ts, c_html))
+            item = _codex_sub_row(repo_codex, ctid, repo, sub_slot_idx, claimed_pids, res_children)
+            if item:
+                sub_slot_idx += 1
+                subagent_items.append(item)
 
         ag_children_all = [
             c for c in (list(extra_ag_workers) + (ag.get("children") or []))
@@ -3738,21 +3806,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_live_running, updated_ts = _codex_root_activity(cdx, live_codex_ids, rollout_paths, now_sec)
         claude_children = attached_claude_workers_by_parent.get(tid, [])
         is_live_running = is_live_running or any(c.get("session_id") in live_claude_ids or c.get("is_running") for c in claude_children)
-        subagent_items_cdx: list[tuple[int, float, str]] = []
         res_children_cdx: list[tuple[str, str, dict | None]] = []
         claimed_pids_cdx: set[int] = set()
-        for c in claude_children:
-            sid = c.get("session_id") or c.get("id") or ""
-            if not sid or sid in dismissed or f"node-sub-claude-{sid}" in dismissed:
-                continue
-            is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
-            c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
-            c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
-            if not c_live and now_sec - c_ts > SUB_IDLE_RETENTION_SEC:
-                continue
-            c = {**c, "resources": _claim(claimed_pids_cdx, _worker_res(c))}
-            res_children_cdx.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
-            subagent_items_cdx.append((0 if c_live else 1, -c_ts, _claude_worker_row(c, live_claude_ids, now_sec)))
+        subagent_items_cdx = _claude_sub_items(claude_children, claimed_pids_cdx, res_children_cdx)
 
         if not cdx.get("agy_origin") or cdx.get("source") == "vscode":
             child_candidates = [
@@ -3831,7 +3887,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         children_block = f'<div class="{br_cls}" id="{br_id}">{_finalize_child_rows(child_rows_html)}</div>' if child_rows_html else ""
         pin_cls = " pinned" if is_pinned else ""
         pin_attr = ' data-pinned="1"' if is_pinned else ""
-        is_keep_alive_cdx = is_live_running or root_dot == "idle-fresh"
+        # An open interactive Codex terminal (Orca pane, CLI) stays protected while idle at its prompt.
+        is_keep_alive_cdx = is_live_running or root_dot == "idle-fresh" or tid in live_codex_proc_ids
         cdx_rollup = merge_resources(proc_table, [cdx.get("rollup_resources"), _worker_res(cdx)]
                                      + [res for _, _, res in res_children_cdx], proc_res)
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
@@ -3866,6 +3923,88 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "updated_ts": updated_ts,
             "html": parent_html,
             "res": {"kind": "MAIN", "label": disp, "rollup": cdx_rollup, "children": res_children_cdx},
+        })
+
+    for cl in active_claude:
+        sid = cl.get("session_id") or ""
+        sid8 = sid[:8]
+        node_id = f"node-claude-{sid}"
+        is_pinned = node_id in pinned or sid in pinned
+        cwd = cl.get("cwd") or os.path.expanduser("~/dev")
+        repo, scope = _repo_from_uris_or_cwd(None, cwd)
+        if scope == "current" or is_pinned or node_id in imported:
+            active_curr_cnt += 1
+        terminal = "Orca 터미널" if cl.get("terminal") == "orca" else "CLI 터미널"
+        disp = _first_line(cl.get("display_name") or cl.get("title"), "Claude Session")
+        model = cl.get("model") or "claude-opus-5-5"
+        effort = cl.get("effort") or "high"
+        icon_svg, model_pill, _ = _provider_icon_and_pill(model, "claude", "default", effort)
+        is_live = sid in live_claude_ids or cl.get("is_running") is True
+        res_children_cl: list[tuple[str, str, dict | None]] = []
+        claimed_pids_cl: set[int] = set()
+        # Delegated maestro workers, then Claude Code's own Task/teammate subagents.
+        items = _claude_sub_items(attached_claude_workers_by_parent.get(sid, []) + (cl.get("subagents") or []),
+                                  claimed_pids_cl, res_children_cl)
+        seen_ctids = set()
+        for worker in attached_cdx_workers_by_parent.get(sid, []):
+            ctid = worker.get("thread_id", "")
+            if not ctid or ctid in seen_ctids or ctid in rendered_codex_child_ids:
+                continue
+            seen_ctids.add(ctid)
+            rendered_codex_child_ids.add(ctid)
+            item = _codex_sub_row(worker, ctid, repo, len(items), claimed_pids_cl, res_children_cl)
+            if item:
+                items.append(item)
+        updated_ts = _parse_any_ts(cl.get("updated_at")) or 0.0
+        is_busy_cl = (is_live and cl.get("activity") == "busy") or any(item[0] == 0 for item in items)
+        root_dot, root_dot_tip = _status_dot_from_age(is_busy_cl, max(0.0, now_sec - updated_ts))
+        child_rows_html = [item[2] for item in sorted(items, key=lambda x: (x[0], x[1]))]
+        br_cls = "tree-children hidden" if state.get("allCollapsed") is True else "tree-children"
+        children_block = f'<div class="{br_cls}" id="br-cl-{sid8}">{_finalize_child_rows(child_rows_html)}</div>' if child_rows_html else ""
+        cl_rollup = merge_resources(proc_table, [cl.get("rollup_resources") or cl.get("resources")]
+                                    + [res for _, _, res in res_children_cl], proc_res)
+        own_pids = [pid for pid in (cl_rollup or {}).get("pids") or () if pid not in claimed_pids_cl]
+        cl_self = merge_resources(proc_table, [{"pids": own_pids}], proc_res) if own_pids else None
+        cl_kids = merge_resources(proc_table, [{"pids": sorted(claimed_pids_cl)}], proc_res) if claimed_pids_cl else None
+        tokens = cl.get("token_count") or cl.get("usage") or {}
+        used_k = fmt_k(tokens.get("total_tokens", 0))
+        pct = float(tokens.get("percent", 0.0) or 0.0)
+        is_keep_alive_cl = is_live or root_dot == "idle-fresh"
+        pin_cls = " pinned" if is_pinned else ""
+        pin_attr = ' data-pinned="1"' if is_pinned else ""
+        run_attr = ' data-running="1"' if is_keep_alive_cl else ""
+        pid_txt = f" · PID {cl['pid']}" if is_live and cl.get("pid") else ""
+        parent_html = (
+            f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
+            f'<div class="agent-row parent" onclick="toggleDetail(\'det-cl-{sid8}\')">'
+            f'<div class="agent-left">'
+            f'<span class="status-dot {root_dot}" title="{_html_esc(root_dot_tip)}"></span>'
+            f'<span class="repo-tag" title="{terminal} · {_html_esc(cwd)}">{_html_esc(repo)}</span>'
+            f'{icon_svg}'
+            f'<span class="agent-name">{_html_esc(disp)}</span>'
+            f'</div>'
+            f'<div class="agent-right">'
+            f'{_res_slot_html(f"res-{node_id}", cl_rollup, rollup=True, force=is_live, split=(cl_self, cl_kids))}'
+            f'{model_pill}'
+            f'{_context_pill_html(used_k, pct, "green", cl, is_busy_cl, root_dot)}'
+            f'<span class="row-actions">'
+            f'{_pin_btn_html(node_id, disp, is_pinned)}'
+            f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{node_id}\', \'claude --resume {_html_esc(sid)}\', this)" title="세션 가져오기">↗</button>'
+            f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(disp[:28])}\')">✕</button>'
+            f'</span>'
+            f'</div></div>'
+            f'<div class="agent-detail" id="det-cl-{sid8}"><div class="agent-detail-row">'
+            f'<span>Claude Session: {_html_esc(sid)} · {terminal}{pid_txt} · cwd: {_html_esc(cwd)}{_fmt_duration(cl)}</span>'
+            f'<span>{used_k} tokens · {_html_esc(model)} · {_html_esc(effort)}</span>'
+            f'</div>{_detail_extras_html("claude", sid, repo, True)}</div>{children_block}</div>'
+        )
+        active_entries.append({
+            "is_live_running": is_keep_alive_cl,
+            "is_main_orch": False,
+            "updated_ts": updated_ts,
+            "html": parent_html,
+            "res": {"kind": "MAIN", "label": disp, "rollup": cl_rollup,
+                    "children": [("SELF", f"메인 본체 ({terminal} Claude 세션)", cl_self)] + res_children_cl},
         })
 
     active_entries.sort(key=lambda item: (
@@ -3904,10 +4043,16 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             continue
         closed_items.append(("codex", age_d, cdx))
 
+    for cl in closed_claude:
+        age_sec_cl = max(0.0, now_sec - (_parse_any_ts(cl.get("updated_at")) or 0.0))
+        closed_items.append(("claude", int(age_sec_cl // 86400), cl))
+
     def closed_timestamp(entry):
         kind, age_d, item = entry
         if kind == "codex":
             return float(item.get("updated_at") or 0)
+        if kind == "claude":
+            return _parse_any_ts(item.get("updated_at")) or 0.0
         value = item.get("last_modified_time") or ""
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
@@ -3962,6 +4107,50 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                 f'<div class="agent-detail" id="det-cls-agy-{cid8}"><div class="agent-detail-row">'
                 f'<span>Cascade ID: {cid} · 상태: IDLE (작업 완료) · {age_lbl}{_fmt_duration(item)}</span>'
                 f'<span>{used_k} / 1M ({pct:.1f}%)</span>'
+                f'</div></div></div>'
+            )
+        elif kind == "claude":
+            sid = item.get("session_id") or ""
+            sid8 = sid[:8]
+            node_id = f"closed-claude-{sid8}"
+            is_pinned = node_id in pinned or f"node-claude-{sid}" in pinned or sid in pinned
+            if not is_pinned and (node_id in dismissed or f"node-claude-{sid}" in dismissed or sid in dismissed):
+                continue
+            cwd = item.get("cwd") or os.path.expanduser("~/dev")
+            repo, scope = _repo_from_uris_or_cwd(None, cwd)
+            if age_d <= 7 and scope == "current":
+                closed_7d_curr_cnt += 1
+            disp = _first_line(item.get("display_name") or item.get("title"), "Claude Session")
+            tokens = item.get("token_count") or item.get("usage") or {}
+            used_k = fmt_k(tokens.get("total_tokens", 0))
+            icon_svg, model_pill, _ = _provider_icon_and_pill(item.get("model") or "claude-opus-5-5", "claude",
+                                                              "default", item.get("effort") or "high")
+            upd = _parse_any_ts(item.get("updated_at")) or 0.0
+            age_lbl = _age_label_from_days(age_d, int(upd))
+            cls_dot, cls_tip = _status_dot_from_age(False, max(0.0, now_sec - upd))
+            pin_cls = " pinned" if is_pinned else ""
+            pin_attr = ' data-pinned="1"' if is_pinned else ""
+            closed_parts.append(
+                f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}" data-age-days="{age_d}"{pin_attr}>'
+                f'<div class="agent-row" onclick="toggleDetail(\'det-cls-cl-{sid8}\')">'
+                f'<div class="agent-left">'
+                f'<span class="status-dot {cls_dot}" title="{_html_esc(cls_tip)}"></span>'
+                f'<span class="repo-tag">{_html_esc(repo)}</span>'
+                f'{icon_svg}'
+                f'<span class="agent-name">{_html_esc(disp)}</span>'
+                f'</div>'
+                f'<div class="agent-right">'
+                f'{model_pill}'
+                f'{_context_pill_html(used_k, 0.0, "green", item, False, cls_dot)}'
+                f'<span class="row-actions">'
+                f'{_pin_btn_html(node_id, disp, is_pinned)}'
+                f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{node_id}\', \'claude --resume {_html_esc(sid)}\', this)" title="세션 가져오기">↗</button>'
+                f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(disp[:24])}\')">✕</button>'
+                f'</span>'
+                f'</div></div>'
+                f'<div class="agent-detail" id="det-cls-cl-{sid8}"><div class="agent-detail-row">'
+                f'<span>Claude Session: {_html_esc(sid)} · 경로: {_html_esc(cwd)} · {age_lbl}{_fmt_duration(item)}</span>'
+                f'<span>{used_k} tokens</span>'
                 f'</div></div></div>'
             )
         else:

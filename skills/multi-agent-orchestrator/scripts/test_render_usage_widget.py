@@ -41,6 +41,40 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('node-cdx-standalone-codex', active + closed)
         self.assertNotIn('node-sub-claude-standalone-claude', active + closed)
 
+    def test_orca_terminal_sessions_are_current_main_agents(self):
+        orca = os.path.expanduser('~/orca/workspaces/tag_gcdual/로봇-테스트')
+        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca), ('tag_gcdual/로봇-테스트', 'current'))
+        self.assertEqual(widget._repo_from_uris_or_cwd(None, orca + '/src'), ('tag_gcdual/로봇-테스트', 'current'))
+        self.assertEqual(widget._repo_from_uris_or_cwd(None, '/tmp/elsewhere'), ('elsewhere', 'external'))
+        now = datetime.now(timezone.utc).timestamp()
+        main = dict(session_id='orca-main', entrypoint='cli', terminal='orca', activity='busy', is_running=True,
+                    pid=4242, cwd=orca, title='자코비안 따라가기', model='claude-opus-5-5', effort='xhigh',
+                    updated_at=now, subagents=[dict(session_id='orca-main:a1', agent_id='a1', title='Explore repo',
+                                                    is_running=True, updated_at=now, cwd=orca)])
+        # Launched from the Orca pane: process ancestry names the owning session.
+        worker = dict(session_id='orca-worker', parent_session_id='orca-main', is_running=True,
+                      updated_at=now, cwd=orca, title='delegated')
+        printer = dict(session_id='print-only', entrypoint='sdk-cli', is_running=True, updated_at=now, cwd=orca)
+        exited = dict(session_id='orca-exited', entrypoint='cli', is_running=False, updated_at=now - 600,
+                      cwd=orca, title='finished pane')
+        codex = dict(thread_id='orca-codex', source='cli', cwd=orca, title='Codex in Orca', updated_at=now - 30)
+        live = (set(), set(), {'orca-main', 'orca-worker', 'print-only'})
+        with mock.patch.object(widget, '_running_worker_sessions', return_value=live):
+            active, closed, count, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'codex': [codex], 'claude': [main, worker, printer, exited]}}, {})
+        self.assertIn('data-node-id="node-claude-orca-main" data-scope="current" data-running="1"', active)
+        self.assertIn('data-node-id="node-cdx-orca-codex" data-scope="current"', active)
+        self.assertIn('>tag_gcdual/로봇-테스트</span>', active)
+        card = active.split('data-node-id="node-claude-orca-main"')[1].split('data-node-id="node-cdx-')[0]
+        self.assertIn('status-dot busy', card)
+        self.assertIn('Opus 5.5', card)
+        self.assertIn('data-node-id="node-sub-claude-orca-worker"', card)
+        self.assertIn('data-node-id="node-sub-claude-orca-main:a1"', card)
+        self.assertNotIn('print-only', active)
+        self.assertNotIn('node-claude-orca-exited', active)
+        self.assertIn('data-node-id="closed-claude-orca-exi" data-scope="current"', closed)
+        self.assertEqual(count, 2)
+
     def test_closed_sessions_use_exact_recency_and_stop_at_eight(self):
         # Sessions older than seven days are closed; all share age_days, in oldest-first input order.
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Session {i}',

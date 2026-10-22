@@ -1639,7 +1639,7 @@ def get_claude_agent_tree() -> list[dict]:
         }.items():
             for alias in aliases:
                 value = string(data.get(alias))
-                if value:
+                if value and not (key == "model" and value.startswith("<")):  # "<synthetic>" API-error turns
                     node[key] = value[:500] if key == "spec_preview" else value
                     break
         if data.get("ok") is not None:
@@ -1748,6 +1748,9 @@ def get_claude_agent_tree() -> list[dict]:
             node["_fallback_time"] = max(node["_fallback_time"], st.st_mtime)
             node["rollout_path"] = node["jsonl_path"] = path
     for stale in _CLAUDE_JSONL_CACHE.keys() - seen_paths:
+        # Subagent transcripts are parsed later, only while they are under 24h old.
+        if "/subagents/" in stale and now - _CLAUDE_JSONL_CACHE[stale][0] / 1e9 <= 86400:
+            continue
         del _CLAUDE_JSONL_CACHE[stale]
 
     for path in sorted(glob.glob(os.path.expanduser("~/.claude/sessions/*.json"))):
@@ -1762,6 +1765,11 @@ def get_claude_agent_tree() -> list[dict]:
         if node is not None:
             merge(node, data)
             remember_mtime(node, path)
+            # entrypoint "cli" is a human-driven terminal (Orca pane or shell); `claude -p`
+            # workers report "sdk-cli". status is the live busy/idle flag Claude Code keeps.
+            for key, alias in (("entrypoint", "entrypoint"), ("activity", "status"), ("tmux", "tmux")):
+                if string(data.get(alias)):
+                    node[key] = string(data.get(alias))
 
     for sid, data in _load_agy_spawn_registry().items():
         if not isinstance(data, dict) or data.get("provider") != "claude":
@@ -1772,6 +1780,7 @@ def get_claude_agent_tree() -> list[dict]:
             node["agy_origin"] = True
 
     # Exact CLI options avoid matching session IDs merely mentioned in prompts.
+    argv_options: dict[int, dict] = {}
     try:
         output = subprocess.check_output(
             ["ps", "-eo", "pid=,args="], text=True, stderr=subprocess.DEVNULL, timeout=2)
@@ -1789,13 +1798,17 @@ def get_claude_agent_tree() -> list[dict]:
                 ("claude" in args[1] and args[1].endswith((".js", "/claude"))))
             if not is_claude:
                 continue
+            options = {}
             for i, arg in enumerate(args):
                 option, _, inline = arg.partition("=")
+                if option in ("--model", "--effort"):
+                    options[option] = inline or (args[i + 1] if i + 1 < len(args) else "")
                 if option not in ("--session-id", "--resume", "-r"):
                     continue
                 sid = inline or (args[i + 1] if i + 1 < len(args) else "")
                 if sid in nodes:
                     nodes[sid]["_pids"].add(int(pid_text))
+            argv_options[int(pid_text)] = options
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -1822,6 +1835,10 @@ def get_claude_agent_tree() -> list[dict]:
         if not live and node["updated_at"] < now - 86400:
             continue
         node["pid"] = live[0] if live else (pids[0] if pids else None)
+        options = argv_options.get(node["pid"]) or {}
+        node["model"] = node["model"] or options.get("--model", "")
+        node["effort"] = options.get("--effort") or node["effort"] or _claude_default_effort(node["model"])
+        node["terminal"] = _claude_terminal(node, live[0] if live else None)
         is_term = node.get("status") in ("completed", "failed", "timeout", "done", "closed") or node.get("ok") is not None
         if is_term:
             node["running"] = node["is_running"] = False
@@ -1836,11 +1853,110 @@ def get_claude_agent_tree() -> list[dict]:
         node["token_count"] = {"total_tokens": node["tokens"],
                                "input_tokens": node["usage"]["input_tokens"],
                                "output_tokens": node["usage"]["output_tokens"]}
-        node["title"] = node["title"] or node["spec_preview"].split("\n", 1)[0][:120] or "Claude Session"
+        # Pasted prompts arrive wrapped in <pasted_content ...> tags; title by their first line.
+        preview = re.sub(r"^\s*(?:<[^>\n]*>\s*)+", "", node["spec_preview"])
+        node["title"] = node["title"] or preview.split("\n", 1)[0][:120] or "Claude Session"
         node["display_name"] = node["title"]
         node["turn_context"] = {"model": node["model"], "reasoning_effort": node["effort"]}
+        node["subagents"] = _claude_subagents(node, now, parse_jsonl)
         result.append(node)
-    return sorted(result, key=lambda n: (-n["updated_at"], n["id"]))[:30]
+    # Open terminal sessions with recent work outrank finished workers for the 30 slots.
+    return sorted(result, key=lambda n: (not (n["running"] and n["updated_at"] >= now - 86400),
+                                         -n["updated_at"], n["id"]))[:30]
+
+
+def _claude_default_effort(model: str) -> str:
+    """Effort an interactive session starts with when its argv has no --effort."""
+    try:
+        with open(os.path.expanduser("~/.claude/settings.json"), encoding="utf-8") as handle:
+            settings = json.load(handle)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(settings, dict):
+        return ""
+    per_model = (settings.get("modelSettings") or {}).get(model) if model else None
+    value = (per_model or {}).get("effortLevel") if isinstance(per_model, dict) else None
+    return str(value or settings.get("effortLevel") or "")
+
+
+ORCA_PATH_PREFIXES = ("~/orca/", "~/.config/orca/")
+
+
+def _claude_terminal(node: dict, live_pid: int | None) -> str:
+    """'orca' for sessions inside an Orca pane/worktree, 'cli' for other terminals."""
+    if node.get("entrypoint") != "cli":
+        return ""
+    cwd = node.get("cwd") or ""
+    if (node.get("tmux") or "").startswith("orca:") or any(
+            cwd.startswith(os.path.expanduser(prefix)) for prefix in ORCA_PATH_PREFIXES):
+        return "orca"
+    if live_pid:
+        try:
+            with open(f"/proc/{live_pid}/environ", "rb") as handle:
+                if b"\0ORCA_PANE_KEY=" in b"\0" + handle.read(131072):
+                    return "orca"
+        except OSError:
+            pass
+    return "cli"
+
+
+CLAUDE_SUBAGENT_ACTIVE_SEC = 90
+
+
+def _claude_subagents(node: dict, now: float, parse_jsonl, limit: int = 8) -> list[dict]:
+    """Claude Code Task/teammate subagents of one session (<project>/<sid>/subagents/agent-*.jsonl).
+
+    Only files touched in the last 24h are read; usage parsing reuses the
+    incremental transcript cache.
+    """
+    path = node.get("jsonl_path") or ""
+    if not path.endswith(".jsonl"):
+        return []
+    entries = []
+    for sub_path in glob.glob(os.path.join(path[:-6], "subagents", "agent-*.jsonl")):
+        try:
+            st = os.stat(sub_path)
+        except OSError:
+            continue
+        if now - st.st_mtime <= 86400:
+            entries.append((st.st_mtime, sub_path, st))
+    subagents = []
+    for mtime, sub_path, st in sorted(entries, reverse=True)[:limit]:
+        agent_id = os.path.basename(sub_path)[len("agent-"):-len(".jsonl")]
+        meta = {}
+        try:
+            with open(sub_path[:-len(".jsonl")] + ".meta.json", encoding="utf-8") as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            pass
+        meta = meta if isinstance(meta, dict) else {}
+        usage, model, prompt = {}, "", ""
+        try:
+            state = parse_jsonl(sub_path, st)
+        except OSError:
+            state = {"nodes": {}}
+        for partial in state["nodes"].values():
+            model = partial.get("model") or model
+            prompt = prompt or partial.get("spec_preview") or ""
+            for totals in partial["_usage"].values():
+                for key, value in totals.items():
+                    usage[key] = usage.get(key, 0) + value
+        total = sum(usage.values())
+        title = string_or(meta.get("description")) or prompt.split("\n", 1)[0][:120] or "Claude subagent"
+        subagents.append({
+            "session_id": f"{node['id']}:{agent_id}", "agent_id": agent_id,
+            "title": title, "display_name": title, "spec_preview": prompt[:500],
+            "agent_type": string_or(meta.get("agentType") or meta.get("subagent_type")),
+            "model": model or node.get("model") or "", "effort": node.get("effort") or "",
+            "cwd": node.get("cwd") or "", "created_at": None, "updated_at": mtime,
+            "is_running": bool(node.get("running")) and now - mtime <= CLAUDE_SUBAGENT_ACTIVE_SEC,
+            "usage": usage, "token_count": {"total_tokens": total}, "jsonl_path": sub_path,
+        })
+    return subagents
+
+
+def string_or(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
 def get_codex_agent_tree(db_path: str = "~/.codex/state_5.sqlite", max_parents: int = 12, max_children: int = 4) -> list[dict]:
@@ -2700,6 +2816,20 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
             annotate_agy(node)
             pids = set().union(*(conv_pids.get(cid, set()) for cid in agy_cids(node, set())))
             _set_resources(node, "rollup_resources", rollup(pids) if pids else None)
+    def own_share(res, own_id):
+        """A session tree minus the trees of worker CLIs running inside it (their SUB rows)."""
+        if not res:
+            return None
+        pids = set(res["pids"])
+        nested = set()
+        for pid in sorted(pids):
+            record = records.get(pid)
+            if (record and record.get("session_id") not in ("", None, own_id) and str(pid) in by_pid
+                    and pid not in nested
+                    and (record.get("parent_session_id") or record.get("parent_conversation_id"))):
+                nested |= set(by_pid[str(pid)]["pids"]) & pids
+        return summarize_pids(snap, pids - nested) if nested else res
+
     for node in trees.get("claude") or []:
         if not isinstance(node, dict):
             continue
@@ -2709,12 +2839,14 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
             res = by_pid.get(str(pid)) or summarize_pids(snap, _descendants(snap, [pid]))
         res = res or workers.get(node.get("session_id") or "")
         _set_resources(node, "resources", res)
+        _set_resources(node, "self_resources", own_share(res, node.get("session_id")))
         # A Claude session's process tree already contains every worker it spawned.
         _set_resources(node, "rollup_resources", rollup(res["pids"]) if res else None)
 
     def annotate_codex(node):
         res = workers.get(node.get("thread_id") or "")
         _set_resources(node, "resources", res)
+        _set_resources(node, "self_resources", own_share(res, node.get("thread_id")))
         pids = set((res or {}).get("pids") or ())
         for child in node.get("children") or []:
             if isinstance(child, dict):

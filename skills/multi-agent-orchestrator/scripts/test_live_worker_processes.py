@@ -97,5 +97,18 @@ class LiveWorkerTests(unittest.TestCase):
         self.assertEqual(set(self.scan()), {70})
 
 
+    def test_enclosing_terminal_session_owns_launched_workers(self):
+        # An Orca pane runs codex through its node launcher; the launcher has no session of its own.
+        self.process(40, ['node', '/x/bin/codex', '--no-daemon'])
+        self.process(41, ['/x/codex', 'resume', 'pane-thread'], ppid=40)
+        self.process(42, ['python3', '/x/maestro.py', 'worker-start', '--pool', 'claude', '--spec', 'sub task'], ppid=41)
+        self.process(43, ['/bin/claude', '-p', '--session-id', 'worker-id'], ppid=42)
+        records = self.scan()
+        self.assertEqual(records[40]['parent_session_id'], '')
+        self.assertEqual(records[41]['parent_session_id'], '')
+        self.assertEqual(records[42]['parent_session_id'], 'pane-thread')
+        self.assertEqual(records[43]['parent_session_id'], 'pane-thread')
+        self.assertEqual(records[43]['parent_conversation_id'], '')
+
 if __name__ == '__main__':
     unittest.main()

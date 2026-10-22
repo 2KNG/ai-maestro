@@ -650,5 +650,41 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertEqual(report["process_resources"], {"error": "RuntimeError"})
 
 
+
+class ClaudeTerminalSessionTests(unittest.TestCase):
+    def test_orca_terminal_session_with_subagent(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, HOME=home):
+            usage._CLAUDE_JSONL_CACHE.clear()
+            self.addCleanup(usage._CLAUDE_JSONL_CACHE.clear)
+            cwd = os.path.join(home, "orca/workspaces/tag_gcdual/wt")
+            project = Path(home, ".claude/projects/p")
+            (project / "sid-1/subagents").mkdir(parents=True)
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            def assistant(sid, mid, model, tokens):
+                return json.dumps({"type": "assistant", "sessionId": sid, "timestamp": now, "cwd": cwd,
+                                   "message": {"id": mid, "model": model, "usage": {"input_tokens": tokens}}})
+            (project / "sid-1.jsonl").write_text("\n".join([
+                json.dumps({"type": "user", "sessionId": "sid-1", "timestamp": now, "cwd": cwd,
+                            "message": {"content": '<pasted_content id="1">\nPlan B field test\nmore'}}),
+                assistant("sid-1", "m1", "claude-opus-5-5", 10),
+                assistant("sid-1", "m2", "<synthetic>", 0)]) + "\n")
+            (project / "sid-1/subagents/agent-a1.jsonl").write_text(assistant("sid-1", "s1", "claude-sonnet-5-5", 7) + "\n")
+            (project / "sid-1/subagents/agent-a1.meta.json").write_text(json.dumps({"description": "Explore repo"}))
+            sessions = Path(home, ".claude/sessions")
+            sessions.mkdir(parents=True)
+            (sessions / f"{os.getpid()}.json").write_text(json.dumps({
+                "pid": os.getpid(), "sessionId": "sid-1", "cwd": cwd, "kind": "interactive",
+                "entrypoint": "cli", "status": "busy", "tmux": "orca:@0.%1"}))
+            Path(home, ".claude/settings.json").write_text(json.dumps(
+                {"effortLevel": "high", "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}))
+            with mock.patch.object(usage, "_load_agy_spawn_registry", return_value={}):
+                node, = usage.get_claude_agent_tree()
+        self.assertEqual((node["entrypoint"], node["terminal"], node["activity"]), ("cli", "orca", "busy"))
+        self.assertEqual((node["model"], node["effort"], node["running"]), ("claude-opus-5-5", "xhigh", True))
+        self.assertEqual(node["title"], "Plan B field test")
+        sub, = node["subagents"]
+        self.assertEqual((sub["title"], sub["model"], sub["token_count"]["total_tokens"], sub["is_running"]),
+                         ("Explore repo", "claude-sonnet-5-5", 7, True))
+
 if __name__ == "__main__":
     unittest.main()
