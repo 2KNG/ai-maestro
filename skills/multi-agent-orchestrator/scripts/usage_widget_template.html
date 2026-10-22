@@ -155,9 +155,11 @@
     .usage-toolbar-left {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       min-width: 0;
+      overflow: hidden;
     }
+    .usage-toolbar-left > .remote-pill { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .usage-hint {
       font-size: 10px;
       color: var(--muted);
@@ -335,15 +337,12 @@
     html.light .usage-center-period.p-5h { color: #0284c7; }
     html.light .usage-center-period.p-7d { color: #6d28d9; }
 
-    .compact-pool-lead { display: none; }
-
-    .acc-head-ico, .acc-inline-ico {
+    .acc-head-ico {
       flex: none;
       display: inline-block;
       vertical-align: middle;
     }
-    fieldset.usage-account[data-provider="codex"] .acc-head-ico,
-    fieldset.usage-account[data-provider="codex"] .acc-inline-ico {
+    fieldset.usage-account[data-provider="codex"] .acc-head-ico {
       color: var(--green);
     }
 
@@ -405,150 +404,24 @@
       white-space: nowrap;
     }
 
-    /* ── AOH COMPACT DENSITY MODE (Ultra-slim 1-line docked top bar, zero overlap, zero scrollbar) ── */
-    .usage-panel[data-density="compact"] {
-      flex-direction: row;
-      align-items: center;
-      justify-content: space-between;
-      gap: 4px;
-      padding: 2px 5px;
-      background: var(--surface);
-      border: 1px solid var(--bdr);
-      border-radius: 7px;
-      min-height: 26px;
-      overflow: hidden;
+    /* Compact folds the panel into the toolbar line; the quota strip stays visible in both densities. */
+    .usage-panel[data-density="compact"] #quota-grid,
+    .usage-panel[data-density="compact"] .usage-hint { display: none !important; }
+    .q-strip { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+    .q-box {
+      display: inline-flex; align-items: center; gap: 1px;
+      height: 20px; padding: 0 6px; border-radius: 5px;
+      font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+      color: var(--muted); white-space: nowrap; cursor: default;
     }
-    .usage-panel[data-density="compact"] .usage-toolbar {
-      order: 2;
-      min-height: 20px;
-      gap: 3px;
-      flex: none;
-    }
-    .usage-panel[data-density="compact"] #density-btn {
-      height: 20px;
-      padding: 0 5px;
-      font-size: 9px;
-    }
-    .usage-panel[data-density="compact"] .usage-hint,
-    .usage-panel[data-density="compact"] .remote-pill,
-    .usage-panel[data-density="compact"] .route-pill { display: none !important; }
-    .usage-panel[data-density="compact"] .usage-panel-body {
-      order: 1;
-      display: flex !important;
-      flex-direction: row !important;
-      align-items: center !important;
-      justify-content: flex-start;
-      gap: 4px;
-      flex: 1;
-      min-width: 0;
-      overflow: hidden !important;
-      padding: 0;
-    }
-    .usage-panel[data-density="compact"] fieldset.usage-account {
-      flex-direction: row !important;
-      align-items: center !important;
-      justify-content: flex-start !important;
-      gap: 4px !important;
-      padding: 1px 5px !important;
-      min-height: 20px !important;
-      height: 20px !important;
-      border-radius: 4px;
-      flex: 0 0 auto !important;
-      min-width: max-content !important;
-      width: auto !important;
-      overflow: hidden;
-    }
-    /* When Claude has both 5h and 7d windows in compact mode, show only the 7d window to save horizontal space */
-    .usage-panel[data-density="compact"] fieldset.usage-account[data-provider="claude"] .usage-window:first-child:not(:last-child) {
-      display: none !important;
-    }
-    .usage-panel[data-density="compact"] legend.usage-account-heading { display: none !important; }
-    .usage-provider-inline {
-      display: none;
-      font-size: 8.5px;
-      font-weight: 800;
-      color: var(--accent, var(--text));
-      white-space: nowrap;
-      align-items: center;
-      gap: 2px;
-    }
-    .usage-panel[data-density="compact"] .usage-provider-inline { display: inline-flex !important; }
-    .usage-panel[data-density="compact"] .compact-pool-lead {
-      display: inline-flex !important;
-      align-items: center;
-      justify-content: center;
-      margin-right: 1px;
-    }
-    .usage-panel[data-density="compact"] .compact-pool-lead.pool-sep {
-      margin-left: 3px;
-      padding-left: 4px;
-      border-left: 1px solid var(--bdr);
-    }
-    .usage-panel[data-density="compact"] .usage-account-windows {
-      display: inline-flex !important;
-      flex-direction: row !important;
-      align-items: center !important;
-      gap: 5px !important;
-      width: auto !important;
-      flex: none !important;
-    }
-    .usage-panel[data-density="compact"] .usage-window {
-      flex-direction: row !important;
-      align-items: center !important;
-      gap: 2px !important;
-    }
-    .usage-panel[data-density="compact"] .usage-gauge-button {
-      flex-direction: row !important;
-      align-items: center !important;
-      gap: 2.5px !important;
-      padding: 0 !important;
-    }
-    .usage-panel[data-density="compact"] .usage-window-title,
-    .usage-panel[data-density="compact"] .usage-quota-state,
-    .usage-panel[data-density="compact"] .usage-reset,
-    .usage-panel[data-density="compact"] .usage-center-caption { display: none !important; }
-    .usage-panel[data-density="compact"] .usage-donut {
-      width: auto !important;
-      height: 16px !important;
-      display: inline-flex !important;
-      flex-direction: row !important;
-      align-items: center !important;
-      gap: 2.5px !important;
-      position: static !important;
-    }
-    .usage-panel[data-density="compact"] .usage-donut > svg {
-      width: 13px !important;
-      height: 13px !important;
-      stroke-width: 7 !important;
-      position: static !important;
-      flex: none;
-    }
-    .usage-panel[data-density="compact"] .usage-donut-center {
-      position: static !important;
-      inset: auto !important;
-      display: inline-flex !important;
-      flex-direction: row !important;
-      align-items: baseline !important;
-      gap: 2px !important;
-    }
-    .usage-panel[data-density="compact"] .usage-donut-center > strong {
-      font-size: 9px !important;
-      line-height: 1 !important;
-      font-weight: 700 !important;
-    }
-    .usage-panel[data-density="compact"] .usage-center-period {
-      display: inline !important;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 8px !important;
-      line-height: 1 !important;
-      font-weight: 700 !important;
-      padding: 0 !important;
-      background: transparent !important;
-    }
-    .usage-panel[data-density="compact"] .usage-center-period.p-5h { color: #38bdf8 !important; }
-    .usage-panel[data-density="compact"] .usage-center-period.p-7d { color: #a78bfa !important; }
-    html.light .usage-panel[data-density="compact"] .usage-center-period.p-5h { color: #0284c7 !important; }
-    html.light .usage-panel[data-density="compact"] .usage-center-period.p-7d { color: #6d28d9 !important; }
+    .q-box b { font-weight: 700; }
+    .q-agy { background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.42); }
+    .q-cdx { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.45); }
+    .q-cld { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.45); }
+    .q-sep { font-style: normal; opacity: 0.45; margin: 0 3px; }
+    .q-ok { color: var(--green); }
+    .q-mid { color: var(--amber); }
+    .q-low { color: var(--red); }
 
     /* ── 2. NARROW-SAFE AGENT EXECUTION TREE ── */
     .tree-section {
@@ -2185,15 +2058,16 @@
 
   <div class="widget-shell widget-frame">
 
-    <!-- 1. TOP: AOH DUAL-RING + INNER CLOCK PIE QUOTA PANEL (Defaults to 1-line docked compact bar) -->
+    <!-- 1. TOP: status line with always-visible quota strip; expanded adds the dual-ring + clock-pie donuts -->
     <div class="usage-panel" id="usage-panel" data-density="compact">
       <div class="usage-toolbar">
-        <div class="usage-toolbar-left" style="flex-wrap:wrap;gap:5px">
+        <div class="usage-toolbar-left">
           <!--__HOST_PILL_START__--><span class="remote-pill">🌐 로컬</span><!--__HOST_PILL_END__-->
-          <span class="route-pill" id="auto-route-badge" title="실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 자동 스티어링)"><svg width="11" height="10" style="color:var(--amber)"><use href="#ico-bolt-1"/></svg><span id="auto-route-text">자동배분: Codex 6.1-sol · AGY 4 Argon</span></span>
+          <span class="route-pill" id="auto-route-badge" title="실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 자동 스티어링)"><svg width="11" height="10" style="color:var(--amber)"><use href="#ico-bolt-1"/></svg><span id="auto-route-text">Codex 6.1-sol</span></span>
           <span class="usage-hint">바깥 링: 잔여 · 안쪽: 경과율</span>
         </div>
         <div class="usage-toolbar-btns">
+          <span class="q-strip" id="top-quota-strip"><!--__QUOTA_STRIP_START__--><!--__QUOTA_STRIP_END__--></span>
           <button type="button" class="mini-btn" id="density-btn" onclick="toggleDensity()">확장 ▾</button>
         </div>
       </div>
@@ -2476,6 +2350,29 @@
       return `${Math.min(Math.floor(n * 10) / 10, 99.9).toFixed(1)}%`;
     }
 
+    // [box class, title, [[sub-pool, poolKeys]]] - mirrors QUOTA_STRIP_BOXES in render_usage_widget.py.
+    const QUOTA_STRIP = [
+      ['agy', 'AGY', [['Gemini', ['agy_gemini_5h', 'agy_gemini_7d']], ['Claude', ['agy_claude_5h', 'agy_claude_7d']]]],
+      ['cdx', 'Codex', [['', ['codex_7d']]]],
+      ['cld', 'Claude', [['', ['claude_5h', 'claude_7d']]]]
+    ];
+    function renderQuotaStrip() {
+      const strip = document.getElementById('top-quota-strip');
+      if (!strip) return;
+      const ws = {};
+      ACCOUNTS.forEach(a => (a.windows || []).forEach(w => { ws[w.poolKey] = w; }));
+      strip.innerHTML = QUOTA_STRIP.map(([cls, name, groups]) => {
+        const nums = [], tips = [];
+        groups.forEach(([sub, keys]) => {
+          const got = keys.filter(k => ws[k]).map(k => [k.slice(-2), Math.round(Math.max(0, Math.min(100, Number(ws[k].remaining) || 0)))]);
+          if (!got.length) return;
+          nums.push(got.map(([, n]) => `<b class="${n > 50 ? 'q-ok' : n >= 20 ? 'q-mid' : 'q-low'}">${n}</b>`).join('·'));
+          tips.push((sub ? sub + ' ' : '') + got.map(([p, n]) => `${p} ${n}%`).join(' / '));
+        });
+        return nums.length ? `<span class="q-box q-${cls}" title="${name} · ${tips.join(' · ')}">${nums.join('<i class="q-sep">|</i>')}</span>` : '';
+      }).join('');
+    }
+
     function updateRouteBadges() {
       const agy = ACCOUNTS.find(a => a.provider === 'antigravity');
       const cdx = ACCOUNTS.find(a => a.provider === 'codex');
@@ -2542,7 +2439,6 @@
 
       pools.sort((a, b) => (b.score - a.score) || (b.pref - a.pref));
       const avail = pools.filter(p => p.score > 0);
-      const top2 = avail.slice(0, 2).map(p => p.tag).join(' · ') || '가용 풀 없음';
       const fullSummary = pools.map((p, i) => `${p.score > 0 ? `${i + 1}순위` : '제외'} ${p.tag}`).join(' | ');
 
       const badge = document.getElementById('auto-route-badge');
@@ -2551,8 +2447,9 @@
         badge.title = `실시간 3단계 주간 보호 + 한도 0% 자동 페일오버 스티어링 (7d>10% 정상 / 7d≤10% 주간절약 우회 / 7d≤2% 비상보존 / 0% 차단 및 자동 스티어링):\n${fullSummary}`;
       }
       if (badgeTxt) {
-        badgeTxt.textContent = `자동배분: ${top2}`;
+        badgeTxt.textContent = avail[0] ? avail[0].shortName : '가용 풀 없음';
       }
+      renderQuotaStrip();
       const detRoute = document.getElementById('det-agy-main-route');
       if (detRoute) {
         detRoute.textContent = `자동 라우팅: ${fullSummary}`;
@@ -2636,12 +2533,6 @@
         legend.innerHTML = `<svg class="acc-head-ico" width="13" height="13"><use href="${accIco}"/></svg><strong>${acc.short || acc.name}</strong>`;
         fs.appendChild(legend);
 
-        const inlineHead = document.createElement('span');
-        inlineHead.className = 'usage-provider-inline';
-        inlineHead.title = acc.name || '';
-        inlineHead.innerHTML = `<svg class="acc-inline-ico" width="13" height="13"><use href="${accIco}"/></svg>`;
-        fs.appendChild(inlineHead);
-
         const winWrap = document.createElement('div');
         winWrap.className = 'usage-account-windows';
 
@@ -2661,17 +2552,11 @@
           const mIcons = Array.isArray(w.modelIcons) && w.modelIcons.length ? w.modelIcons : [w.modelIcon || accIco];
           const pKind = w.periodKind || (String(w.shortPeriod || '').includes('5h') ? '5h' : '7d');
           const shortP = w.shortPeriod || pKind;
-          const prevMIcons = idx > 0 ? (Array.isArray(wins[idx - 1].modelIcons) ? wins[idx - 1].modelIcons : [wins[idx - 1].modelIcon]) : null;
-          const showCompactPool = (prov === 'antigravity') && (idx === 0 || JSON.stringify(prevMIcons) !== JSON.stringify(mIcons));
-          const compactPoolHtml = showCompactPool
-            ? `<span class="compact-pool-lead${idx > 0 ? ' pool-sep' : ''}" title="${(w.label || '').replace(/"/g, '&quot;')}">${renderModelIcons(mIcons, 10)}</span>`
-            : '';
 
           const winEl = document.createElement('div');
           winEl.className = `usage-window ${st.id} ${glowTier(w.remaining)}`;
           winEl.innerHTML = `
             <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}" title="${tip.replace(/"/g, '&quot;')}">
-              ${compactPoolHtml}
               <div class="usage-donut ${st.id}">
                 <svg viewBox="0 0 64 64" aria-hidden="true">
                   <circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>

@@ -82,6 +82,30 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('agy-origin-badge', active)
         self.assertNotIn(chr(0x1fa90), active)
 
+    def test_top_quota_strip_groups_pools_with_integer_tiers(self):
+        def acc(*pairs):
+            return {'windows': [{'poolKey': k, 'remaining': r} for k, r in pairs]}
+        accounts = [acc(('agy_gemini_5h', 88.5), ('agy_gemini_7d', 4.4), ('agy_claude_5h', 100.0), ('agy_claude_7d', 0.0)),
+                    acc(('codex_5h', 12.0), ('codex_7d', 67.2)),
+                    acc(('claude_5h', 35.5), ('claude_7d', 50.4), ('claude_fable_7d', 9.0))]
+        strip = widget.build_top_quota_strip_html(accounts)
+        boxes = re.findall(r'<span class="q-box q-(\w+)" title="([^"]+)">(.*?)</span>', strip)
+        self.assertEqual([b[0] for b in boxes], ['agy', 'cdx', 'cld'])
+        self.assertEqual(boxes[0][1], 'AGY · Gemini 5h 89% / 7d 4% · Claude 5h 100% / 7d 0%')
+        self.assertEqual(boxes[1][1], 'Codex · 7d 67%')
+        self.assertEqual(boxes[2][1], 'Claude · 5h 36% / 7d 50%')
+        self.assertEqual(re.findall(r'<b class="q-(\w+)">(\d+)</b>', boxes[0][2]),
+                         [('ok', '89'), ('low', '4'), ('ok', '100'), ('low', '0')])
+        self.assertIn('<i class="q-sep">|</i>', boxes[0][2])
+        self.assertEqual(re.findall(r'<b class="q-(\w+)">(\d+)</b>', boxes[2][2]), [('mid', '36'), ('mid', '50')])
+        self.assertNotIn('.', re.sub(r'<[^>]+>', '', strip))
+        template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
+        with mock.patch.object(widget, '_load_persisted_widget_state', return_value={}):
+            html = widget.inject_live_data(template, {})
+        toolbar = html[html.index('class="usage-toolbar"'):html.index('id="quota-grid"')]
+        self.assertIn('id="top-quota-strip"', toolbar)
+        self.assertIn('class="q-box q-agy"', toolbar)
+
     def test_standalone_bundle_roundtrips_and_stays_below_58kb(self):
         template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Thread {i}',
@@ -101,6 +125,7 @@ class RenderingTests(unittest.TestCase):
             self.assertIn(marker, restored)
         # The template alone bundles to ~54.96 KB; the per-agent resource CSS/JS adds ~1.3 KB and the
         # dark-theme quota tint layer (pool rims, thin ring glow, elapsed wedge) ~0.3 KB (bundle ~56.9 KB).
+        # The toolbar quota strip replaced the old mini-donut compact bar CSS (bundle ~57.3 KB).
         self.assertLess(len(bundled.encode()), 58000)
 
     def test_child_nodes_ordering_and_cron_at_bottom(self):

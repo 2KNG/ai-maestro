@@ -4101,13 +4101,6 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
             m_icons = w.get("modelIcons") or [w.get("modelIcon") or acc_ico]
             p_kind = w.get("periodKind") or ("5h" if "5h" in str(w.get("shortPeriod", "")) else "7d")
             short_p = w.get("shortPeriod", p_kind)
-            prev_m_icons = (wins[idx - 1].get("modelIcons") or [wins[idx - 1].get("modelIcon")]) if idx > 0 else None
-            show_compact_pool = (prov == "antigravity") and (idx == 0 or prev_m_icons != m_icons)
-            compact_pool_html = (
-                f'<span class="compact-pool-lead{" pool-sep" if idx > 0 else ""}" title="{_html_esc(w.get("label",""))}">'
-                f'{_render_model_icons_html(m_icons, 10)}</span>'
-                if show_compact_pool else ""
-            )
             token_line = ""
             total_tok = w.get("totalTokens") or cal_caps.get(w.get("poolKey"))
             if total_tok and rem is not None:
@@ -4126,7 +4119,6 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
             win_html.append(
                 f'<div class="usage-window {st_id} {glow}">'
                 f'<button type="button" class="usage-gauge-button" data-tip="{_html_esc(tip)}" title="{_html_esc(tip)}">'
-                f'{compact_pool_html}'
                 f'<div class="usage-donut {st_id}">'
                 f'<svg viewBox="0 0 64 64" aria-hidden="true">'
                 f'<circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>'
@@ -4153,14 +4145,40 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
             f'<svg class="acc-head-ico" width="13" height="13"><use href="{acc_ico}"/></svg>'
             f'<strong>{acc.get("short","")}</strong>'
             f'</legend>'
-            f'<span class="usage-provider-inline" title="{_html_esc(acc.get("name",""))}">'
-            f'<svg class="acc-inline-ico" width="13" height="13"><use href="{acc_ico}"/></svg>'
-            f'</span>'
             f'<div class="usage-account-windows">{"".join(win_html)}</div>'
             f'</fieldset>'
         )
     parts.append("<!--__QUOTA_GRID_HTML_END__-->")
     return "".join(parts)
+
+
+QUOTA_STRIP_BLOCK_RE = re.compile(r"<!--__QUOTA_STRIP_START__-->.*?<!--__QUOTA_STRIP_END__-->", re.S)
+# (box class, title, ((sub-pool, poolKeys), ...)) - mirrors QUOTA_STRIP in usage_widget_template.html.
+QUOTA_STRIP_BOXES = (
+    ("agy", "AGY", (("Gemini", ("agy_gemini_5h", "agy_gemini_7d")), ("Claude", ("agy_claude_5h", "agy_claude_7d")))),
+    ("cdx", "Codex", (("", ("codex_7d",)),)),
+    ("cld", "Claude", (("", ("claude_5h", "claude_7d")),)),
+)
+
+
+def build_top_quota_strip_html(accounts: list[dict]) -> str:
+    """Toolbar quota strip: one tinted box per pool, integer remaining % only (same markup as renderQuotaStrip())."""
+    ws = {w.get("poolKey"): w for acc in accounts for w in acc.get("windows", [])}
+    boxes = []
+    for cls, name, groups in QUOTA_STRIP_BOXES:
+        nums, tips = [], []
+        for sub, keys in groups:
+            # floor(x + 0.5) matches JS Math.round (Python round() is banker's rounding).
+            got = [(k[-2:], int(math.floor(max(0.0, min(100.0, float(ws[k].get("remaining") or 0.0))) + 0.5)))
+                   for k in keys if k in ws]
+            if not got:
+                continue
+            nums.append("·".join(f'<b class="{"q-ok" if n > 50 else "q-mid" if n >= 20 else "q-low"}">{n}</b>' for _, n in got))
+            tips.append((f"{sub} " if sub else "") + " / ".join(f"{p} {n}%" for p, n in got))
+        if nums:
+            boxes.append(f'<span class="q-box q-{cls}" title="{name} · {" · ".join(tips)}">'
+                         + '<i class="q-sep">|</i>'.join(nums) + "</span>")
+    return "<!--__QUOTA_STRIP_START__-->" + "".join(boxes) + "<!--__QUOTA_STRIP_END__-->"
 
 
 PC_TELEMETRY_BLOCK_RE = re.compile(
@@ -4202,7 +4220,7 @@ def build_host_pill_html() -> str:
 
 
 def inject_live_data(template: str, data: dict) -> str:
-    """Replace all live-data regions (SERVER_STATE, ACCOUNTS, QUOTA_GRID, PC_TELEMETRY, ACTIVE_TREE, CLOSED_TREE) at render time for 0ms first paint."""
+    """Replace all live-data regions (SERVER_STATE, ACCOUNTS, QUOTA_GRID, QUOTA_STRIP, PC_TELEMETRY, ACTIVE_TREE, CLOSED_TREE) at render time for 0ms first paint."""
     accounts = build_accounts(data)
     state = _load_persisted_widget_state()
 
@@ -4236,6 +4254,10 @@ def inject_live_data(template: str, data: dict) -> str:
     if QUOTA_GRID_BLOCK_RE.search(html):
         static_grid = build_static_quota_grid_html(accounts)
         html = QUOTA_GRID_BLOCK_RE.sub(lambda _m: static_grid, html, count=1)
+
+    if QUOTA_STRIP_BLOCK_RE.search(html):
+        strip_html = build_top_quota_strip_html(accounts)
+        html = QUOTA_STRIP_BLOCK_RE.sub(lambda _m: strip_html, html, count=1)
 
     if HOST_PILL_BLOCK_RE.search(html):
         pill_html = build_host_pill_html()
