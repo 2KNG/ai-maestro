@@ -4153,31 +4153,50 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
 
 
 QUOTA_STRIP_BLOCK_RE = re.compile(r"<!--__QUOTA_STRIP_START__-->.*?<!--__QUOTA_STRIP_END__-->", re.S)
-# (box class, title, ((sub-pool, poolKeys), ...)) - mirrors QUOTA_STRIP in usage_widget_template.html.
+# (box class, ((sub-pool, poolKeys), ...)) - mirrors QUOTA_STRIP in usage_widget_template.html.
+# A box with several sub-pools (AGY) wraps each pair in an inner q-sub border.
 QUOTA_STRIP_BOXES = (
-    ("agy", "AGY", (("Gemini", ("agy_gemini_5h", "agy_gemini_7d")), ("Claude", ("agy_claude_5h", "agy_claude_7d")))),
-    ("cdx", "Codex", (("", ("codex_7d",)),)),
-    ("cld", "Claude", (("", ("claude_5h", "claude_7d")),)),
+    ("agy", (("Gemini", ("agy_gemini_5h", "agy_gemini_7d")), ("AGY Claude", ("agy_claude_5h", "agy_claude_7d")))),
+    ("cdx", (("Codex", ("codex_7d",)),)),
+    ("cld", (("Claude", ("claude_5h", "claude_7d")),)),
 )
 
 
+def _strip_dial_html(sub: str, w: dict, now_sec: float) -> str:
+    """Mini glowing donut (same ring + elapsed sweep as the grid donut), integer % and period only."""
+    rem = max(0.0, min(100.0, float(w.get("remaining") or 0.0)))
+    n = int(math.floor(rem + 0.5))  # matches JS Math.round (Python round() is banker's rounding)
+    st_id = "unused" if rem >= 100 else "exhausted" if rem <= 0 else "in-use"
+    glow = "g-full" if rem >= 100 else "g-hi" if rem > 50 else "g-mid" if rem >= 20 else "g-low"
+    w_min, r_at = w.get("windowMinutes"), w.get("resetsAt")
+    prog = max(0.0, min(1.0, 1.0 - (r_at - now_sec) / (w_min * 60.0))) if w_min and r_at else None
+    p = w["poolKey"][-2:]
+    tip = f'{sub} {p} {n}% · {_static_compact_rem(r_at, w.get("resetText", ""))}'
+    return (
+        f'<span class="{glow}" title="{_html_esc(tip)}"><span class="usage-donut {st_id}">'
+        f'<svg viewBox="0 0 64 64" aria-hidden="true">'
+        f'<circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>'
+        f'<path class="usage-clock-fill" style="--e:{(prog or 0) * 360:.1f}deg" d="{_static_clock_path(prog)}"></path>'
+        f'<circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-track"></circle>'
+        f'<circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-remaining" stroke-dasharray="{rem} 100" transform="rotate(-90 32 32)"></circle>'
+        f'</svg><span class="usage-donut-center"><strong>{n}%</strong>'
+        f'<small class="usage-center-period p-{p}">{p}</small></span></span></span>'
+    )
+
+
 def build_top_quota_strip_html(accounts: list[dict]) -> str:
-    """Toolbar quota strip: one tinted box per pool, integer remaining % only (same markup as renderQuotaStrip())."""
+    """Toolbar quota strip: tinted box per pool holding mini glowing dials (same markup as renderQuotaStrip())."""
     ws = {w.get("poolKey"): w for acc in accounts for w in acc.get("windows", [])}
+    now_sec = datetime.now().timestamp()
     boxes = []
-    for cls, name, groups in QUOTA_STRIP_BOXES:
-        nums, tips = [], []
+    for cls, groups in QUOTA_STRIP_BOXES:
+        subs = []
         for sub, keys in groups:
-            # floor(x + 0.5) matches JS Math.round (Python round() is banker's rounding).
-            got = [(k[-2:], int(math.floor(max(0.0, min(100.0, float(ws[k].get("remaining") or 0.0))) + 0.5)))
-                   for k in keys if k in ws]
-            if not got:
-                continue
-            nums.append("·".join(f'<b class="{"q-ok" if n > 50 else "q-mid" if n >= 20 else "q-low"}">{n}</b>' for _, n in got))
-            tips.append((f"{sub} " if sub else "") + " / ".join(f"{p} {n}%" for p, n in got))
-        if nums:
-            boxes.append(f'<span class="q-box q-{cls}" title="{name} · {" · ".join(tips)}">'
-                         + '<i class="q-sep">|</i>'.join(nums) + "</span>")
+            dials = "".join(_strip_dial_html(sub, ws[k], now_sec) for k in keys if k in ws)
+            if dials:
+                subs.append(f'<span class="q-sub">{dials}</span>' if len(groups) > 1 else dials)
+        if subs:
+            boxes.append(f'<span class="q-box q-{cls}">' + "".join(subs) + "</span>")
     return "<!--__QUOTA_STRIP_START__-->" + "".join(boxes) + "<!--__QUOTA_STRIP_END__-->"
 
 

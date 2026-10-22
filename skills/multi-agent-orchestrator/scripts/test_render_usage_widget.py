@@ -89,16 +89,22 @@ class RenderingTests(unittest.TestCase):
                     acc(('codex_5h', 12.0), ('codex_7d', 67.2)),
                     acc(('claude_5h', 35.5), ('claude_7d', 50.4), ('claude_fable_7d', 9.0))]
         strip = widget.build_top_quota_strip_html(accounts)
-        boxes = re.findall(r'<span class="q-box q-(\w+)" title="([^"]+)">(.*?)</span>', strip)
+        boxes = [b.split('">', 1) for b in strip.split('<span class="q-box q-')[1:]]
         self.assertEqual([b[0] for b in boxes], ['agy', 'cdx', 'cld'])
-        self.assertEqual(boxes[0][1], 'AGY · Gemini 5h 89% / 7d 4% · Claude 5h 100% / 7d 0%')
-        self.assertEqual(boxes[1][1], 'Codex · 7d 67%')
-        self.assertEqual(boxes[2][1], 'Claude · 5h 36% / 7d 50%')
-        self.assertEqual(re.findall(r'<b class="q-(\w+)">(\d+)</b>', boxes[0][2]),
-                         [('ok', '89'), ('low', '4'), ('ok', '100'), ('low', '0')])
-        self.assertIn('<i class="q-sep">|</i>', boxes[0][2])
-        self.assertEqual(re.findall(r'<b class="q-(\w+)">(\d+)</b>', boxes[2][2]), [('mid', '36'), ('mid', '50')])
-        self.assertNotIn('.', re.sub(r'<[^>]+>', '', strip))
+        dial = r'<span class="g-(\w+)" title="([^"]+)"><span class="usage-donut ([\w-]+)">.*?<strong>(\d+)%</strong><small class="usage-center-period p-(\w+)">'
+        self.assertEqual([(g, st, n, p) for g, _, st, n, p in re.findall(dial, strip)],
+                         [('hi', 'in-use', '89', '5h'), ('low', 'in-use', '4', '7d'), ('full', 'unused', '100', '5h'),
+                          ('low', 'exhausted', '0', '7d'), ('hi', 'in-use', '67', '7d'),
+                          ('mid', 'in-use', '36', '5h'), ('hi', 'in-use', '50', '7d')])
+        self.assertEqual([t.split(' · ')[0] for _, t, *_ in re.findall(dial, strip)],
+                         ['Gemini 5h 89%', 'Gemini 7d 4%', 'AGY Claude 5h 100%', 'AGY Claude 7d 0%',
+                          'Codex 7d 67%', 'Claude 5h 36%', 'Claude 7d 50%'])
+        # Tier follows the raw value like the grid donut (50.4 stays green even though it reads 50%).
+        # Only AGY splits its two sub-pools with inner borders; no marks or captions inside the strip.
+        self.assertEqual(boxes[0][1].count('<span class="q-sub">'), 2)
+        self.assertNotIn('q-sub', boxes[1][1] + boxes[2][1])
+        self.assertEqual(re.sub(r'<[^>]+>', '', strip), '89%5h4%7d100%5h0%7d67%7d36%5h50%7d')
+        self.assertNotIn('<use', strip)
         template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
         with mock.patch.object(widget, '_load_persisted_widget_state', return_value={}):
             html = widget.inject_live_data(template, {})

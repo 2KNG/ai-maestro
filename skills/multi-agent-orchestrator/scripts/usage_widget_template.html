@@ -408,20 +408,23 @@
     .usage-panel[data-density="compact"] #quota-grid,
     .usage-panel[data-density="compact"] .usage-hint { display: none !important; }
     .q-strip { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+    /* Pool boxes are identified by tint only; AGY nests a sub-border per sub-pool (Gemini / AGY Claude). */
+    .q-box, .q-sub { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
     .q-box {
-      display: inline-flex; align-items: center; gap: 1px;
-      height: 20px; padding: 0 6px; border-radius: 5px;
-      font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
-      color: var(--muted); white-space: nowrap; cursor: default;
+      padding: 3px 6px; border-radius: 9px;
+      border: 1px solid rgb(var(--a) / 0.42); background: rgb(var(--a) / 0.07); box-shadow: 0 0 12px rgb(var(--a) / 0.1);
     }
-    .q-box b { font-weight: 700; }
-    .q-agy { background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.42); }
-    .q-cdx { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.45); }
-    .q-cld { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.45); }
-    .q-sep { font-style: normal; opacity: 0.45; margin: 0 3px; }
-    .q-ok { color: var(--green); }
-    .q-mid { color: var(--amber); }
-    .q-low { color: var(--red); }
+    .q-agy { --a: 56 189 248; padding: 3px 5px; gap: 5px; }
+    .q-cdx { --a: 16 185 129; }
+    .q-cld { --a: 251 146 60; }
+    .q-sub { padding: 2px 4px; border-radius: 6px; border: 1px solid rgb(var(--a) / 0.26); background: rgba(15, 23, 42, 0.45); }
+    .q-sub + .q-sub { border-color: rgba(168, 85, 247, 0.28); }
+    html.light .q-sub { background: rgba(255, 255, 255, 0.5); }
+    .q-box .usage-donut { display: block; width: 34px; height: 34px; }
+    .q-box .usage-donut > svg { stroke-width: 3; }
+    .q-box .usage-donut-center { gap: 1px; }
+    .q-box .usage-donut-center > strong { font-size: 9.5px; }
+    .q-box .usage-center-period { font-size: 7.5px; }
 
     /* ── 2. NARROW-SAFE AGENT EXECUTION TREE ── */
     .tree-section {
@@ -2350,26 +2353,35 @@
       return `${Math.min(Math.floor(n * 10) / 10, 99.9).toFixed(1)}%`;
     }
 
-    // [box class, title, [[sub-pool, poolKeys]]] - mirrors QUOTA_STRIP_BOXES in render_usage_widget.py.
+    // [box class, [[sub-pool, poolKeys]]] - mirrors QUOTA_STRIP_BOXES in render_usage_widget.py.
     const QUOTA_STRIP = [
-      ['agy', 'AGY', [['Gemini', ['agy_gemini_5h', 'agy_gemini_7d']], ['Claude', ['agy_claude_5h', 'agy_claude_7d']]]],
-      ['cdx', 'Codex', [['', ['codex_7d']]]],
-      ['cld', 'Claude', [['', ['claude_5h', 'claude_7d']]]]
+      ['agy', [['Gemini', ['agy_gemini_5h', 'agy_gemini_7d']], ['AGY Claude', ['agy_claude_5h', 'agy_claude_7d']]]],
+      ['cdx', [['Codex', ['codex_7d']]]],
+      ['cld', [['Claude', ['claude_5h', 'claude_7d']]]]
     ];
+    // Mini glowing donut: same ring + elapsed sweep as the grid donut, integer % and period only.
+    function stripDial(sub, w) {
+      const rem = Math.max(0, Math.min(100, Number(w.remaining) || 0));
+      const n = Math.round(rem), p = w.poolKey.slice(-2), prog = timeProgress(w);
+      const st = rem >= 100 ? 'unused' : rem <= 0 ? 'exhausted' : 'in-use';
+      return `<span class="${glowTier(rem)}" title="${sub} ${p} ${n}% · ${compactRemaining(w.resetsAt, w.resetText)}"><span class="usage-donut ${st}">`
+        + `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>`
+        + `<path class="usage-clock-fill" style="--e:${((prog || 0) * 360).toFixed(1)}deg" d="${clockPath(prog)}"></path>`
+        + `<circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-track"></circle>`
+        + `<circle cx="32" cy="32" r="27" pathLength="100" class="usage-ring-remaining" stroke-dasharray="${rem} 100" transform="rotate(-90 32 32)"></circle>`
+        + `</svg><span class="usage-donut-center"><strong>${n}%</strong><small class="usage-center-period p-${p}">${p}</small></span></span></span>`;
+    }
     function renderQuotaStrip() {
       const strip = document.getElementById('top-quota-strip');
       if (!strip) return;
       const ws = {};
       ACCOUNTS.forEach(a => (a.windows || []).forEach(w => { ws[w.poolKey] = w; }));
-      strip.innerHTML = QUOTA_STRIP.map(([cls, name, groups]) => {
-        const nums = [], tips = [];
-        groups.forEach(([sub, keys]) => {
-          const got = keys.filter(k => ws[k]).map(k => [k.slice(-2), Math.round(Math.max(0, Math.min(100, Number(ws[k].remaining) || 0)))]);
-          if (!got.length) return;
-          nums.push(got.map(([, n]) => `<b class="${n > 50 ? 'q-ok' : n >= 20 ? 'q-mid' : 'q-low'}">${n}</b>`).join('·'));
-          tips.push((sub ? sub + ' ' : '') + got.map(([p, n]) => `${p} ${n}%`).join(' / '));
-        });
-        return nums.length ? `<span class="q-box q-${cls}" title="${name} · ${tips.join(' · ')}">${nums.join('<i class="q-sep">|</i>')}</span>` : '';
+      strip.innerHTML = QUOTA_STRIP.map(([cls, groups]) => {
+        const subs = groups.map(([sub, keys]) => {
+          const dials = keys.filter(k => ws[k]).map(k => stripDial(sub, ws[k])).join('');
+          return dials && groups.length > 1 ? `<span class="q-sub">${dials}</span>` : dials;
+        }).join('');
+        return subs ? `<span class="q-box q-${cls}">${subs}</span>` : '';
       }).join('');
     }
 
