@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 ai-maestro Runtime Orchestration Harness Hook (maestro_harness_hook.py)
-Antigravity payloads (`conversationId` / `toolCall`) get `{"decision":"allow"}` JSON and solo-streak
-tracking. Claude Code / Orca payloads pass through with empty stdout (exit 0) so no hook schema errors
-and no context tokens; only the spec-substitution and depth guards can block them.
+Antigravity payloads (`conversationId` / `toolCall`) get `{"decision":"allow"}` JSON. Claude Code / Orca
+payloads get empty stdout on allow (exit 0), so no hook schema errors and no context tokens. Main sessions
+in both environments track solo/read streaks; Claude Code gets a one-line reminder on the next prompt only
+after a solo-heavy turn. Sub-workers (MAESTRO_WORKER_ACTIVE=1) skip tracking but keep the depth and
+spec-substitution guards.
 """
 from __future__ import annotations
 import json, os, re, sys, time
@@ -13,6 +15,7 @@ SOLO_READ_TOOLS = {"view_file", "Read", "grep_search", "find_by_name", "Grep", "
 SOLO_WRITE_TOOLS = {"replace_file_content", "multi_replace_file_content", "write_to_file", "Edit", "MultiEdit", "Write"}
 DELEGATION_TOOLS = {"invoke_subagent", "send_message", "Task", "Agent"}
 CLAUDE_WRITE_TOOLS = {"Edit", "MultiEdit", "Write"}
+SOLO_REMINDER = "[🎼 MAESTRO] 단독 작업이 연속되었습니다. 병렬 탐색은 Subagent(Agent/Task), 무거운 구현·검증은 maestro worker-start 위임을 권장합니다."
 
 def _load_session_state(session_id: str) -> dict:
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -155,19 +158,25 @@ def main() -> int:
             if not is_agy and _has_unescaped_substitution(cmd_line):
                 _block("BLOCKED BY MAESTRO HARNESS: maestro worker-start command contains unescaped backticks or $(...), which the shell will execute as command substitution. Pass the spec via a single-quoted heredoc (<<'EOF' ... EOF), --spec '...', or --spec-file.")
 
-    # Pass-through with zero output and zero state I/O inside sub-workers and Claude Code / Orca sessions.
-    if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1" or not is_agy:
+    # Sub-workers and Claude Code subagent tool calls (agent_id) are not main-session solo work.
+    if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1" or payload.get("agent_id"):
         _allow(payload)
         return 0
 
     st = _load_session_state(session_id)
 
     if event in ("PreInvocation", "UserPromptSubmit", "BeforeAgent", "SessionStart"):
+        prev_streak = int(st.get("solo_streak", 0))
+        prev_read_streak = int(st.get("read_streak", 0))
         st["solo_streak"] = 0
         st["read_streak"] = 0
         st["delegated_in_turn"] = False
         _save_session_state(session_id, st)
-        _allow(payload)
+        if is_agy:
+            _allow(payload)
+        elif prev_streak >= 2 or prev_read_streak >= 4:
+            # Claude Code injects UserPromptSubmit stdout as context: one line, only after a solo-heavy turn.
+            print(SOLO_REMINDER)
         return 0
 
     if event in ("PreToolUse", "BeforeTool"):
@@ -176,7 +185,7 @@ def main() -> int:
             st["read_streak"] = 0
             st["delegated_in_turn"] = True
             _save_session_state(session_id, st)
-            if "worker-start" in cmd_line and ("`" in cmd_line or "$(" in cmd_line):
+            if is_agy and "worker-start" in cmd_line and ("`" in cmd_line or "$(" in cmd_line):
                 sys.stderr.write("[⚠️ MAESTRO HARNESS] --spec에 백틱(`) 또는 $(...)이 포함되어 쉘 명령어 치환으로 프로세스가 행(hang)되거나 충돌할 수 있습니다. 작은따옴표 Heredoc(<<'EOF' ... EOF) 또는 --spec-file을 사용하세요.\n")
                 sys.stderr.flush()
         elif tool_name in SOLO_READ_TOOLS:

@@ -33,44 +33,93 @@ class ClaudeCodePassThroughTests(unittest.TestCase):
         self.assertEqual(result.stdout, '')
         self.assertEqual(result.stderr, '')
 
-    def test_pre_tool_use_is_silent_and_stateless(self):
-        session = f'claude-silent-{os.getpid()}'
-        state = self.STATE_DIR / f'{session}.json'
+    def state_path(self, session):
+        return self.STATE_DIR / f'{session}.json'
+
+    def read_state(self, session):
+        return json.loads(self.state_path(session).read_text())
+
+    def seed_state(self, session, solo, read):
+        self.STATE_DIR.mkdir(exist_ok=True)
+        self.state_path(session).write_text(json.dumps(
+            {'solo_streak': solo, 'read_streak': read, 'delegated_in_turn': False, 'updated_at': 0}))
+        self.addCleanup(self.state_path(session).unlink, missing_ok=True)
+
+    def tool(self, session, tool, tool_input, **extra):
+        return self.run_hook('PreToolUse', self.claude_payload(
+            'PreToolUse', session, tool_name=tool, tool_input=tool_input, **extra))
+
+    def test_pre_tool_use_tracks_streaks_silently(self):
+        session = f'claude-track-{os.getpid()}'
+        self.seed_state(session, 0, 0)
         with tempfile.NamedTemporaryFile('w', suffix='.jsonl') as transcript:
             # Opus transcript quoting the Flash placeholder must not trip the Flash write lock.
             transcript.write('{"text":"Flash · MODEL_PLACEHOLDER_M322"}\n')
             transcript.flush()
-            for tool, tool_input in (('Read', {'file_path': '/tmp/x'}), ('Edit', {'file_path': '/tmp/x'}),
-                                     ('Write', {'file_path': '/tmp/x'}), ('Grep', {'pattern': 'x'}),
-                                     ('Bash', {'command': 'ls -la'}), ('Agent', {'prompt': 'x'}),
-                                     ('Bash', {'command': 'maestro worker-start --spec "plain task"'})):
-                with self.subTest(tool=tool, tool_input=tool_input):
-                    result = self.run_hook('PreToolUse', self.claude_payload(
-                        'PreToolUse', session, tool_name=tool, tool_input=tool_input,
-                        transcript_path=transcript.name))
-                    self.assert_silent(result)
-        self.assertFalse(state.exists())
+            for tool, tool_input in (('Read', {'file_path': '/tmp/x'}), ('Grep', {'pattern': 'x'}),
+                                     ('Edit', {'file_path': '/tmp/x'}), ('Write', {'file_path': '/tmp/x'}),
+                                     ('Bash', {'command': 'ls -la'})):
+                with self.subTest(tool=tool):
+                    self.assert_silent(self.tool(session, tool, tool_input, transcript_path=transcript.name))
+        state = self.read_state(session)
+        self.assertEqual((state['read_streak'], state['solo_streak']), (2, 3))
+        self.assertFalse(state['delegated_in_turn'])
 
-    def test_user_prompt_submit_never_injects_context(self):
-        session = f'claude-prompt-{os.getpid()}'
-        state = self.STATE_DIR / f'{session}.json'
-        self.STATE_DIR.mkdir(exist_ok=True)
-        seeded = json.dumps({'solo_streak': 9, 'read_streak': 9, 'delegated_in_turn': False, 'updated_at': 0})
-        state.write_text(seeded)
-        try:
-            for event in ('UserPromptSubmit', 'SessionStart', 'PreInvocation'):
-                with self.subTest(event=event):
-                    result = self.run_hook(event, self.claude_payload(event, session, prompt='hello'))
-                    self.assert_silent(result)
-            self.assertEqual(state.read_text(), seeded)
-        finally:
-            state.unlink()
+    def test_delegation_resets_streaks(self):
+        session = f'claude-deleg-{os.getpid()}'
+        for tool, tool_input in (('Agent', {'prompt': 'x'}), ('Task', {'prompt': 'x'}),
+                                 ('Bash', {'command': "maestro worker-start --pool auto --spec 'plain task'"}),
+                                 ('Bash', {'command': '~/.local/bin/agy-orca worker-start --spec-file /tmp/s'})):
+            with self.subTest(tool=tool, tool_input=tool_input):
+                self.seed_state(session, 5, 7)
+                self.assert_silent(self.tool(session, tool, tool_input))
+                state = self.read_state(session)
+                self.assertEqual((state['solo_streak'], state['read_streak']), (0, 0))
+                self.assertTrue(state['delegated_in_turn'])
 
-    def test_worker_active_is_silent(self):
+    def test_subagent_tool_calls_do_not_count(self):
+        session = f'claude-sub-{os.getpid()}'
+        self.seed_state(session, 0, 0)
+        self.assert_silent(self.tool(session, 'Read', {'file_path': '/tmp/x'}, agent_id='agent-1'))
+        self.assertEqual(self.read_state(session)['read_streak'], 0)
+
+    def test_user_prompt_submit_silent_below_threshold(self):
+        session = f'claude-quiet-{os.getpid()}'
+        for solo, read in ((0, 0), (1, 3)):
+            with self.subTest(solo=solo, read=read):
+                self.seed_state(session, solo, read)
+                self.assert_silent(self.run_hook('UserPromptSubmit', self.claude_payload(
+                    'UserPromptSubmit', session, prompt='hello')))
+                state = self.read_state(session)
+                self.assertEqual((state['solo_streak'], state['read_streak']), (0, 0))
+
+    def test_user_prompt_submit_reminds_after_solo_turn(self):
+        session = f'claude-remind-{os.getpid()}'
+        for solo, read in ((2, 0), (0, 4)):
+            with self.subTest(solo=solo, read=read):
+                self.seed_state(session, solo, read)
+                result = self.run_hook('UserPromptSubmit', self.claude_payload(
+                    'UserPromptSubmit', session, prompt='hello'))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+                lines = result.stdout.splitlines()
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(lines[0].startswith('[🎼 MAESTRO]'))
+                self.assertNotIn('invoke_subagent', lines[0])
+                self.assertNotIn('decision', lines[0])
+                self.assertEqual(self.read_state(session)['solo_streak'], 0)
+                # The reset means the next prompt is silent again.
+                self.assert_silent(self.run_hook('UserPromptSubmit', self.claude_payload(
+                    'UserPromptSubmit', session, prompt='again')))
+
+    def test_worker_active_is_silent_and_untracked(self):
+        session = f'claude-worker-{os.getpid()}'
+        self.seed_state(session, 0, 0)
         result = self.run_hook('PreToolUse', self.claude_payload(
-            'PreToolUse', 'claude-worker', tool_name='Bash', tool_input={'command': 'pytest'}),
+            'PreToolUse', session, tool_name='Bash', tool_input={'command': 'pytest'}),
             MAESTRO_WORKER_ACTIVE='1')
         self.assert_silent(result)
+        self.assertEqual(self.read_state(session)['solo_streak'], 0)
 
     def test_unescaped_backticks_in_worker_start_are_blocked(self):
         for cmd in ('maestro worker-start --pool auto --spec "fix `ssh orin` issue"',
@@ -80,6 +129,7 @@ class ClaudeCodePassThroughTests(unittest.TestCase):
                 result = self.run_hook('PreToolUse', self.claude_payload(
                     'PreToolUse', 'claude-bt', tool_name='Bash', tool_input={'command': cmd}))
                 self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['decision'], 'block')
                 self.assertIn('unescaped backticks', result.stderr)
 
     def test_safely_quoted_specs_pass_silently(self):
@@ -101,6 +151,7 @@ class ClaudeCodePassThroughTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 result = self.run_hook('PreToolUse', payload, MAESTRO_WORKER_ACTIVE='1', MAESTRO_WORKER_DEPTH='2')
                 self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['decision'], 'block')
                 self.assertIn('depth (2)', result.stderr)
         self.assert_silent(self.run_hook('PreToolUse', self.claude_payload(
             'PreToolUse', 'claude-depth', tool_name='Bash', tool_input={'command': cmd}),
