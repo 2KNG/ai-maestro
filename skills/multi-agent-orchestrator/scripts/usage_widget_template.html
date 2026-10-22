@@ -288,11 +288,13 @@
     .usage-clock-background { fill: rgba(15, 23, 42, 0.45); stroke: rgba(148, 163, 184, 0.16); stroke-width: 1; }
     .usage-clock-fill {
       fill: rgba(96, 165, 250, 0.5);
-      stroke: rgba(147, 197, 253, 0.75);
+      stroke: rgba(147, 197, 253, 0.72);
       stroke-width: 1.1;
-      stroke-linejoin: round;
-      /* Radar sweep: 0 at 12 o'clock, ramps to full at the elapsed angle --e; filter (glow) runs before mask. */
-      mask-image: conic-gradient(transparent, rgb(0 0 0 / 0.16) calc(var(--e) * 0.35), rgb(0 0 0 / 0.56) calc(var(--e) * 0.75), #000 var(--e), #000 calc(var(--e) + 8deg), transparent 0);
+      stroke-linejoin: miter;
+      /* Radar sweep: tail at 12 o'clock starts at 0.36 (legible start edge), ramps to full at the elapsed angle --e.
+         The last 4deg before 360 hold the tail alpha so the outer half of the 12 o'clock stroke is not clipped.
+         filter (glow) runs before mask. */
+      mask-image: conic-gradient(rgb(0 0 0 / 0.36), rgb(0 0 0 / 0.55) calc(var(--e) * 0.5), rgb(0 0 0 / 0.8) calc(var(--e) * 0.82), #000 var(--e), #000 calc(var(--e) + 8deg), transparent 0deg calc(360deg - 4deg), rgb(0 0 0 / 0.36) 0deg);
       mask-origin: view-box;
       mask-clip: no-clip;
       filter: drop-shadow(0 0 1.5px rgba(96, 165, 250, 0.55));
@@ -2415,18 +2417,14 @@
 ];
     /*__ACCOUNTS_JSON_END__*/
 
-    // Elapsed wedge (r=22) with true fillets: r<=4 at both rim corners, r<=2.5 at the center tip (convex sweeps only).
-    // Mirrored by _static_clock_path() in render_usage_widget.py.
+    // Plain elapsed pie wedge (r=22). Mirrored by _static_clock_path() in render_usage_widget.py.
     function clockPath(progress) {
       if (progress === null || progress <= 0) return '';
       if (progress >= 1) return 'M32 10 A22 22 0 1 1 32 54 A22 22 0 1 1 32 10 Z';
-      const th = 2 * Math.PI * progress, s = Math.sin(th / 2);
-      const r = Math.min(4, 22 * s / (1 + s) * 0.9);
-      const d = Math.asin(r / (22 - r)), q = (22 - r) * Math.cos(d);
-      const t = th < Math.PI ? Math.min(2.5 / Math.tan(th / 2), q * 0.6) : 0;
-      const P = (a, p) => `${(32 + p * Math.sin(a)).toFixed(2)} ${(32 - p * Math.cos(a)).toFixed(2)}`;
-      const A = (k) => `A${k.toFixed(2)} ${k.toFixed(2)} 0 0 1`;
-      return `M${P(0, t)} L${P(0, q)} ${A(r)} ${P(d, 22)} A22 22 0 ${th - 2 * d > Math.PI ? 1 : 0} 1 ${P(th - d, 22)} ${A(r)} ${P(th, q)} L${P(th, t)}${t ? ` ${A(t * Math.tan(th / 2))} ${P(0, t)}` : ''} Z`;
+      const angle = 2 * Math.PI * progress;
+      const x = (32 + 22 * Math.sin(angle)).toFixed(2);
+      const y = (32 - 22 * Math.cos(angle)).toFixed(2);
+      return `M32 32 L32 10 A22 22 0 ${progress > 0.5 ? 1 : 0} 1 ${x} ${y} Z`;
     }
 
     function timeProgress(w) {

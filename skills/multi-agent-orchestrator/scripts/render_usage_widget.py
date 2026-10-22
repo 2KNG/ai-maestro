@@ -4026,24 +4026,12 @@ def _static_clock_path(progress: float | None) -> str:
         return ""
     if progress >= 1:
         return "M32 10 A22 22 0 1 1 32 54 A22 22 0 1 1 32 10 Z"
-    # Rounded elapsed wedge; must stay byte-compatible with clockPath() in usage_widget_template.html.
-    th = 2 * math.pi * progress
-    s = math.sin(th / 2)
-    r = min(4.0, 22 * s / (1 + s) * 0.9)
-    d = math.asin(r / (22 - r))
-    q = (22 - r) * math.cos(d)
-    t = min(2.5 / math.tan(th / 2), q * 0.6) if th < math.pi else 0.0
-
-    def pt(a: float, p: float) -> str:
-        return f"{32 + p * math.sin(a):.2f} {32 - p * math.cos(a):.2f}"
-
-    def arc(k: float) -> str:
-        return f"A{k:.2f} {k:.2f} 0 0 1"
-
-    large = 1 if th - 2 * d > math.pi else 0
-    tip = f" {arc(t * math.tan(th / 2))} {pt(0, t)}" if t else ""
-    return (f"M{pt(0, t)} L{pt(0, q)} {arc(r)} {pt(d, 22)} A22 22 0 {large} 1 {pt(th - d, 22)} "
-            f"{arc(r)} {pt(th, q)} L{pt(th, t)}{tip} Z")
+    # Plain elapsed pie wedge; must stay byte-compatible with clockPath() in usage_widget_template.html.
+    angle = 2 * math.pi * progress
+    x = f"{32 + 22 * math.sin(angle):.2f}"
+    y = f"{32 - 22 * math.cos(angle):.2f}"
+    large = 1 if progress > 0.5 else 0
+    return f"M32 32 L32 10 A22 22 0 {large} 1 {x} {y} Z"
 
 
 def _static_compact_rem(resets_at: int | None, fallback: str) -> str:
