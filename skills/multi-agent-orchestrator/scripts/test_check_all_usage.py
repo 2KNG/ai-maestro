@@ -732,6 +732,31 @@ class OrcaTeammateTests(unittest.TestCase):
         panes = [self.pane("lead", "claude"), self.pane("lead2", "claude"), self.pane("mate", "claude")]
         self.assertEqual(usage.link_orca_teammates(t, panes), {})
 
+    def test_lead_map_cache_keeps_an_exited_teammate_under_its_lead(self):
+        cache = str(Path(self.tmp.name, "lead_map.json"))
+        def trees():
+            return {"codex": [{"thread_id": "lead", "source": "cli", "title": "구현 플랜 B 테스트 콘솔",
+                               "rollout_path": self.transcript("lead", "mate")},
+                              {"thread_id": "mate", "source": "cli", "title": "Delegate Plan B DRFL code work"}],
+                    "claude": [{"session_id": "human", "entrypoint": "cli", "spec_preview": "hello"}]}
+        live = [self.pane("lead", "codex"), self.pane("mate", "codex"), self.pane("human", "claude")]
+        t = trees()
+        self.assertEqual(usage.link_orca_teammates(t, live, cache_path=cache), {"mate": "lead"})
+        self.assertEqual(t["codex"][1]["orca_terminal_handle"], self.handle("mate"))
+        self.assertEqual(json.loads(Path(cache).read_text())["mate"]["lead"], "lead")
+        # The teammate's process exited: no pane, yet it stays nested; without the cache it surfaces.
+        t = trees()
+        self.assertEqual(usage.link_orca_teammates(t, live[:1], cache_path=cache), {"mate": "lead"})
+        self.assertEqual(t["codex"][1]["orca_lead_id"], "lead")
+        self.assertNotIn("orca_lead_id", t["claude"][0])
+        self.assertEqual(usage.link_orca_teammates(trees(), live[:1]), {})
+        # Remembered links expire, and a lead that is gone from the trees never adopts anyone.
+        t = trees()
+        t["codex"].pop(0)
+        self.assertEqual(usage.link_orca_teammates(t, [], cache_path=cache), {})
+        Path(cache).write_text(json.dumps({"mate": {"lead": "lead", "ts": 0}}))
+        self.assertEqual(usage.link_orca_teammates(trees(), live[:1], cache_path=cache), {})
+
     def test_handle_scan_is_incremental(self):
         path = Path(self.transcript("lead", "w1"))
         self.assertEqual(usage._transcript_orca_handles(str(path)), {self.handle("w1")})

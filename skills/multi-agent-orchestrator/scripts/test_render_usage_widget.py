@@ -107,6 +107,15 @@ class RenderingTests(unittest.TestCase):
         self.assertIn('리드 모델: 6.1-sol + Opus 5.5">6.1-s+O-5.5<', head)
         self.assertIn('status-dot busy', head)
         self.assertIn(' data-running="1"', head.split('>', 1)[0])
+        # The folder, its LEAD rows and their SUB rows all open in Orca, not Antigravity.
+        self.assertIn("openSession(event, 'orca-tag_gcdual-로봇-테스트', '', '로봇-테스트', 'tag_gcdual/로봇-테스트')", head)
+        for node_id, sid in (('node-cdx-cdx-lead', 'cdx-lead'), ('node-claude-cl-lead', 'cl-lead'),
+                             ('node-sub-claude-cl-busy', 'cl-busy'), ('node-sub-cdx-cdx-lead-cdx-mate', 'cdx-mate')):
+            self.assertIn(f"openSession(event, '{node_id}', '{sid}', ", body)
+        self.assertEqual(body.count('title="Orca에서 열기"'), 4)
+        self.assertNotIn('Antigravity 전환', active)
+        self.assertNotIn("importOrCopySession('node-claude-cl-lead'", body)
+        self.assertIn("importOrCopySession('node-cdx-cdx-other'", active)
         # Both leads are LEAD rows in the folder; their teammates stay SUB rows under them.
         for lead in ('node-cdx-cdx-lead', 'node-claude-cl-lead'):
             self.assertIn(f'data-node-id="{lead}"', body)

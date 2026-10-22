@@ -154,21 +154,50 @@ class RouteTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 write_widgets.assert_called_once_with(data, target_dirs=[has_widget, missing_widget])
 
-    def test_open_session_launches_antigravity_cli_without_custom_url_scheme_dialog(self):
-        with mock.patch.object(bridge, "load_state", return_value={"importedCascades": {"node-1": "casc-1"}}), \
-             mock.patch.object(bridge, "unarchive_codex_thread") as unarchive, \
-             mock.patch.object(bridge.os.path, "exists", return_value=True), \
+    def test_open_session_switches_orca_to_the_session_pane(self):
+        wt = os.path.join(bridge.ORCA_WORKSPACES, "tag_gcdual", "로봇-테스트")
+        terminals = [{"handle": "term_dev", "worktreePath": "/home/u/dev/gcdual", "title": "shell"},
+                     {"handle": "term_lead", "worktreePath": wt, "title": "⠼ 구현 tag_gcdual 플랜 B 테스트 콘솔"},
+                     {"handle": "term_mate", "worktreePath": wt, "title": "◑ DRL to DRFL replacement matrix"}]
+        calls = []
+
+        def orca_cli(*args):
+            calls.append(args)
+            if args[:2] == ("terminal", "list"):
+                return {"ok": True, "result": {"terminals": terminals}}
+            return True
+
+        lead_id = "01a1629e-a557-7a50-b0c8-f9fa61424a9d"
+        live = [{"session_id": lead_id, "orca_terminal": "term_lead", "orca_worktree": "id::" + wt}]
+        with mock.patch.object(bridge, "load_state", return_value={}), \
+             mock.patch.object(bridge, "unarchive_codex_thread"), \
+             mock.patch.object(bridge, "_orca_cli", side_effect=orca_cli), \
+             mock.patch.object(bridge, "_focus_orca_window") as focus, \
+             mock.patch.object(bridge.os.path, "isdir", side_effect=lambda p: p == wt), \
+             mock.patch("live_worker_processes.scan_live_worker_processes", return_value=live), \
              mock.patch.object(bridge.subprocess, "Popen") as popen, \
              running_bridge() as base:
             status, body = post_json(base, "/api/open-session", {
-                "nodeId": "node-1",
-                "label": "Test Task",
-                "repo": "ai-maestro",
-            })
+                "nodeId": "node-cdx-" + lead_id, "cascadeId": lead_id, "label": "구현 tag_gcdual", "repo": "tag_gcdual/로봇-테스트"})
             self.assertEqual(status, 200)
+            self.assertEqual((body["ok"], body["target"], body["handle"]), (True, "orca", "term_lead"))
+            self.assertIn(("terminal", "switch", "--terminal", "term_lead"), calls)
+            # A folder row names only its worktree: the pane whose title matches, else its first pane.
+            calls.clear()
+            live.clear()
+            status, body = post_json(base, "/api/open-session", {
+                "nodeId": "orca-tag_gcdual-로봇-테스트", "cascadeId": "", "label": "로봇-테스트", "repo": "tag_gcdual/로봇-테스트"})
+            self.assertEqual((body["handle"], body["worktree"]), ("term_lead", os.path.realpath(wt)))
+            status, body = post_json(base, "/api/open-session", {
+                "nodeId": "node-sub-x", "cascadeId": "", "label": "DRL to DRFL replacement", "repo": wt})
+            self.assertEqual(body["handle"], "term_mate")
+            # No live pane anywhere: the worktree folder is focused instead; Antigravity is never launched.
+            terminals.clear()
+            status, body = post_json(base, "/api/open-session", {"nodeId": "n", "label": "x", "repo": "tag_gcdual/로봇-테스트"})
             self.assertTrue(body["ok"])
-            self.assertEqual(body["cascadeId"], "casc-1")
-            popen.assert_called_once()
+            self.assertEqual(calls[-1][:2], ("file", "open"))
+            self.assertGreaterEqual(focus.call_count, 4)
+            popen.assert_not_called()
 
 
 class SnapshotTests(unittest.TestCase):

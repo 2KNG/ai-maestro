@@ -1911,14 +1911,41 @@ def _transcript_orca_handles(path: str) -> frozenset:
     return handles
 
 
-def link_orca_teammates(trees: dict, live_workers=None) -> dict[str, str]:
+ORCA_LEAD_MAP_FILE = "/tmp/maestro_orca_lead_map.json"
+ORCA_LEAD_MAP_TTL_SEC = 7 * 86400
+
+
+def _load_orca_lead_map(path: str) -> dict[str, dict]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {wid: rec for wid, rec in (data if isinstance(data, dict) else {}).items()
+            if isinstance(rec, dict) and rec.get("lead") and now - float(rec.get("ts") or 0) <= ORCA_LEAD_MAP_TTL_SEC}
+
+
+def _save_orca_lead_map(path: str, cache: dict[str, dict]) -> None:
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".orca_lead_map.")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def link_orca_teammates(trees: dict, live_workers=None, cache_path: str | None = None) -> dict[str, str]:
     """Nest Orca panes a lead pane opened (teammates, sub-workers) under that lead as SUB rows.
 
     Orca starts every pane from its own shell, so no process or env link exists. A lead
     that ran `orca terminal create/send` holds the pane's ORCA_TERMINAL_HANDLE in its
     transcript; failing that, a delegated first prompt with exactly one earlier
     non-delegated pane in the same Orca worktree names the owner. Sets `orca_lead_id`
-    on each worker node and returns {worker id: lead id}.
+    on each worker node and returns {worker id: lead id}. With `cache_path`, links found
+    while both panes were live are remembered there, so a teammate whose process exited
+    stays nested under its lead instead of surfacing as a lead of its own.
     """
     if live_workers is None:
         try:
@@ -1980,6 +2007,22 @@ def link_orca_teammates(trees: dict, live_workers=None) -> dict[str, str]:
     # A pane a teammate opened nests under the top lead; cycles never get an owner.
     resolved = {wid: top(wid) for wid in links}
     resolved = {wid: lead for wid, lead in resolved.items() if lead not in links and lead != wid}
+    if cache_path:
+        cache = _load_orca_lead_map(cache_path)
+        now = time.time()
+        cache.update({wid: {"lead": lead, "ts": now} for wid, lead in resolved.items()})
+        for wid, rec in cache.items():
+            if wid in resolved or wid not in nodes:
+                continue
+            lead, seen = rec["lead"], {wid}
+            while lead in cache and lead not in seen:  # a remembered lead may itself be nested
+                seen.add(lead)
+                lead = cache[lead]["lead"]
+            if lead in nodes and lead not in seen:
+                resolved[wid] = lead
+        _save_orca_lead_map(cache_path, cache)
+    for sid, pane in panes.items():
+        nodes[sid]["orca_terminal_handle"] = pane["orca_terminal"]
     for wid, lead in resolved.items():
         nodes[wid]["orca_lead_id"] = lead
     return resolved
@@ -3018,7 +3061,7 @@ def collect_usage(include_agent_trees=True) -> dict:
             "claude": get_claude_agent_tree(),
         }
         try:
-            link_orca_teammates(report["agent_trees"])
+            link_orca_teammates(report["agent_trees"], cache_path=ORCA_LEAD_MAP_FILE)
         except Exception:
             pass
         try:

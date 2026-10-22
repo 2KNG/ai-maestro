@@ -375,6 +375,102 @@ def unarchive_codex_thread(thread_id: str) -> None:
 
 
 DEV_DIR = os.path.expanduser("~/dev")
+ORCA_IDE = os.path.join(HOME_DIR, ".local/opt/orca/orca-ide")
+ORCA_WORKSPACES = os.path.join(HOME_DIR, "orca/workspaces")
+ORCA_CLI_TIMEOUT_SEC = 8.0
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _orca_cli(*args: str):
+    """Runs orca-ide; parsed JSON when --json was passed, True on success otherwise, None on failure."""
+    try:
+        proc = subprocess.run([ORCA_IDE, *args], capture_output=True, text=True, timeout=ORCA_CLI_TIMEOUT_SEC)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    if "--json" not in args:
+        return True
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return None
+
+
+def _orca_terminals(worktree: str = "") -> list[dict]:
+    args = ["terminal", "list", "--json"] + (["--worktree", f"path:{worktree}"] if worktree else [])
+    data = _orca_cli(*args)
+    terminals = ((data or {}).get("result") or {}).get("terminals") if isinstance(data, dict) else None
+    return [t for t in terminals or () if isinstance(t, dict) and t.get("handle")]
+
+
+def _session_orca_hint(ids: list[str]) -> tuple[str, str]:
+    """(terminal handle, worktree path) of the Claude session / Codex thread an id names."""
+    uuids = {m for i in ids if i for m in _UUID_RE.findall(i)}
+    if not uuids:
+        return "", ""
+    handle = worktree = ""
+    try:
+        from live_worker_processes import scan_live_worker_processes
+        for rec in scan_live_worker_processes():
+            if isinstance(rec, dict) and rec.get("session_id") in uuids and rec.get("orca_terminal"):
+                handle = rec["orca_terminal"]
+                worktree = (rec.get("orca_worktree") or "").rsplit("::", 1)[-1] or rec.get("cwd") or ""
+                break
+    except Exception:
+        pass
+    trees = (_cached_usage_data or {}).get("agent_trees") or {}
+    for kind in ("claude", "codex"):
+        for node in trees.get(kind) or ():
+            if isinstance(node, dict) and (node.get("session_id") or node.get("thread_id")) in uuids:
+                handle = handle or node.get("orca_terminal_handle") or ""
+                worktree = worktree or (node.get("orca_worktree") or "").rsplit("::", 1)[-1] or node.get("cwd") or ""
+    return handle, worktree
+
+
+def _orca_worktree_path(repo: str, hint: str = "") -> str:
+    """Existing directory for a session cwd, an absolute path, '<repo>/<worktree>' or a ~/dev repo."""
+    for cand in (hint, repo if os.path.isabs(repo or "") else "",
+                 os.path.join(ORCA_WORKSPACES, repo) if repo else "",
+                 os.path.join(DEV_DIR, repo) if repo else ""):
+        if cand and os.path.isdir(cand):
+            return os.path.realpath(cand)
+    return ""
+
+
+def _focus_orca_window() -> None:
+    """Raises the local Orca desktop window; best effort, never blocks the request."""
+    env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY") or ":0"}
+    cmd = "wmctrl -xa orca || xdotool search --class orca windowactivate"
+    try:
+        subprocess.Popen(["sh", "-c", cmd], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        pass
+
+
+def open_in_orca(node_id: str, cascade_id: str, repo: str, label: str) -> dict:
+    """Switches Orca to the pane of a session, or else to its worktree (first pane, then the folder)."""
+    handle = cascade_id if (cascade_id or "").startswith("term_") else ""
+    hint_handle, hint_path = _session_orca_hint([cascade_id, node_id])
+    handle = handle or hint_handle
+    worktree = _orca_worktree_path(repo, hint_path)
+    terminals = _orca_terminals()
+    known = {t["handle"] for t in terminals}
+    if handle not in known:
+        handle = ""
+    if not handle:
+        clean = re.sub(r"^\W+", "", label or "").strip()
+        in_tree = [t for t in terminals if worktree and os.path.realpath(t.get("worktreePath") or "") == worktree]
+        titled = [t for t in in_tree or terminals if clean and len(clean) >= 4 and clean in (t.get("title") or "")]
+        # Panes are listed oldest first; a worktree's first pane is the one the user opened.
+        pick = (titled or in_tree or _orca_terminals(worktree)) if worktree else titled
+        handle = pick[0]["handle"] if pick else ""
+    switched = bool(handle) and _orca_cli("terminal", "switch", "--terminal", handle) is True
+    if not switched and worktree:
+        switched = _orca_cli("file", "open", worktree, "--worktree", f"path:{worktree}", "--focus") is True
+    _focus_orca_window()
+    return {"ok": switched, "target": "orca", "handle": handle, "worktree": worktree}
 
 
 def _nvm_bin_dirs() -> list[str]:
@@ -767,33 +863,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 if m:
                     unarchive_codex_thread(m.group(1))
 
-            target_workspace = os.path.expanduser("~/dev")
-            if repo:
-                cand = os.path.expanduser(f"~/dev/{repo}")
-                if os.path.isdir(cand):
-                    target_workspace = cand
-
-            agy_bin = os.path.expanduser("~/.local/bin/antigravity")
-            if os.path.exists(agy_bin):
-                try:
-                    subprocess.Popen(
-                        [agy_bin, target_workspace],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                except Exception:
-                    pass
-
+            result = open_in_orca(node_id, cascade_id, repo, label)
             self._set_cors(200)
             self.wfile.write(
                 json.dumps(
                     {
-                        "ok": True,
+                        **result,
                         "nodeId": node_id,
                         "cascadeId": cascade_id,
-                        "workspace": target_workspace,
-                        "message": f"'{label}' 세션으로 전환되었습니다",
+                        "message": f"'{label}' Orca 패인으로 전환되었습니다" if result["ok"] else f"'{label}' Orca 패인을 찾지 못했습니다",
                     },
                     ensure_ascii=False,
                 ).encode("utf-8")
@@ -949,6 +1027,25 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if not os.path.isdir(cwd):
                 cwd = os.path.expanduser("~/dev")
             run_cmd = cmd_text or (f"codex resume {thread_id}" if thread_id else "codex")
+            # A thread already open in an Orca pane is switched to; otherwise Orca opens a new pane
+            # in the thread's worktree and terminal emulators are only the fallback.
+            handle, _ = _session_orca_hint([thread_id])
+            if handle and handle in {t["handle"] for t in _orca_terminals()} and \
+                    _orca_cli("terminal", "switch", "--terminal", handle) is True:
+                _focus_orca_window()
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": True, "target": "orca", "handle": handle, "cmd": run_cmd, "cwd": cwd},
+                                            ensure_ascii=False).encode("utf-8"))
+                return
+            created = _orca_cli("terminal", "create", "--worktree", f"path:{cwd}", "--title", run_cmd[:40],
+                                "--command", run_cmd, "--focus", "--json")
+            if isinstance(created, dict) and created.get("ok"):
+                _focus_orca_window()
+                handle = ((created.get("result") or {}).get("terminal") or {}).get("handle") or ""
+                self._set_cors(200)
+                self.wfile.write(json.dumps({"ok": True, "target": "orca", "handle": handle, "cmd": run_cmd, "cwd": cwd},
+                                            ensure_ascii=False).encode("utf-8"))
+                return
             env = os.environ.copy()
             env.setdefault("DISPLAY", ":0")
             launched = False

@@ -1437,6 +1437,9 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       if (e) { e.stopPropagation(); e.preventDefault(); }
       const text = cid ? `conversation://${cid}` : (nodeId || '');
       if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+      if (window.parent && window.parent !== window) {
+        try { window.parent.postMessage({ type: 'maestro-open-orca', nodeId, cascadeId: cid, repo }, window.location.origin); } catch (_) {}
+      }
       fetch('http://127.0.0.1:18765/api/open-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1819,14 +1822,28 @@ def _pin_btn_html(node_id: str, label: str, is_pinned: bool) -> str:
 
 
 def _open_btn_html(node_id: str, cid: str, label: str, repo: str = "") -> str:
-    esc_label = _html_esc(label[:28]).replace("'", "\\'")
-    esc_repo = _html_esc(repo).replace("'", "\\'")
+    # JS-escape first: the browser decodes &#39; back to a quote before the onclick runs.
+    esc_label, esc_repo = (_html_esc(v.replace("\\", "\\\\").replace("'", "\\'")) for v in (label[:28], repo))
     return (
         f'<button type="button" class="icon-act-btn open" '
         f'onclick="event.stopPropagation(); openSession(event, \'{node_id}\', \'{cid}\', \'{esc_label}\', \'{esc_repo}\')" '
-        f'title="세션 열기 (Antigravity 전환)" aria-label="세션 열기">'
+        f'title="Orca에서 열기" aria-label="Orca에서 열기">'
         f'<svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></button>'
     )
+
+
+def _import_btn_html(node_id: str, cmd: str) -> str:
+    return (f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); '
+            f'importOrCopySession(\'{node_id}\', \'{cmd}\', this)" title="세션 가져오기">↗</button>')
+
+
+def _orca_open_or(node_id: str, sid: str, label: str, node: dict, other_btn: str) -> str:
+    """The Orca open button for a session living in an Orca pane or worktree, else `other_btn`."""
+    cwd = node.get("cwd") or ""
+    orca = _orca_worktree(node.get("orca_worktree"), cwd)
+    if not (orca or node.get("orca_terminal_handle") or node.get("orca_lead_id")):
+        return other_btn
+    return _open_btn_html(node_id, sid, label, "/".join(orca) if orca else cwd)
 
 
 def _provider_icon_and_pill(model_str: str, provider: str = "antigravity", service_tier: str = "default", effort: str = "ultra") -> tuple[str, str, str]:
@@ -2881,7 +2898,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
         f'{c_pill}'
         f'{_context_pill_html(fmt_k(total), pct, "green", node, running, dot)}'
         f'<span class="row-actions">'
-        f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{c_node_id}\', \'claude --resume {sid}\', this)" title="세션 가져오기">↗</button>'
+        f'{_orca_open_or(c_node_id, sid, title_line.lstrip("✦ "), node, _import_btn_html(c_node_id, f"claude --resume {sid}"))}'
         f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(title_line[:24])}\')">✕</button>'
         f'</span>'
         f'</div></div>'
@@ -3160,7 +3177,7 @@ def _orca_folder_html(key: tuple[str, str], members: list[dict], proc_table: dic
     # Spacers keep the folder's pills in the same columns as its rows (ctx pill = session count).
     right = (f'<span class="model-pill" title="리드 모델: {_html_esc(" + ".join(name for name, _ in models))}">{_html_esc(short)}</span>'
              f'<span class="ctx-pill" title="리드 {len(members)} · 전체 세션 {sessions}">세션 {sessions}</span>'
-             f'<span class="row-actions"></span>')
+             f'<span class="row-actions">{_open_btn_html(folder_id, "", worktree, f"{repo}/{worktree}")}</span>')
     return (
         f'<div class="tree-node orca-folder" data-node-id="{folder_id}" data-scope="current"{run_attr}>'
         f'<div class="agent-row parent" onclick="toggleFolder(\'{folder_id}\')">'
@@ -3548,6 +3565,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'{c_pill}{_context_pill_html(c_used, c_pct, "green", repo_codex, c_live, c_dot)}'
             f'<span class="row-actions">'
             f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{ctid}\', \'{_html_esc(repo)} ({ctid_short})\', \'{_html_esc(ccwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
+            f'{_orca_open_or(c_node_id, ctid, c_disp, repo_codex, "")}'
             f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{c_node_id}\', \'{_html_esc(c_disp[:24])}\')">✕</button>'
             f'</span>'
             f'</div></div>'
@@ -3956,6 +3974,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     f'{child_pill}{_context_pill_html(child_used, child_pct, "green", ch, c_live_child, child_dot)}'
                     f'<span class="row-actions">'
                     f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{child_tid}\', \'{_html_esc(child_disp[:28])}\', \'{_html_esc(child_cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
+                    f'{_orca_open_or(child_node_id, child_tid, child_disp, ch, "")}'
                     f'</span>'
                     f'</div></div>'
                     f'<div class="agent-detail" id="{child_det_id}"><div class="agent-detail-row">'
@@ -3981,6 +4000,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         cdx_kids = merge_resources(proc_table, [{"pids": sorted(claimed_pids_cdx)}], proc_res) if claimed_pids_cdx else None
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
         orca = _orca_worktree(cdx.get("orca_worktree"), cwd)
+        cdx_open_btn = _open_btn_html(node_id, tid, disp, "/".join(orca)) if orca else (
+            f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{node_id}\', \'codex resume {tid}\', this)" title="왼쪽 사이드바(dev)로 가져오기" aria-label="왼쪽 사이드바(dev)로 가져오기"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 2h5v12H9M1 8h9M6 4l4 4-4 4"/></svg></button>')
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
             f'<div class="agent-row parent" onclick="toggleDetail(\'det-cdx-{tid8}\')">'
@@ -3996,7 +4017,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp, is_pinned)}'
             f'<button type="button" class="icon-act-btn codex" onclick="event.stopPropagation(); openCodexDirectBar(\'{tid}\', \'{_html_esc(disp[:28])}\', \'{_html_esc(cwd)}\')" title="Codex 직접 명령 보내기 (하단 팝오버)" aria-label="Codex 직접 명령 보내기"><svg width="12" height="12" aria-hidden="true"><use href="#ico-cmd-send"/></svg></button>'
-            f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{node_id}\', \'codex resume {tid}\', this)" title="왼쪽 사이드바(dev)로 가져오기" aria-label="왼쪽 사이드바(dev)로 가져오기"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 2h5v12H9M1 8h9M6 4l4 4-4 4"/></svg></button>'
+            f'{cdx_open_btn}'
             f'<button type="button" class="dismiss-btn" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(disp[:28])}\')">✕</button>'
             f'</span>'
             f'</div></div>'
@@ -4079,7 +4100,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'{_context_pill_html(used_k, pct, "green", cl, is_busy_cl, root_dot)}'
             f'<span class="row-actions">'
             f'{_pin_btn_html(node_id, disp, is_pinned)}'
-            f'<button type="button" class="icon-act-btn import-btn" onclick="event.stopPropagation(); importOrCopySession(\'{node_id}\', \'claude --resume {_html_esc(sid)}\', this)" title="세션 가져오기">↗</button>'
+            f'{_orca_open_or(node_id, sid, disp, cl, _import_btn_html(node_id, f"claude --resume {_html_esc(sid)}"))}'
             f'<button type="button" class="dismiss-btn" title="목록에서 숨기기" onclick="event.stopPropagation(); dismissNode(\'{node_id}\', \'{_html_esc(disp[:28])}\')">✕</button>'
             f'</span>'
             f'</div></div>'
