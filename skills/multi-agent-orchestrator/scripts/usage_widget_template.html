@@ -2020,21 +2020,32 @@
       letter-spacing: -0.02em;
       transition: color 1.2s ease;
     }
-    /* Quota tier tint: thin soft-glow rings, calm 1px pool rims, no pill/text glow (dark theme only). */
+    /* Quota HUD glow at ~60% of the 2d3291e strength: pool-card lit top edge + aura + bloom, tinted pool badge,
+       donut backlight and thin-ring halo. Header pills, PC MON tag and the active tab stay glow-free (dark theme only). */
     .g-full { --g: 56 189 248; --gc: 59 130 246; }
     .g-hi { --g: 16 185 129; }
     .g-mid { --g: 245 158 11; }
     .g-low { --g: 244 63 94; }
     .g-mid :is(.usage-donut, .usage-quota-state) { color: var(--amber); }
     .g-low :is(.usage-donut, .usage-quota-state) { color: var(--red); }
-    .usage-account[data-provider="antigravity"] { --a: 56 189 248; }
-    .usage-account[data-provider="codex"] { --a: 16 185 129; }
-    .usage-account[data-provider="claude"] { --a: 251 146 60; }
+    .usage-account[data-provider="antigravity"] { --a: 56 189 248; --edge: rgb(56 189 248 / 0.6), rgb(16 185 129 / 0.6); }
+    .usage-account[data-provider="codex"] { --a: 16 185 129; --edge: rgb(16 185 129 / 0.6), rgb(52 211 153 / 0.6); }
+    .usage-account[data-provider="claude"] { --a: 251 146 60; --edge: rgb(245 158 11 / 0.6), rgb(251 146 60 / 0.6); }
     html:not(.light) {
       .usage-panel:not([data-density="compact"]) .usage-account {
         border-color: rgb(var(--a) / 0.28);
-        background: radial-gradient(ellipse 80% 55% at 50% 0, rgb(var(--a) / 0.045), transparent 70%), rgba(2, 6, 23, 0.32);
+        background: linear-gradient(90deg, transparent 10%, var(--edge), transparent 90%) 0 0 / 100% 1.5px no-repeat, radial-gradient(ellipse 80% 55% at 50% 0, rgb(var(--a) / 0.075), transparent 70%), rgba(2, 6, 23, 0.32);
+        box-shadow: 0 10px 30px -6px rgba(2, 8, 23, 0.6), 0 0 22px -4px rgb(var(--a) / 0.085), inset 0 1px 0 rgba(255, 255, 255, 0.05);
       }
+      .usage-account-heading {
+        padding: 1px 8px;
+        border: 1px solid rgb(var(--a) / 0.26);
+        border-radius: 99px;
+        background: linear-gradient(rgb(var(--a) / 0.08), rgb(var(--a) / 0.03)), #0c1322;
+        box-shadow: 0 0 12px -2px rgb(var(--a) / 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+        > strong { text-shadow: 0 0 8px rgb(var(--a) / 0.38); letter-spacing: 0.03em; }
+      }
+      .usage-donut { background: radial-gradient(circle closest-side, rgb(var(--g) / 0.095), transparent); border-radius: 50%; }
       .usage-donut > svg { overflow: visible; }
       .usage-ring-track { stroke: rgba(148, 163, 184, 0.15); }
       :is(.usage-ring-remaining, .exhausted .usage-ring-track) { filter: drop-shadow(0 0 3.5px rgb(var(--gc, var(--g)) / 0.65)) drop-shadow(0 0 8px rgb(var(--g) / 0.32)); }
