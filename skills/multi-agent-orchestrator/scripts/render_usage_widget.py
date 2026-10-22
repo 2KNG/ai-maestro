@@ -4119,8 +4119,9 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
                 f'{token_line}'
             )
 
+            glow = "g-full" if rem >= 100 else "g-hi" if rem > 50 else "g-mid" if rem >= 20 else "g-low"
             win_html.append(
-                f'<div class="usage-window {st_id}">'
+                f'<div class="usage-window {st_id} {glow}">'
                 f'<button type="button" class="usage-gauge-button" data-tip="{_html_esc(tip)}" title="{_html_esc(tip)}">'
                 f'{compact_pool_html}'
                 f'<div class="usage-donut {st_id}">'

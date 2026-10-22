@@ -137,17 +137,6 @@
       color: #6ee7b7;
       border: 1px solid rgba(16, 185, 129, 0.3);
     }
-    .sub-badge.direct-claude {
-      background: rgba(217, 119, 87, 0.14);
-      color: #f3a68e;
-      border: 1px solid rgba(217, 119, 87, 0.32);
-    }
-    #view-archive {
-      max-height: 175px;
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      padding-right: 2px;
-    }
 
     /* ── 1. AOH QUOTA PANEL (바깥 링: 잔여 한도 / 안쪽 원: 기간 진행 시계 파이) ── */
     .usage-panel {
@@ -225,9 +214,9 @@
       flex-direction: column;
       justify-content: space-between;
     }
-    fieldset.usage-account[data-provider="antigravity"] { --accent: #60a5fa; border-color: rgba(96, 165, 250, 0.45); }
+    fieldset.usage-account[data-provider="antigravity"] { --accent: #38bdf8; border-color: rgba(96, 165, 250, 0.45); }
     fieldset.usage-account[data-provider="codex"] { --accent: var(--green); border-color: rgba(16, 185, 129, 0.45); }
-    fieldset.usage-account[data-provider="claude"] { --accent: #df934a; border-color: rgba(223, 147, 74, 0.45); }
+    fieldset.usage-account[data-provider="claude"] { --accent: #fb923c; border-color: rgba(223, 147, 74, 0.45); }
 
     legend.usage-account-heading {
       width: auto;
@@ -620,14 +609,6 @@
       border: 0 !important;
       background: rgba(128, 145, 175, 0.02);
     }
-    .provider-icon {
-      width: 12px;
-      height: 12px;
-      flex: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
     @keyframes dotBreathBlue {
       0%, 100% { background: #3b82f6; box-shadow: 0 0 1px rgba(59, 130, 246, 0.18); transform: scale(0.98); opacity: 0.52; }
       50% { background: #60a5fa; box-shadow: 0 0 4px rgba(96, 165, 250, 0.38); transform: scale(1.03); opacity: 0.85; }
@@ -979,16 +960,6 @@
       white-space: nowrap;
       flex: none;
     }
-    .age-tag {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 8.5px;
-      padding: 1px 4px;
-      border-radius: 3px;
-      background: rgba(245, 158, 11, 0.12);
-      color: #fbbf24;
-      white-space: nowrap;
-      flex: none;
-    }
 
     .cmd-box {
       display: flex;
@@ -1026,15 +997,6 @@
     .cmd-box-input:focus { outline: 1px solid #a855f7; }
     .tree-node.flash > .agent-row { animation: importFlash 1.4s ease-out; }
     @keyframes importFlash { from { background: rgba(168, 85, 247, 0.38); } }
-    .pin-tag {
-      font-size: 8.5px;
-      padding: 1px 4px;
-      border-radius: 3px;
-      background: rgba(168, 85, 247, 0.16);
-      color: #c084fc;
-      white-space: nowrap;
-      flex: none;
-    }
 
     .toast-bar {
       position: fixed;
@@ -1105,7 +1067,7 @@
       box-shadow: 0 6px 20px rgba(0,0,0,0.45);
       pointer-events: none;
     }
-    #view-active, #view-archive {
+    #view-active {
       min-height: 0;
     }
     /* Crisp Light Theme overrides so badges, pills, gauges, and controls never look muddy or washed out */
@@ -1128,11 +1090,6 @@
       background: rgba(5, 150, 105, 0.10);
       color: #047857;
       border-color: rgba(5, 150, 105, 0.30);
-    }
-    html.light .sub-badge.direct-claude {
-      background: rgba(194, 89, 56, 0.12);
-      color: #9a3412;
-      border-color: rgba(194, 89, 56, 0.32);
     }
     html.light fieldset.usage-account[data-provider="antigravity"] {
       --accent: #1d4ed8;
@@ -1237,10 +1194,6 @@
       background: rgba(126, 34, 206, 0.08);
       border-color: rgba(126, 34, 206, 0.35);
       color: #6b21a8;
-    }
-    html.light .age-tag {
-      background: rgba(217, 119, 6, 0.12);
-      color: #b45309;
     }
     html.light .agent-detail {
       background: #f8fafc;
@@ -1877,9 +1830,10 @@
       border-radius: 99px;
       transition: width 0.3s ease;
     }
-    .pc-hud-bar > i.ok, .pc-bento-fill.ok { background: #54c9a0; }
-    .pc-hud-bar > i.warn, .pc-bento-fill.warn { background: #e9b45b; }
-    .pc-hud-bar > i.crit, .pc-bento-fill.crit { background: #ef7a85; }
+    .pc-hud-bar > i.ok, .pc-bento-fill.ok { color: #54c9a0; }
+    .pc-hud-bar > i.warn, .pc-bento-fill.warn { color: #e9b45b; }
+    .pc-hud-bar > i.crit, .pc-bento-fill.crit { color: #ef7a85; }
+    .pc-hud-bar > i, .pc-bento-fill { background: currentColor; }
     .pc-hud-v {
       font-weight: 700;
       font-variant-numeric: tabular-nums;
@@ -2050,6 +2004,49 @@
       font-size: 9px;
       letter-spacing: -0.02em;
       transition: color 1.2s ease;
+    }
+    /* Tactical HUD glow: crisp specular rim + radial ambient aura + SVG arc bloom (dark theme only). */
+    .g-full { --g: 56 189 248; }
+    .g-hi { --g: 16 185 129; }
+    .g-mid { --g: 245 158 11; }
+    .g-low { --g: 244 63 94; }
+    .g-mid :is(.usage-donut, .usage-quota-state) { color: var(--amber); }
+    .g-low :is(.usage-donut, .usage-quota-state) { color: var(--red); }
+    .usage-account[data-provider="antigravity"] { --a: 56 189 248; --e: #38bdf8, #10b981; }
+    .usage-account[data-provider="codex"] { --a: 16 185 129; --e: #10b981, #34d399; }
+    .usage-account[data-provider="claude"] { --a: 251 146 60; --e: #f59e0b, #fb923c; }
+    html:not(.light) {
+      .widget-shell {
+        border-color: rgba(129, 140, 248, 0.2);
+        background: linear-gradient(90deg, transparent 15%, #38bdf8, #818cf8, transparent 85%) 0 0 / 100% 1px no-repeat, radial-gradient(ellipse 60% 120px at 50% 0, rgba(56, 189, 248, 0.08), transparent 70%), var(--shell-bg);
+        box-shadow: 0 18px 44px -14px rgba(2, 6, 23, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+      .usage-panel:not([data-density="compact"]) .usage-account {
+        border-color: rgb(var(--a) / 0.3);
+        background: linear-gradient(90deg, transparent 10%, var(--e), transparent 90%) 0 0 / 100% 1.5px no-repeat, radial-gradient(ellipse 80% 55% at 50% 0, rgb(var(--a) / 0.13), transparent 70%), rgba(2, 6, 23, 0.32);
+        box-shadow: 0 10px 30px -6px rgba(2, 8, 23, 0.75), 0 0 22px -4px rgb(var(--a) / 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      .usage-account-heading {
+        padding: 1px 8px;
+        border: 1px solid rgb(var(--a) / 0.42);
+        border-radius: 99px;
+        background: linear-gradient(rgb(var(--a) / 0.13), rgb(var(--a) / 0.05)), #0c1322;
+        box-shadow: 0 0 12px -2px rgb(var(--a) / 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        > strong { text-shadow: 0 0 8px rgb(var(--a) / 0.65); letter-spacing: 0.03em; }
+      }
+      .usage-donut { background: radial-gradient(circle closest-side, rgb(var(--g) / 0.16), transparent); border-radius: 50%; }
+      .usage-donut > svg { overflow: visible; }
+      .usage-ring-track { stroke: rgba(148, 163, 184, 0.15); }
+      .usage-ring-remaining { filter: drop-shadow(0 0 2.5px rgb(var(--g) / 0.6)) drop-shadow(0 0 7px rgb(var(--g) / 0.24)); }
+      .g-low :is(.usage-ring-remaining, .exhausted .usage-ring-track) { filter: drop-shadow(0 0 3px rgb(var(--g) / 0.7)) drop-shadow(0 0 9px rgb(var(--g) / 0.3)); }
+      .usage-donut-center > strong { text-shadow: 0 0 10px rgb(var(--g) / 0.55), 0 0 1px #fff6; }
+      .usage-quota-state { text-shadow: 0 0 8px rgb(var(--g) / 0.45); }
+      .remote-pill, .route-pill, .pc-hud-tag, #tab-active.active {
+        box-shadow: inset 0 1px 0 #fff2, 0 0 12px -3px currentColor;
+        text-shadow: 0 0 7px color-mix(in srgb, currentColor 45%, transparent);
+      }
+      .pc-hud-bar { overflow: visible; }
+      .pc-hud-bar > i, .pc-bento-fill { box-shadow: 0 0 6px currentColor; }
     }
   </style>
 </head>
@@ -2450,6 +2447,10 @@
       return { id: 'in-use', label: '사용중' };
     }
 
+    function glowTier(rem) {
+      return rem >= 100 ? 'g-full' : rem > 50 ? 'g-hi' : rem >= 20 ? 'g-mid' : 'g-low';
+    }
+
     function compactRemaining(resetsAt, fallback) {
       if (!resetsAt) return fallback || '-';
       const sec = Math.ceil(resetsAt - Date.now() / 1000);
@@ -2662,7 +2663,7 @@
             : '';
 
           const winEl = document.createElement('div');
-          winEl.className = `usage-window ${st.id}`;
+          winEl.className = `usage-window ${st.id} ${glowTier(w.remaining)}`;
           winEl.innerHTML = `
             <button type="button" class="usage-gauge-button" data-tip="${tip.replace(/"/g, '&quot;')}" title="${tip.replace(/"/g, '&quot;')}">
               ${compactPoolHtml}

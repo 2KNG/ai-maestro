@@ -82,7 +82,7 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn('agy-origin-badge', active)
         self.assertNotIn(chr(0x1fa90), active)
 
-    def test_standalone_bundle_roundtrips_and_stays_below_57kb(self):
+    def test_standalone_bundle_roundtrips_and_stays_below_58kb(self):
         template = Path(widget.__file__).with_name(widget.TEMPLATE_FILENAME).read_text()
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Thread {i}',
                       updated_at=1000+i, status='closed', cwd='/tmp') for i in range(20)]
@@ -99,8 +99,9 @@ class RenderingTests(unittest.TestCase):
         self.assertLess(len(restored), len(original))
         for marker in ('__SERVER_STATE_JSON_START__', '__ACCOUNTS_JSON_START__', '__ACTIVE_TREE_HTML_START__'):
             self.assertIn(marker, restored)
-        # The template alone bundles to ~54.96 KB; the per-agent resource CSS/JS adds ~1.3 KB.
-        self.assertLess(len(bundled.encode()), 57000)
+        # The template alone bundles to ~54.96 KB; the per-agent resource CSS/JS adds ~1.3 KB and the
+        # dark-theme HUD glow layer (pool rims, donut bloom, telemetry fills) ~0.7 KB after dead-CSS cleanup.
+        self.assertLess(len(bundled.encode()), 58000)
 
     def test_child_nodes_ordering_and_cron_at_bottom(self):
         now = datetime.now(timezone.utc)
