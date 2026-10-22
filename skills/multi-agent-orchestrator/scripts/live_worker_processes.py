@@ -115,7 +115,9 @@ def _prompt(provider, args):
                      '--disallowedTools', '--system-prompt', '--append-system-prompt',
                      '--max-turns', '--max-budget-usd', '--add-dir', '--sandbox',
                      '-s', '--profile', '--color', '--output-last-message', '-o',
-                     '--output-schema', '--image', '-i'}
+                     '--output-schema', '--image', '-i', '--teammate-mode', '--agent-id',
+                     '--agent-name', '--agent-color', '--agent-type', '--team-name',
+                     '--parent-session-id'}
     positionals = []
     index = 0
     while index < len(args):
@@ -176,18 +178,33 @@ def _claude_session_file(proc_root, pid):
 
 
 def _rollout_session(path):
+    """A Codex process also holds the rollouts of subagents it spawned later;
+    its own thread is the earliest one (rollout names start with a timestamp)."""
+    found = []
     try:
         with os.scandir(path / 'fd') as entries:
             for index, entry in enumerate(entries):
                 if index >= 512:
                     break
                 target = _link(entry.path)
-                match = re.search(r'/rollout-[^/]*-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl(?: \(deleted\))?$', target)
+                match = re.search(r'/(rollout-[^/]*-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}))\.jsonl(?: \(deleted\))?$', target)
                 if match:
-                    return match[1]
+                    found.append((match[1], match[2]))
     except OSError:
         pass
-    return ''
+    return min(found)[1] if found else ''
+
+
+def _team_lead_session(team):
+    """Claude Code agent teams record their lead in ~/.claude/teams/<team>/config.json."""
+    if not team or '/' in team or team.startswith('.'):
+        return ''
+    try:
+        with open(os.path.expanduser(f'~/.claude/teams/{team}/config.json'), encoding='utf-8') as stream:
+            data = json.load(stream)
+    except (OSError, ValueError):
+        return ''
+    return str(data.get('leadSessionId') or '') if isinstance(data, dict) else ''
 
 
 def _scan(proc_root):
@@ -221,7 +238,10 @@ def _scan(proc_root):
         record = dict(pid=int(pid), ppid=ppid,
                       parent_conversation_id=env.get('ANTIGRAVITY_CONVERSATION_ID', '').strip() or cid,
                       provider=provider, pool='', session_id='', registry_id='', spec='', cwd=cwd,
-                      task_id=task_id, task_log=task_log, tier='', parent_session_id='')
+                      task_id=task_id, task_log=task_log, tier='', parent_session_id='',
+                      # Orca pane identity: a lead that opened this pane holds the handle in its transcript.
+                      orca_terminal=env.get('ORCA_TERMINAL_HANDLE', ''), orca_worktree=env.get('ORCA_WORKTREE_ID', ''),
+                      start_ticks=int(fields[19]) if len(fields) > 19 and fields[19].isdigit() else 0)
         if provider:
             record['pool'] = _option(args, '--pool') or env.get('MAESTRO_WORKER_POOL', '') or provider
             record['tier'] = _speed_tier(provider, args, env)
@@ -247,6 +267,13 @@ def _scan(proc_root):
                     pass
             if not record['spec']:
                 record['spec'] = _prompt(provider, args)
+            if provider == 'claude':
+                # Claude Code teammates name their lead session or team on argv.
+                record['parent_session_id'] = _option(args, '--parent-session-id')
+                if not record['parent_session_id'] and os.path.realpath(proc_root) == '/proc':
+                    record['parent_session_id'] = _team_lead_session(_option(args, '--team-name'))
+                if record['parent_session_id'] == record['session_id']:
+                    record['parent_session_id'] = ''
         processes[int(pid)] = record
     result = []
     for pid, record in processes.items():

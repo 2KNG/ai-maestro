@@ -75,6 +75,42 @@ class RenderingTests(unittest.TestCase):
         self.assertIn('data-node-id="closed-claude-orca-exi" data-scope="current"', closed)
         self.assertEqual(count, 2)
 
+    def test_orca_teammate_panes_nest_as_sub_rows_under_their_lead(self):
+        orca = os.path.expanduser('~/orca/workspaces/tag_gcdual/로봇-테스트')
+        now = datetime.now(timezone.utc).timestamp()
+        lead = dict(thread_id='cdx-lead', source='cli', cwd=orca, title='구현 tag_gcdual 플랜 B 테스트 콘솔',
+                    updated_at=now - 5)
+        cx = dict(thread_id='cdx-mate', source='cli', cwd=orca, title='Delegate Plan B DRFL code work',
+                  updated_at=now - 900, turn_completed=True, orca_lead_id='cdx-lead')
+        claude_lead = dict(session_id='cl-lead', entrypoint='cli', terminal='orca', activity='idle', is_running=True,
+                           pid=11, cwd=orca, title='자코비안 따라가기', updated_at=now - 60)
+        busy = dict(session_id='cl-busy', entrypoint='cli', terminal='orca', activity='busy', is_running=True, pid=12,
+                    cwd=orca, title='You own code-only work for Plan B DRFL', updated_at=now, orca_lead_id='cdx-lead')
+        idle = dict(session_id='cl-idle', entrypoint='cli', terminal='orca', activity='idle', is_running=True, pid=13,
+                    cwd=orca, title='You own the field-tester coordinate display task', updated_at=now - 900,
+                    orca_lead_id='cdx-lead')
+        gone = dict(cx, thread_id='cdx-gone', title='closed pane')
+        panes = [dict(pid=20, provider='codex', session_id='cdx-mate', parent_session_id='', parent_conversation_id='')]
+        with mock.patch('live_worker_processes.scan_live_worker_processes', return_value=panes):
+            active, closed, count, _ = widget.build_active_and_closed_trees_html(
+                {'agent_trees': {'codex': [lead, cx, gone], 'claude': [claude_lead, busy, idle]}}, {})
+        for main in ('node-cdx-cdx-mate', 'node-claude-cl-busy', 'node-claude-cl-idle', 'node-cdx-cdx-gone'):
+            self.assertNotIn(f'data-node-id="{main}"', active)
+        card = active.split('data-node-id="node-cdx-cdx-lead"')[1].split('data-node-id="node-claude-cl-lead"')[0]
+        rows = {m: card.split(f'data-node-id="{m}"')[0].rsplit('<div class="', 1)[1] for m in (
+            'node-sub-claude-cl-busy', 'node-sub-claude-cl-idle', 'node-sub-cdx-cdx-lead-cdx-mate')}
+        # The busy teammate is a ripening SUB; idle open panes age like mains instead of evaporating.
+        self.assertTrue(rows['node-sub-claude-cl-busy'].startswith('tree-node sub-node sub-ripening'))
+        self.assertIn('data-sub-running="1"', card.split('node-sub-claude-cl-busy')[1].split('>', 1)[0])
+        for row in ('node-sub-claude-cl-idle', 'node-sub-cdx-cdx-lead-cdx-mate'):
+            self.assertEqual(rows[row].split('"')[0], 'tree-node sub-node')
+        self.assertIn('Orca 팀원 패인', card)
+        self.assertIn('status-dot busy', card.split('class="agent-row parent"')[1].split('</div>')[0])
+        self.assertIn('data-node-id="node-claude-cl-lead"', active)
+        self.assertNotIn('node-sub-cdx-cdx-lead-cdx-gone', active)
+        self.assertNotIn('closed-cdx-cdx-mate', closed)
+        self.assertEqual(count, 2)
+
     def test_closed_sessions_use_exact_recency_and_stop_at_eight(self):
         # Sessions older than seven days are closed; all share age_days, in oldest-first input order.
         nodes = [dict(thread_id=f'{i:08x}-thread', title=f'Session {i}',

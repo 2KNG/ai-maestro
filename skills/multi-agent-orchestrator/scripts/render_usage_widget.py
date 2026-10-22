@@ -2302,6 +2302,16 @@ def _sub_status_dot_from_age(is_busy: bool, age_sec: float, slot_idx: int = 0) -
     return "sub-done", f"✓ SUB 완료 ({eff_age}s · {rem_sec}s 후 증발)", eff_age
 
 
+def _sub_row_state(node: dict, is_busy: bool, age_sec: float, slot_idx: int = 0) -> tuple[str, str, int, str]:
+    """(dot, tip, eff_age, row class) of a SUB row. An open Orca teammate pane waits at its
+    prompt between turns, so it ages like a main card instead of evaporating."""
+    if node.get("orca_pane_open") and not is_busy:
+        dot, tip = _status_dot_from_age(False, age_sec)
+        return dot, f"Orca 팀원 패인 · {tip}", 0, "tree-node sub-node"
+    dot, tip, eff_age = _sub_status_dot_from_age(is_busy, age_sec, slot_idx)
+    return dot, tip, eff_age, "tree-node sub-node sub-ripening"
+
+
 def _sub_prefix_html(
     dot_cls_or_is_last: str | bool = "done",
     tag_lbl_or_dot_cls: str = "SUB",
@@ -2740,7 +2750,7 @@ def _worker_parent(worker: dict, parents: list[dict], transcripts: dict[str, str
         return direct
     explicit = [p for p in candidates if identity(p) in
                 (worker.get("parent_id"), worker.get("parent_cid"), worker.get("parent_conversation_id"),
-                 worker.get("parent_session_id"), worker.get("parent_thread_id"))
+                 worker.get("parent_session_id"), worker.get("parent_thread_id"), worker.get("orca_lead_id"))
                 or any(ids.intersection({c.get("thread_id"), c.get("session_id"), c.get("registry_id")})
                        for c in (p.get("children") or []))]
     if explicit:
@@ -2779,7 +2789,7 @@ def _is_claude_main(node: dict) -> bool:
     """
     return (node.get("entrypoint") == "cli" and not node.get("agy_origin") and not node.get("registry_id")
             and not any(node.get(key) for key in ("parent_id", "parent_cid", "parent_conversation_id",
-                                                   "parent_session_id", "parent_thread_id")))
+                                                   "parent_session_id", "parent_thread_id", "orca_lead_id")))
 
 
 def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
@@ -2820,7 +2830,7 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     is_terminal = node.get("status") in ("completed", "failed", "timeout", "done", "closed") or node.get("ok") is not None
     running = (node.get("session_id") in live_ids or node.get("is_running") is True) and not is_terminal
     age = max(0, now_sec - (_parse_any_ts(node.get("updated_at")) or now_sec))
-    dot, tip, eff_age = _sub_status_dot_from_age(running, age)
+    dot, tip, eff_age, row_class = _sub_row_state(node, running, age)
 
     tokens = node.get("token_count") or node.get("usage") or node.get("context_usage") or {}
     total = tokens.get("total_tokens") or tokens.get("used_tokens") or sum(
@@ -2843,7 +2853,6 @@ def _claude_worker_row(node: dict, live_ids: set[str], now_sec: float) -> str:
     pct = float(tokens.get("percent") or 0.0)
 
     c_ts = int(_parse_any_ts(node.get("updated_at")) or 0)
-    row_class = "tree-node sub-node sub-ripening"
     scope = _repo_from_uris_or_cwd(None, node.get("cwd") or "")[1]
     return (
         f'<div class="{row_class}" data-scope="{scope}" data-running="{int(running)}" data-node-id="{c_node_id}" data-sub-running="{int(running)}" data-sub-age="{eff_age}" data-idle-age="{int(age)}" data-done-ts="{c_ts}">'
@@ -3170,8 +3179,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
     live_codex_proc_ids = {p.get("session_id") for p in live_processes
                            if p.get("provider") == "codex" and p.get("session_id")}
     claude_mains = [c for c in claude_list if _is_claude_main(c)]
+    for c in claude_list:
+        # An open Orca teammate pane is alive between turns; only its busy flag means running.
+        if c.get("orca_lead_id") and c.get("is_running") is True:
+            c.update(orca_pane_open=True, is_running=c.get("activity") != "idle")
     claude_list = [c for c in claude_list if not _is_claude_main(c) and (
-                   c.get("session_id") in live_claude_ids or c.get("is_running")
+                   c.get("session_id") in live_claude_ids or c.get("is_running") or c.get("orca_pane_open")
                    or now_sec - (_parse_any_ts(c.get("updated_at")) or 0) <= SUB_IDLE_RETENTION_SEC)]
     rollout_paths = _codex_rollout_paths(cdx_list)
     proc_res = data.get("process_resources") if isinstance(data.get("process_resources"), dict) else {}
@@ -3320,7 +3333,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_pinned = (node_id in pinned or tid in pinned or f"closed-cdx-{tid8}" in pinned)
         is_imported = (node_id in imported or tid in imported)
         is_dismissed = not is_pinned and (node_id in dismissed or tid in dismissed or f"closed-cdx-{tid8}" in dismissed)
-        if c.get("source") == "exec" or c.get("agy_origin") or (is_internal_cdx and not is_pinned and not is_imported):
+        if c.get("orca_lead_id"):
+            # A pane another Orca agent opened is its SUB row while the pane is open.
+            c = {**c, "orca_pane_open": tid in live_codex_proc_ids}
+            if c["orca_pane_open"] or is_live_running or age_sec_cdx <= SUB_IDLE_RETENTION_SEC:
+                internal_cdx_workers.append(c)
+        elif c.get("source") == "exec" or c.get("agy_origin") or (is_internal_cdx and not is_pinned and not is_imported):
             if is_live_running or age_sec_cdx <= SUB_IDLE_RETENTION_SEC:
                 internal_cdx_workers.append(c)
             if not c.get("registry_only") and c.get("source") != "exec":
@@ -3428,7 +3446,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         c_node_id = f"node-sub-cdx-{ctid}"
         c_live, c_upd = _codex_root_activity(repo_codex, live_codex_ids, rollout_paths, now_sec)
         c_age_s = max(0.0, now_sec - float(c_upd or repo_codex.get("updated_at") or 0.0))
-        if not c_live and (c_node_id in dismissed or ctid in dismissed or c_age_s > SUB_IDLE_RETENTION_SEC):
+        if not c_live and (c_node_id in dismissed or ctid in dismissed or (
+                not repo_codex.get("orca_pane_open") and c_age_s > SUB_IDLE_RETENTION_SEC)):
             return None
         ctc = repo_codex.get("token_count") or {}
         c_used = fmt_k(ctc.get("total_tokens", 0))
@@ -3446,12 +3465,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             resolve_speed_tier(c_tctx.get("service_tier"), repo_codex.get("tier")),
             c_tctx.get("reasoning_effort") or "high",
         )
-        c_dot, c_tip, c_eff_age = _sub_status_dot_from_age(c_live, c_age_s, slot_idx)
+        c_dot, c_tip, c_eff_age, c_cls = _sub_row_state(repo_codex, c_live, c_age_s, slot_idx)
         c_ts = float(c_upd or repo_codex.get("updated_at") or 0.0)
         c_res = _claim(claimed, _worker_res(repo_codex))
         res_children.append(("SUB", c_disp, c_res))
         c_html = (
-            f'<div class="tree-node sub-node sub-ripening" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
+            f'<div class="{c_cls}" data-node-id="{c_node_id}" data-sub-running="{1 if c_live else 0}" data-sub-age="{c_eff_age}" data-idle-age="{int(c_age_s)}" data-done-ts="{int(c_ts)}">'
             f'<div class="agent-row child" onclick="toggleDetail(\'det-sub-cdx-{ctid_short}\')">'
             f'<div class="agent-left">'
             f'{_sub_prefix_html(c_dot, "SUB", c_tip)}'
@@ -3483,7 +3502,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             is_terminal = c.get("status") in ("completed", "failed", "timeout", "done", "closed") or c.get("ok") is not None
             c_live = (sid in live_claude_ids or c.get("is_running") is True) and not is_terminal
             c_ts = _parse_any_ts(c.get("updated_at")) or 0.0
-            if not c_live and now_sec - c_ts > SUB_IDLE_RETENTION_SEC:
+            if not c_live and not c.get("orca_pane_open") and now_sec - c_ts > SUB_IDLE_RETENTION_SEC:
                 continue
             c = {**c, "resources": _claim(claimed, _worker_res(c))}
             res_children.append(("SUB", _first_line(c.get("display_name") or c.get("title") or c.get("spec_preview"), "Claude worker"), c["resources"]))
@@ -3855,14 +3874,14 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
                     c_live_child = (ch.get("is_running") is True and not ch.get("turn_completed")) or _codex_worker_is_active(ch, live_codex_ids, rollout_paths, now_sec)
                     child_ts = float(ch.get("updated_at") or 0.0)
                 child_age = max(0.0, now_sec - float(child_ts or 0.0))
-                if not c_live_child and child_age > SUB_IDLE_RETENTION_SEC:
+                if not c_live_child and not ch.get("orca_pane_open") and child_age > SUB_IDLE_RETENTION_SEC:
                     continue
                 is_live_running = is_live_running or c_live_child
-                child_dot, child_tip, child_eff_age = _sub_status_dot_from_age(c_live_child, child_age)
+                child_dot, child_tip, child_eff_age, child_cls = _sub_row_state(ch, c_live_child, child_age)
                 child_res = _claim(claimed_pids_cdx, _worker_res(ch))
                 res_children_cdx.append(("SUB", child_disp, child_res))
                 row_html = (
-                    f'<div class="tree-node sub-node sub-ripening" data-node-id="{child_node_id}" data-sub-running="{int(c_live_child)}" data-sub-age="{child_eff_age}" data-idle-age="{int(child_age)}" data-done-ts="{int(child_ts or 0)}">'
+                    f'<div class="{child_cls}" data-node-id="{child_node_id}" data-sub-running="{int(c_live_child)}" data-sub-age="{child_eff_age}" data-idle-age="{int(child_age)}" data-done-ts="{int(child_ts or 0)}">'
                     f'<div class="agent-row child" onclick="toggleDetail(\'{child_det_id}\')">'
                     f'<div class="agent-left">{_sub_prefix_html(child_dot, "SUB", child_tip)}'
                     f'{child_icon}'
@@ -3891,6 +3910,9 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
         is_keep_alive_cdx = is_live_running or root_dot == "idle-fresh" or tid in live_codex_proc_ids
         cdx_rollup = merge_resources(proc_table, [cdx.get("rollup_resources"), _worker_res(cdx)]
                                      + [res for _, _, res in res_children_cdx], proc_res)
+        own_pids_cdx = [pid for pid in (cdx_rollup or {}).get("pids") or () if pid not in claimed_pids_cdx]
+        cdx_self = merge_resources(proc_table, [{"pids": own_pids_cdx}], proc_res) if own_pids_cdx else None
+        cdx_kids = merge_resources(proc_table, [{"pids": sorted(claimed_pids_cdx)}], proc_res) if claimed_pids_cdx else None
         run_attr = ' data-running="1"' if is_keep_alive_cdx else ""
         parent_html = (
             f'<div class="tree-node{pin_cls}" data-node-id="{node_id}" data-scope="{scope}"{pin_attr}{run_attr}>'
@@ -3902,7 +3924,7 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             f'<span class="agent-name">{_html_esc(disp)}</span>'
             f'</div>'
             f'<div class="agent-right">'
-            f'{_res_slot_html(f"res-{node_id}", cdx_rollup, rollup=True)}'
+            f'{_res_slot_html(f"res-{node_id}", cdx_rollup, rollup=True, split=(cdx_self, cdx_kids) if claimed_pids_cdx else None)}'
             f'{model_pill}'
             f'{_context_pill_html(used_k, pct, "green", cdx, is_live_running, root_dot)}'
             f'<span class="row-actions">'
@@ -3922,7 +3944,8 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             "is_main_orch": False,
             "updated_ts": updated_ts,
             "html": parent_html,
-            "res": {"kind": "MAIN", "label": disp, "rollup": cdx_rollup, "children": res_children_cdx},
+            "res": {"kind": "MAIN", "label": disp, "rollup": cdx_rollup,
+                    "children": ([("SELF", "메인 본체 (Codex 세션)", cdx_self)] if claimed_pids_cdx else []) + res_children_cdx},
         })
 
     for cl in active_claude:

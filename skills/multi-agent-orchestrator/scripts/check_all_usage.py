@@ -1880,6 +1880,110 @@ def _claude_default_effort(model: str) -> str:
 
 
 ORCA_PATH_PREFIXES = ("~/orca/", "~/.config/orca/")
+ORCA_HANDLE_RE = re.compile(rb"term_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# First prompt of a pane another agent opened for delegated work (pasted-content tags stripped).
+DELEGATED_PROMPT_RE = re.compile(
+    r"^(?:<teammate-message\b|You own\b|You are (?:the |a |an )?[^\n.]{0,80}?\b(?:worker|teammate|sub-?agent)\b)", re.I)
+_ORCA_HANDLE_SCAN: dict[str, tuple[int, int, frozenset]] = {}
+
+
+def _transcript_orca_handles(path: str) -> frozenset:
+    """Orca terminal handles a transcript mentions (`orca terminal create/send` I/O), read incrementally."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return frozenset()
+    ino, offset, handles = _ORCA_HANDLE_SCAN.get(path) or (st.st_ino, 0, frozenset())
+    if ino != st.st_ino or offset > st.st_size:
+        offset, handles = 0, frozenset()
+    if st.st_size > offset:
+        start = max(0, offset - 64)  # a handle split across two reads still matches
+        try:
+            with open(path, "rb") as stream:
+                stream.seek(start)
+                chunk = stream.read(st.st_size - start)
+        except OSError:
+            return handles
+        handles = handles | {match.decode() for match in ORCA_HANDLE_RE.findall(chunk)}
+    if len(_ORCA_HANDLE_SCAN) >= 256:
+        _ORCA_HANDLE_SCAN.clear()
+    _ORCA_HANDLE_SCAN[path] = (st.st_ino, st.st_size, handles)
+    return handles
+
+
+def link_orca_teammates(trees: dict, live_workers=None) -> dict[str, str]:
+    """Nest Orca panes a lead pane opened (teammates, sub-workers) under that lead as SUB rows.
+
+    Orca starts every pane from its own shell, so no process or env link exists. A lead
+    that ran `orca terminal create/send` holds the pane's ORCA_TERMINAL_HANDLE in its
+    transcript; failing that, a delegated first prompt with exactly one earlier
+    non-delegated pane in the same Orca worktree names the owner. Sets `orca_lead_id`
+    on each worker node and returns {worker id: lead id}.
+    """
+    if live_workers is None:
+        try:
+            from live_worker_processes import scan_live_worker_processes
+            live_workers = scan_live_worker_processes()
+        except Exception:
+            live_workers = []
+    nodes: dict[str, dict] = {}
+    for node in trees.get("claude") or []:
+        if isinstance(node, dict):
+            node.pop("orca_lead_id", None)
+            if node.get("entrypoint") == "cli":
+                nodes[node.get("session_id") or node.get("id") or ""] = node
+    for node in trees.get("codex") or []:
+        if isinstance(node, dict) and "error" not in node:
+            node.pop("orca_lead_id", None)
+            if node.get("source") != "exec" and not node.get("agy_origin"):
+                nodes[node.get("thread_id") or ""] = node
+    panes: dict[str, dict] = {}
+    for record in live_workers or ():
+        sid = record.get("session_id") if isinstance(record, dict) else None
+        if (sid in nodes and sid and record.get("orca_terminal") and record.get("provider") in ("claude", "codex")
+                and not record.get("parent_session_id") and not record.get("parent_conversation_id")):
+            panes.setdefault(sid, record)
+
+    def delegated(sid):
+        node = nodes[sid]
+        prompt = node.get("spec_preview") or node.get("first_user_message") or node.get("title") or ""
+        return bool(DELEGATED_PROMPT_RE.match(re.sub(r"^\s*(?:<[^>\n]*>\s*)+", "", prompt)))
+
+    def earlier(lead, worker):
+        a, b = panes[lead].get("start_ticks") or 0, panes[worker].get("start_ticks") or 0
+        return not (a and b) or a < b
+
+    def worktree(sid):
+        return panes[sid].get("orca_worktree") or panes[sid].get("cwd") or nodes[sid].get("cwd") or ""
+
+    links: dict[str, str] = {}
+    for wid, worker in panes.items():
+        others = [lid for lid in panes if lid != wid and earlier(lid, wid)
+                  and panes[lid]["orca_terminal"] != worker["orca_terminal"]]
+        leads = [lid for lid in others if worker["orca_terminal"] in _transcript_orca_handles(
+            nodes[lid].get("rollout_path") or nodes[lid].get("jsonl_path") or "")]
+        if len(leads) > 1:
+            # Sibling teammates are told about each other's panes; the lead itself was not delegated.
+            leads = [lid for lid in leads if not delegated(lid)]
+        elif not leads and delegated(wid):
+            leads = [lid for lid in others if worktree(lid) == worktree(wid) and not delegated(lid)]
+        if len(leads) == 1:
+            links[wid] = leads[0]
+
+    def top(wid):
+        seen, lead = {wid}, links[wid]
+        while lead in links and links[lead] not in seen:
+            seen.add(lead)
+            lead = links[lead]
+        return lead
+
+    # A pane a teammate opened nests under the top lead; cycles never get an owner.
+    resolved = {wid: top(wid) for wid in links}
+    resolved = {wid: lead for wid, lead in resolved.items() if lead not in links and lead != wid}
+    for wid, lead in resolved.items():
+        nodes[wid]["orca_lead_id"] = lead
+    return resolved
+
 
 
 def _claude_terminal(node: dict, live_pid: int | None) -> str:
@@ -2858,6 +2962,17 @@ def build_process_resources(trees: dict | None = None, proc_root: str = "/proc",
             pids = annotate_codex(node)
             _set_resources(node, "rollup_resources", rollup(pids) if pids else None)
 
+    # Orca teammates run in their own panes, outside the lead's process tree.
+    by_id = {node.get("session_id") or node.get("thread_id"): node
+             for kind in ("claude", "codex") for node in trees.get(kind) or []
+             if isinstance(node, dict) and "error" not in node}
+    for node in list(by_id.values()):
+        lead = by_id.get(node.get("orca_lead_id") or "")
+        own = node.get("rollup_resources") or node.get("resources")
+        if lead is not None and lead is not node and own:
+            pids = set((lead.get("rollup_resources") or lead.get("resources") or {}).get("pids") or ())
+            _set_resources(lead, "rollup_resources", rollup(pids | set(own["pids"])))
+
     attributed = set()
     for group in (conversations, tasks, workers, by_pid):
         for res in group.values():
@@ -2902,6 +3017,10 @@ def collect_usage(include_agent_trees=True) -> dict:
             "codex": get_codex_agent_tree(),
             "claude": get_claude_agent_tree(),
         }
+        try:
+            link_orca_teammates(report["agent_trees"])
+        except Exception:
+            pass
         try:
             report["process_resources"] = build_process_resources(report["agent_trees"])
         except Exception as exc:  # telemetry must never break quota reporting

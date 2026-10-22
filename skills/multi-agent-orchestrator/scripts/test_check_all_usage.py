@@ -639,6 +639,20 @@ class ProcessResourceTests(unittest.TestCase):
         self.assertEqual((merged["proc_count"], merged["active_procs"], merged["pids"]), (2, 2, [1, 2]))
         self.assertIsNone(usage.merge_resources(table, [{"pids": [7]}, None]))
 
+    def test_orca_lead_rollup_adds_teammate_panes(self):
+        # Orca opens each pane from its own shell: the teammate is outside the lead's process tree.
+        self.proc(100, 1, comm="codex")
+        self.proc(101, 100, comm="bash")
+        self.proc(200, 1, comm="claude")
+        trees = {"codex": [{"thread_id": "lead", "source": "cli", "children": []}],
+                 "claude": [{"session_id": "mate", "pid": 200, "is_running": True, "orca_lead_id": "lead"}]}
+        self.build(trees, [{"pid": 100, "provider": "codex", "session_id": "lead"},
+                           {"pid": 200, "provider": "claude", "session_id": "mate"}])
+        lead = trees["codex"][0]
+        self.assertEqual(lead["self_resources"]["pids"], [100, 101])
+        self.assertEqual(lead["rollup_resources"]["pids"], [100, 101, 200])
+        self.assertEqual(trees["claude"][0]["rollup_resources"]["pids"], [200])
+
     def test_collect_usage_survives_resource_failures(self):
         with ExitStack() as stack:
             for name in ("get_antigravity_usage", "get_codex_usage", "get_claude_status",
@@ -649,6 +663,83 @@ class ProcessResourceTests(unittest.TestCase):
             report = usage.collect_usage()
         self.assertEqual(report["process_resources"], {"error": "RuntimeError"})
 
+
+
+class OrcaTeammateTests(unittest.TestCase):
+    """Orca panes a lead opened nest under it by terminal handle, never by shared cwd alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        usage._ORCA_HANDLE_SCAN.clear()
+        self.ticks = 0
+
+    @staticmethod
+    def handle(name):
+        return "term_%08x-0000-4000-8000-000000000000" % (sum(map(ord, name)) * 7919)
+
+    def transcript(self, name, *mentions):
+        path = Path(self.tmp.name, name + ".jsonl")
+        path.write_text("".join(json.dumps({"output": f'{{"terminal": {{"handle": "{self.handle(m)}"}}}}'}) + "\n"
+                                for m in mentions))
+        return str(path)
+
+    def pane(self, sid, provider, worktree="wt-a"):
+        self.ticks += 10
+        return {"pid": self.ticks, "provider": provider, "session_id": sid, "orca_terminal": self.handle(sid),
+                "orca_worktree": worktree, "start_ticks": self.ticks, "parent_session_id": "",
+                "parent_conversation_id": ""}
+
+    def test_lead_transcript_handle_nests_panes_and_siblings_do_not_steal(self):
+        trees = {
+            "codex": [{"thread_id": "lead", "source": "cli", "title": "구현 플랜 B 테스트 콘솔",
+                       "rollout_path": self.transcript("lead", "w1", "w2", "cx")},
+                      {"thread_id": "cx", "source": "cli", "title": "You own code-only work for Plan B DRFL.",
+                       "rollout_path": self.transcript("cx")}],
+            "claude": [{"session_id": "claude-lead", "entrypoint": "cli", "spec_preview": "자코비안 따라가기",
+                        "jsonl_path": self.transcript("claude-lead")},
+                       # A sibling briefed on the other worker's pane must not become its owner.
+                       {"session_id": "w1", "entrypoint": "cli", "jsonl_path": self.transcript("w1", "w2"),
+                        "spec_preview": '\n\n<pasted_content id="1">\nYou own the field-tester coordinate display task.'},
+                       {"session_id": "w2", "entrypoint": "cli", "jsonl_path": self.transcript("w2"),
+                        "spec_preview": "You are the Opus 5.5 high-effort STANDARD-speed worker auditing DRFL."},
+                       {"session_id": "human", "entrypoint": "cli", "spec_preview": "hello",
+                        "jsonl_path": self.transcript("human")},
+                       {"session_id": "printer", "entrypoint": "sdk-cli", "orca_lead_id": "stale"}],
+        }
+        panes = [self.pane("lead", "codex"), self.pane("claude-lead", "claude"), self.pane("w1", "claude"),
+                 self.pane("cx", "codex"), self.pane("w2", "claude"), self.pane("human", "claude")]
+        links = usage.link_orca_teammates(trees, panes)
+        self.assertEqual(links, {"w1": "lead", "cx": "lead", "w2": "lead"})
+        self.assertEqual(trees["codex"][1]["orca_lead_id"], "lead")
+        self.assertEqual([n.get("orca_lead_id") for n in trees["claude"]], [None, "lead", "lead", None, None])
+        # A pane opened before the lead, or one whose process is gone, is never nested.
+        early = [dict(panes[2], start_ticks=1)] + panes[:2]
+        self.assertEqual(usage.link_orca_teammates(trees, early), {})
+        self.assertNotIn("orca_lead_id", trees["claude"][1])
+
+    def test_delegated_prompt_falls_back_to_the_single_earlier_lead_of_its_worktree(self):
+        def trees(*claude):
+            return {"codex": [], "claude": [{"session_id": sid, "entrypoint": "cli", "spec_preview": prompt}
+                                            for sid, prompt in claude]}
+        delegated = "You are the code-only worker for Plan B. Do not spawn workers."
+        t = trees(("lead", "자코비안 따라가기"), ("mate", delegated), ("other", delegated), ("second", "질문 하나"))
+        panes = [self.pane("lead", "claude"), self.pane("mate", "claude"), self.pane("other", "claude", "wt-b"),
+                 self.pane("second", "claude")]
+        self.assertEqual(usage.link_orca_teammates(t, panes), {"mate": "lead"})
+        # Two human-driven leads in one worktree and no handle evidence: no guessed owner.
+        t = trees(("lead", "자코비안 따라가기"), ("lead2", "플랜 B 콘솔"), ("mate", delegated))
+        panes = [self.pane("lead", "claude"), self.pane("lead2", "claude"), self.pane("mate", "claude")]
+        self.assertEqual(usage.link_orca_teammates(t, panes), {})
+
+    def test_handle_scan_is_incremental(self):
+        path = Path(self.transcript("lead", "w1"))
+        self.assertEqual(usage._transcript_orca_handles(str(path)), {self.handle("w1")})
+        with path.open("a") as stream:
+            stream.write(self.handle("w2") + "\n")
+        self.assertEqual(usage._transcript_orca_handles(str(path)), {self.handle("w1"), self.handle("w2")})
+        self.assertEqual(usage._ORCA_HANDLE_SCAN[str(path)][1], path.stat().st_size)
+        self.assertEqual(usage._transcript_orca_handles(""), frozenset())
 
 
 class ClaudeTerminalSessionTests(unittest.TestCase):

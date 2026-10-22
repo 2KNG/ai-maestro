@@ -110,5 +110,29 @@ class LiveWorkerTests(unittest.TestCase):
         self.assertEqual(records[43]['parent_session_id'], 'pane-thread')
         self.assertEqual(records[43]['parent_conversation_id'], '')
 
+    def test_orca_pane_identity_and_claude_teammate_links(self):
+        env = {'ORCA_TERMINAL_HANDLE': 'term_pane', 'ORCA_WORKTREE_ID': 'wt::/x'}
+        path = self.process(50, ['claude', '--teammate-mode', 'auto', '--dangerously-skip-permissions'], env=env)
+        (path / 'stat').write_text('50 (claude) S 1 ' + ' '.join(['0'] * 17) + ' 4242 0 0')  # field 22 = starttime
+        self.process(51, ['claude', '--agent-id', 'mate@team', '--team-name', 'team',
+                          '--parent-session-id', 'lead-sid', '--session-id', 'mate-sid'])
+        records = self.scan()
+        self.assertEqual((records[50]['orca_terminal'], records[50]['orca_worktree']), ('term_pane', 'wt::/x'))
+        self.assertEqual(records[50]['start_ticks'], 4242)
+        self.assertEqual(records[50]['spec'], '')  # '--teammate-mode auto' is an option, not a prompt
+        self.assertEqual((records[51]['parent_session_id'], records[51]['spec']), ('lead-sid', ''))
+        self.assertEqual(records[51]['orca_terminal'], '')
+
+    def test_codex_pane_is_its_earliest_rollout_not_a_subagent(self):
+        sessions = self.root / 'sessions'
+        sessions.mkdir()
+        ids = {'lead': '01a1629e-a557-7a50-b0c8-f9fa61424a9d', 'sub': '01a1631e-8814-7182-81ea-ca3eb5026d52'}
+        path = self.process(60, ['/x/codex', '--no-daemon'])
+        for fd, (stamp, key) in enumerate((('2026-10-22T19-18-27', 'sub'), ('2026-10-22T16-58-46', 'lead')), 30):
+            rollout = sessions / f'rollout-{stamp}-{ids[key]}.jsonl'
+            rollout.touch()
+            (path / 'fd' / str(fd)).symlink_to(rollout)
+        self.assertEqual(self.scan()[60]['session_id'], ids['lead'])
+
 if __name__ == '__main__':
     unittest.main()
