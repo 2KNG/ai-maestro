@@ -9,6 +9,149 @@ import unittest
 HOOK = Path(__file__).with_name('maestro_harness_hook.py')
 
 
+def _clean_env(**env):
+    clean = {k: v for k, v in os.environ.items()
+             if 'MODEL_TIER_FLASH' not in k + v and 'MODEL_PLACEHOLDER_M322' not in k + v
+             and k not in ('MAESTRO_WORKER_ACTIVE', 'MAESTRO_WORKER_DEPTH')}
+    clean.update(env)
+    return clean
+
+
+class ClaudeCodePassThroughTests(unittest.TestCase):
+    """Claude Code / Orca payloads (no conversationId/toolCall) must emit nothing on pass-through."""
+    STATE_DIR = Path('/tmp/maestro_harness_state')
+
+    def run_hook(self, event, payload, **env):
+        return subprocess.run([sys.executable, str(HOOK), event], input=json.dumps(payload),
+                              text=True, capture_output=True, env=_clean_env(**env))
+
+    def claude_payload(self, event, session, **extra):
+        return {'session_id': session, 'hook_event_name': event, 'cwd': '/tmp', **extra}
+
+    def assert_silent(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr, '')
+
+    def test_pre_tool_use_is_silent_and_stateless(self):
+        session = f'claude-silent-{os.getpid()}'
+        state = self.STATE_DIR / f'{session}.json'
+        with tempfile.NamedTemporaryFile('w', suffix='.jsonl') as transcript:
+            # Opus transcript quoting the Flash placeholder must not trip the Flash write lock.
+            transcript.write('{"text":"Flash · MODEL_PLACEHOLDER_M322"}\n')
+            transcript.flush()
+            for tool, tool_input in (('Read', {'file_path': '/tmp/x'}), ('Edit', {'file_path': '/tmp/x'}),
+                                     ('Write', {'file_path': '/tmp/x'}), ('Grep', {'pattern': 'x'}),
+                                     ('Bash', {'command': 'ls -la'}), ('Agent', {'prompt': 'x'}),
+                                     ('Bash', {'command': 'maestro worker-start --spec "plain task"'})):
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    result = self.run_hook('PreToolUse', self.claude_payload(
+                        'PreToolUse', session, tool_name=tool, tool_input=tool_input,
+                        transcript_path=transcript.name))
+                    self.assert_silent(result)
+        self.assertFalse(state.exists())
+
+    def test_user_prompt_submit_never_injects_context(self):
+        session = f'claude-prompt-{os.getpid()}'
+        state = self.STATE_DIR / f'{session}.json'
+        self.STATE_DIR.mkdir(exist_ok=True)
+        seeded = json.dumps({'solo_streak': 9, 'read_streak': 9, 'delegated_in_turn': False, 'updated_at': 0})
+        state.write_text(seeded)
+        try:
+            for event in ('UserPromptSubmit', 'SessionStart', 'PreInvocation'):
+                with self.subTest(event=event):
+                    result = self.run_hook(event, self.claude_payload(event, session, prompt='hello'))
+                    self.assert_silent(result)
+            self.assertEqual(state.read_text(), seeded)
+        finally:
+            state.unlink()
+
+    def test_worker_active_is_silent(self):
+        result = self.run_hook('PreToolUse', self.claude_payload(
+            'PreToolUse', 'claude-worker', tool_name='Bash', tool_input={'command': 'pytest'}),
+            MAESTRO_WORKER_ACTIVE='1')
+        self.assert_silent(result)
+
+    def test_unescaped_backticks_in_worker_start_are_blocked(self):
+        for cmd in ('maestro worker-start --pool auto --spec "fix `ssh orin` issue"',
+                    'maestro worker-start --spec "run $(whoami)"',
+                    "agy-orca worker-start --spec \"see `func()`\" --wait"):
+            with self.subTest(cmd=cmd):
+                result = self.run_hook('PreToolUse', self.claude_payload(
+                    'PreToolUse', 'claude-bt', tool_name='Bash', tool_input={'command': cmd}))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('unescaped backticks', result.stderr)
+
+    def test_safely_quoted_specs_pass_silently(self):
+        for cmd in ("maestro worker-start --pool auto --wait --spec-file - <<'EOF'\nfix `ssh orin` and $(x)\nEOF",
+                    'maestro worker-start --spec - <<"SPEC"\ncall `func()`\nSPEC',
+                    "maestro worker-start --spec 'fix `ssh orin` and $(x)'",
+                    'maestro worker-start --spec "escaped \\`tick\\` and \\$(x)"'):
+            with self.subTest(cmd=cmd):
+                result = self.run_hook('PreToolUse', self.claude_payload(
+                    'PreToolUse', 'claude-safe', tool_name='Bash', tool_input={'command': cmd}))
+                self.assert_silent(result)
+
+    def test_depth_three_spawn_is_blocked(self):
+        cmd = "maestro worker-start --pool claude --spec 'leaf task'"
+        for payload in (self.claude_payload('PreToolUse', 'claude-depth', tool_name='Bash',
+                                            tool_input={'command': cmd}),
+                        {'conversationId': 'agy-depth', 'toolCall': {'name': 'run_command',
+                                                                     'arguments': {'CommandLine': cmd}}}):
+            with self.subTest(payload=payload):
+                result = self.run_hook('PreToolUse', payload, MAESTRO_WORKER_ACTIVE='1', MAESTRO_WORKER_DEPTH='2')
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('depth (2)', result.stderr)
+        self.assert_silent(self.run_hook('PreToolUse', self.claude_payload(
+            'PreToolUse', 'claude-depth', tool_name='Bash', tool_input={'command': cmd}),
+            MAESTRO_WORKER_ACTIVE='1', MAESTRO_WORKER_DEPTH='1'))
+
+
+class AntigravityDecisionTests(unittest.TestCase):
+    """Antigravity payloads (conversationId/toolCall) keep the JSON decision protocol."""
+
+    def run_hook(self, event, payload, **env):
+        return subprocess.run([sys.executable, str(HOOK), event], input=json.dumps(payload),
+                              text=True, capture_output=True, env=_clean_env(**env))
+
+    def agy(self, name, arguments, conv='agy-test-conv'):
+        return {'conversationId': f'{conv}-{os.getpid()}', 'toolCall': {'name': name, 'arguments': arguments}}
+
+    def assert_allowed(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '{"decision":"allow"}\n')
+
+    def assert_blocked(self, result, needle):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out['decision'], 'block')
+        self.assertIn(needle, out['reason'])
+
+    def test_allowed_tools_print_allow(self):
+        for event in ('PreToolUse', 'BeforeTool'):
+            for name, args in (('view_file', {'AbsolutePath': '/tmp/x'}),
+                               ('run_command', {'CommandLine': 'ls'}),
+                               ('schedule', {'DurationSeconds': 600}),
+                               ('invoke_subagent', {'Subagents': [{'TypeName': 'research', 'Model': 'flash'}]})):
+                with self.subTest(event=event, name=name):
+                    self.assert_allowed(self.run_hook(event, self.agy(name, args)))
+
+    def test_pre_invocation_prints_only_allow_even_after_streak(self):
+        payload = self.agy('replace_file_content', {}, conv='agy-streak')
+        for _ in range(5):
+            self.run_hook('PreToolUse', payload)
+        payload.pop('toolCall')
+        self.assert_allowed(self.run_hook('PreInvocation', payload))
+
+    def test_blocked_calls(self):
+        self.assert_blocked(self.run_hook('PreToolUse', self.agy(
+            'schedule', {'DurationSeconds': 30, 'Prompt': 'wait for subagent'})), 'schedule() timers')
+        self.assert_blocked(self.run_hook('BeforeTool', self.agy(
+            'invoke_subagent', {'Subagents': [{'TypeName': 'self', 'Model': 'flash'}]})), "TypeName='self'")
+        self.assert_blocked(self.run_hook('PreToolUse', self.agy(
+            'write_to_file', {'TargetFile': '/tmp/x'}), MODEL='MODEL_TIER_FLASH'), 'READ-ONLY')
+
+
 class FlashLockTests(unittest.TestCase):
     def run_hook(self, payload, **env):
         clean = {k: v for k, v in os.environ.items()

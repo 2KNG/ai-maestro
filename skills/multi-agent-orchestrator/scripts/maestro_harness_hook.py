@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
 ai-maestro Runtime Orchestration Harness Hook (maestro_harness_hook.py)
-Outputs valid JSON `{}` for Antigravity protojson compatibility while tracking solo tool streaks.
+Antigravity payloads (`conversationId` / `toolCall`) get `{"decision":"allow"}` JSON and solo-streak
+tracking. Claude Code / Orca payloads pass through with empty stdout (exit 0) so no hook schema errors
+and no context tokens; only the spec-substitution and depth guards can block them.
 """
 from __future__ import annotations
-import json, os, sys, time
+import json, os, re, sys, time
 
 STATE_DIR = "/tmp/maestro_harness_state"
 SOLO_READ_TOOLS = {"view_file", "Read", "grep_search", "find_by_name", "Grep", "Glob"}
 SOLO_WRITE_TOOLS = {"replace_file_content", "multi_replace_file_content", "write_to_file", "Edit", "MultiEdit", "Write"}
 DELEGATION_TOOLS = {"invoke_subagent", "send_message", "Task", "Agent"}
+CLAUDE_WRITE_TOOLS = {"Edit", "MultiEdit", "Write"}
 
 def _load_session_state(session_id: str) -> dict:
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -34,10 +37,36 @@ def _save_session_state(session_id: str, st: dict) -> None:
     except Exception:
         pass
 
+def _is_agy(payload: dict) -> bool:
+    return "conversationId" in payload or "toolCall" in payload
+
+
+def _allow(payload: dict) -> None:
+    # Claude Code: empty stdout on exit 0 = pass-through with 0 context tokens and 0 schema errors.
+    # Antigravity: expects {"decision":"allow"}.
+    if _is_agy(payload):
+        print('{"decision":"allow"}')
+
+
+WORKER_START_MARKERS = ("maestro worker-start", "agy-orca worker-start", "maestro.py worker-start", "agy_orca.py worker-start")
+QUOTED_HEREDOC = re.compile(r"<<-?\s*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\(\w+))[^\n]*\n.*?^\t*(?:\1|\2|\3)[ \t]*$", re.S | re.M)
+SINGLE_QUOTED = re.compile(r"'[^']*'")
+
+
+def _is_worker_start(cmd_str: str) -> bool:
+    return any(m in cmd_str for m in WORKER_START_MARKERS)
+
+
+def _has_unescaped_substitution(cmd_str: str) -> bool:
+    """True when backticks or $( survive outside quoted heredocs, single quotes and backslash escapes."""
+    stripped = SINGLE_QUOTED.sub("", QUOTED_HEREDOC.sub("", cmd_str)).replace("\\`", "").replace("\\$", "")
+    return "`" in stripped or "$(" in stripped
+
+
 def _is_delegation_command(cmd_str: str) -> bool:
     if not cmd_str:
         return False
-    return any(m in cmd_str for m in ("maestro worker-start", "agy-orca worker-start", "maestro.py worker-start", "agy_orca.py worker-start", "codex exec", "claude -p"))
+    return any(m in cmd_str for m in WORKER_START_MARKERS + ("codex exec", "claude -p"))
 
 FLASH_MARKERS = ("MODEL_TIER_FLASH", "MODEL_PLACEHOLDER_M322")
 
@@ -84,6 +113,7 @@ def main() -> int:
             tool_input = {"raw": tool_input}
     if not isinstance(tool_input, dict):
         tool_input = {}
+    is_agy = _is_agy(payload)
     if event in ("PreToolUse", "BeforeTool"):
         if tool_name == "schedule":
             dur = tool_input.get("DurationSeconds")
@@ -110,34 +140,37 @@ def main() -> int:
                     _block(type_reason)
                 if str(entry.get("Model") or "inherit").strip().lower() not in ("flash", "flash_lite"):
                     _block("BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='inherit' or 'pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups.")
-        if tool_name in SOLO_WRITE_TOOLS and _flash_session(payload, session_id):
+        # Claude-native Edit/Write outside Antigravity skip the transcript scan (Opus sessions false-positive on it).
+        if tool_name in SOLO_WRITE_TOOLS and (is_agy or tool_name not in CLAUDE_WRITE_TOOLS) \
+                and _flash_session(payload, session_id):
             _block("BLOCKED BY MAESTRO HARNESS: Gemini Flash is strictly READ-ONLY and forbidden from modifying any file!")
+        cmd_line = str(tool_input.get("CommandLine") or tool_input.get("command") or tool_input.get("cmd") or "")
+        if _is_worker_start(cmd_line):
+            try:
+                depth = int(os.environ.get("MAESTRO_WORKER_DEPTH", "0") or "0")
+            except ValueError:
+                depth = 0
+            if depth >= 2:
+                _block("BLOCKED BY MAESTRO HARNESS: Max worker orchestration depth (2) reached. Leaf workers (MAESTRO_WORKER_DEPTH>=2) must execute subtasks directly without spawning Depth 3 workers.")
+            if not is_agy and _has_unescaped_substitution(cmd_line):
+                _block("BLOCKED BY MAESTRO HARNESS: maestro worker-start command contains unescaped backticks or $(...), which the shell will execute as command substitution. Pass the spec via a single-quoted heredoc (<<'EOF' ... EOF), --spec '...', or --spec-file.")
 
-    # Immediately bypass if running inside an active sub-worker (prevents blocking worker execution)
-    if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1":
-        if event in ("PreToolUse", "BeforeTool"):
-            print('{"decision":"allow"}')
+    # Pass-through with zero output and zero state I/O inside sub-workers and Claude Code / Orca sessions.
+    if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1" or not is_agy:
+        _allow(payload)
         return 0
 
-    is_agy = "conversationId" in payload or "toolCall" in payload
     st = _load_session_state(session_id)
 
     if event in ("PreInvocation", "UserPromptSubmit", "BeforeAgent", "SessionStart"):
-        prev_streak = int(st.get("solo_streak", 0))
-        prev_read_streak = int(st.get("read_streak", 0))
         st["solo_streak"] = 0
         st["read_streak"] = 0
         st["delegated_in_turn"] = False
         _save_session_state(session_id, st)
-        if is_agy:
-            print('{"decision":"allow"}')
-        else:
-            if prev_streak >= 2 or prev_read_streak >= 4:
-                print("[🎼 MAESTRO HARNESS] 단독 작업이 연속되었습니다. 읽기/탐색은 invoke_subagent(TypeName='research', Model='flash'), 코드 수정/구현은 maestro worker-start (Astra/Opus/Sol, 코딩에 Flash 금지)로 위임하세요.")
+        _allow(payload)
         return 0
 
     if event in ("PreToolUse", "BeforeTool"):
-        cmd_line = str(tool_input.get("CommandLine") or tool_input.get("command") or tool_input.get("cmd") or "")
         if tool_name in DELEGATION_TOOLS or _is_delegation_command(cmd_line):
             st["solo_streak"] = 0
             st["read_streak"] = 0
@@ -152,10 +185,10 @@ def main() -> int:
         elif tool_name in SOLO_WRITE_TOOLS or (tool_name in ("run_command", "Bash") and not _is_delegation_command(cmd_line)):
             st["solo_streak"] = int(st.get("solo_streak", 0)) + 1
             _save_session_state(session_id, st)
-        print('{"decision":"allow"}')
+        _allow(payload)
         return 0
 
-    print('{"decision":"allow"}')
+    _allow(payload)
     return 0
 
 if __name__ == "__main__":
