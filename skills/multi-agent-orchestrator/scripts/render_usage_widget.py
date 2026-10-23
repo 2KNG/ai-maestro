@@ -1175,9 +1175,9 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       return Math.max(0, Math.min(1, 1 - (w.resetsAt - nowSec) / (w.windowMinutes * 60)));
     }
 
-    function quotaState(rem) {
+    function quotaState(rem, started = false) {
       if (rem === null || rem === undefined) return { id: 'unknown', label: '미확인' };
-      if (rem >= 100) return { id: 'unused', label: '미사용' };
+      if (rem >= 100) return started ? { id: 'in-use', label: '사용중' } : { id: 'unused', label: '미사용' };
       if (rem <= 0) return { id: 'exhausted', label: '소진 · 대기' };
       return { id: 'in-use', label: '사용중' };
     }
@@ -1244,7 +1244,7 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
         winWrap.className = 'usage-account-windows';
 
         acc.windows.forEach(w => {
-          const st = quotaState(w.remaining);
+          const st = quotaState(w.remaining, w.started);
           const prog = timeProgress(w);
           const pathD = clockPath(prog);
           const dispPct = w.remaining === 100 ? '100%' : w.remaining === 0 ? '0%' : `${w.remaining.toFixed(1)}%`;
@@ -1551,6 +1551,8 @@ def build_accounts(data: dict) -> list[dict]:
             "windowMinutes": minutes,
             "resetsAt": parse_kst_to_epoch(src.get("reset_time_kst", "")),
             "resetText": short_reset_label(src.get("reset_time_kst", "")),
+            # Reset timer running even though a tiny ping left 100% remaining.
+            "started": src.get("started") is True,
         }
         if total_tokens:
             item["totalTokens"] = total_tokens
@@ -4401,7 +4403,7 @@ def build_static_quota_grid_html(accounts: list[dict]) -> str:
         for idx, w in enumerate(wins):
             rem = float(w.get("remaining") or 0.0)
             if rem >= 100.0:
-                st_id, st_label, disp_pct = "unused", "미사용", "100%"
+                st_id, st_label, disp_pct = ("in-use", "사용중", "100%") if w.get("started") else ("unused", "미사용", "100%")
             elif rem <= 0.0:
                 st_id, st_label, disp_pct = "exhausted", "소진 · 리셋 대기", "0%"
             else:
@@ -4482,7 +4484,7 @@ def _strip_dial_html(sub: str, w: dict, now_sec: float) -> str:
     """Mini glowing donut (same ring + elapsed sweep as the grid donut), integer % and period only."""
     rem = max(0.0, min(100.0, float(w.get("remaining") or 0.0)))
     n = int(math.floor(rem + 0.5))  # matches JS Math.round (Python round() is banker's rounding)
-    st_id = "unused" if rem >= 100 else "exhausted" if rem <= 0 else "in-use"
+    st_id = "unused" if rem >= 100 and not w.get("started") else "exhausted" if rem <= 0 else "in-use"
     glow = "g-full" if rem >= 100 else "g-hi" if rem > 50 else "g-mid" if rem >= 20 else "g-low"
     w_min, r_at = w.get("windowMinutes"), w.get("resetsAt")
     prog = max(0.0, min(1.0, 1.0 - (r_at - now_sec) / (w_min * 60.0))) if w_min and r_at else None

@@ -36,6 +36,7 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 import check_all_usage as cau
 import render_usage_widget as ruw
+import subscription_wake
 
 HOME_DIR = os.path.expanduser("~")
 DEFAULT_DEV_DIR = os.path.join(HOME_DIR, "dev")
@@ -79,6 +80,29 @@ HASHED_HTML_FIELDS = (("active", "activeTreeHtml", "activeTreeUnchanged"),
                       ("closed", "closedTreeHtml", "closedTreeUnchanged"),
                       ("pc", "pcTelemetryHtml", "pcTelemetryUnchanged"))
 _written_widget_hashes: dict[str, str] = {}
+HARNESS_STATE_DIR = "/tmp/maestro_harness_state"
+HARNESS_STATE_MAX_AGE_SEC = 7 * 86400
+PRUNE_INTERVAL_SEC = 3600
+_last_prune = 0.0
+
+
+def prune_stale_files(directory: str = HARNESS_STATE_DIR, max_age: float = HARNESS_STATE_MAX_AGE_SEC,
+                      now: float | None = None) -> int:
+    """Delete regular files older than max_age so per-session hook state cannot pile up."""
+    cutoff = (time.time() if now is None else now) - max_age
+    removed = 0
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                os.unlink(entry.path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _content_hash(text: str) -> str:
@@ -253,16 +277,21 @@ def write_widget_to_all_conversations(data: dict, target_dirs: list[str] | None 
 
 def widget_sync_loop() -> None:
     """Refresh immutable HTTP snapshots and provision widgets for new conversations."""
-    global _last_failure
+    global _last_failure, _last_prune
     while True:
         try:
             requested = _refresh_requested.is_set()
             _refresh_requested.clear()
             now = time.time()
             try:
-                refresh_http_snapshot(force=requested)
+                snapshot = refresh_http_snapshot(force=requested)
+                # Self-throttled to one background pass per 5 minutes.
+                subscription_wake.maybe_wake_async(snapshot["data"])
             except Exception as e:
                 sys.stderr.write(f"[widget-sync] snapshot refresh failed: {e}\n")
+            if now - _last_prune >= PRUNE_INTERVAL_SEC:
+                _last_prune = now
+                prune_stale_files()
             dirs = list_conversation_dirs()
             missing = [d for d in dirs if not os.path.exists(os.path.join(d, WIDGET_FILENAME))
                        and _recently_active(d, now)]

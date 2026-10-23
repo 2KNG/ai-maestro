@@ -2317,8 +2317,8 @@
       return Math.max(0, Math.min(1, 1 - (w.resetsAt - nowSec) / (w.windowMinutes * 60)));
     }
 
-    function quotaState(rem) {
-      if (rem >= 100) return { id: 'unused', label: '미사용' };
+    function quotaState(rem, started = false) {
+      if (rem >= 100) return started ? { id: 'in-use', label: '사용중' } : { id: 'unused', label: '미사용' };
       if (rem <= 0) return { id: 'exhausted', label: '소진 · 리셋 대기' };
       return { id: 'in-use', label: '사용중' };
     }
@@ -2357,7 +2357,7 @@
     function stripDial(sub, w) {
       const rem = Math.max(0, Math.min(100, Number(w.remaining) || 0));
       const n = Math.round(rem), p = w.poolKey.slice(-2), prog = timeProgress(w);
-      const st = rem >= 100 ? 'unused' : rem <= 0 ? 'exhausted' : 'in-use';
+      const st = quotaState(rem, w.started).id;
       return `<span class="${glowTier(rem)}" title="${sub} ${p} ${n}% · ${compactRemaining(w.resetsAt, w.resetText)}"><span class="usage-donut ${st}">`
         + `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="22" class="usage-clock-background"></circle>`
         + `<path class="usage-clock-fill" style="--e:${((prog || 0) * 360).toFixed(1)}deg" d="${clockPath(prog)}"></path>`
@@ -2543,7 +2543,7 @@
         winWrap.className = 'usage-account-windows';
 
         wins.forEach((w, idx) => {
-          const st = quotaState(w.remaining);
+          const st = quotaState(w.remaining, w.started);
           const prog = timeProgress(w);
           const pathD = clockPath(prog);
           const dispPct = fmtPct(w.remaining);

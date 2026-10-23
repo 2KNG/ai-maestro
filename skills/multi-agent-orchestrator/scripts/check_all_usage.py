@@ -263,8 +263,16 @@ AGY_GEMINI_POOL = "Gemini Pool (Argon / Flash)"
 AGY_3P_POOL = "Claude & GPT-OSS Pool (Antigravity)"
 
 
-def _agy_quota_window(rem, rst) -> dict:
-    """Build a five_hour/weekly window dict from a remainingFraction + ISO resetTime."""
+AGY_UNSTARTED_SLACK_SEC = 120
+
+
+def _agy_quota_window(rem, rst, span_sec: int | None = None) -> dict:
+    """Build a five_hour/weekly window dict from a remainingFraction + ISO resetTime.
+
+    An unstarted window reports a sliding resetTime (now + span). A tiny wake
+    ping leaves remainingFraction at exactly 1 but pins resetTime, so a reset
+    noticeably earlier than now + span means the window is running.
+    """
     try:
         rem = float(rem)
     except (TypeError, ValueError):
@@ -272,12 +280,26 @@ def _agy_quota_window(rem, rst) -> dict:
     rem_pct = round(rem * 100, 2)
     if rem < 1.0 and rem_pct >= 100.0:
         rem_pct = 99.99  # in-use pool must never round up to 100% (unused)
+    reset_epoch = _iso_to_epoch(rst)
+    pinned = (span_sec is not None and reset_epoch is not None
+              and 0 < reset_epoch - time.time() < span_sec - AGY_UNSTARTED_SLACK_SEC)
     return {
         "remaining_percent": rem_pct,
         "used_percent": round(100.0 - rem_pct, 2),
         "reset_time_kst": fmt_iso_to_kst(rst),
-        "status": "한도 도달" if rem <= 0.0 else ("활성" if rem < 1.0 else "가용 (대기)"),
+        "reset_epoch": reset_epoch,
+        "status": "한도 도달" if rem <= 0.0 else ("활성" if rem < 1.0 or pinned else "가용 (대기)"),
     }
+
+
+def _iso_to_epoch(iso_str) -> float | None:
+    if not isinstance(iso_str, str) or not iso_str:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def _agy_retrieve_quota_summary(addr: str, token: str | None) -> dict:
@@ -310,11 +332,10 @@ def _agy_retrieve_quota_summary(addr: str, token: str | None) -> dict:
                 continue
             bid = b.get("bucketId") or ""
             win = b.get("window") or ""
-            window = _agy_quota_window(b.get("remainingFraction", 0.0), b.get("resetTime", ""))
             if bid == f"{prefix}-5h" or win == "5h":
-                entry["five_hour"] = window
+                entry["five_hour"] = _agy_quota_window(b.get("remainingFraction", 0.0), b.get("resetTime", ""), 18000)
             elif bid == f"{prefix}-weekly" or win == "weekly":
-                entry["weekly"] = window
+                entry["weekly"] = _agy_quota_window(b.get("remainingFraction", 0.0), b.get("resetTime", ""), 604800)
     if not out:
         raise ValueError("RetrieveUserQuotaSummary returned no recognizable quota groups")
     return out
@@ -470,6 +491,7 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
                     "used_percent": round(sec_used, 2),
                     "remaining_percent": round(100.0 - sec_used, 2),
                     "reset_time_kst": fmt_ts_to_kst(sec_rst),
+                    "reset_epoch": _num_or_none(sec_rst),
                     "status": "활성",
                 }
             else:
@@ -482,6 +504,7 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
                     "used_percent": round(prim_used, 2),
                     "remaining_percent": round(100.0 - prim_used, 2),
                     "reset_time_kst": fmt_ts_to_kst(prim_rst),
+                    "reset_epoch": _num_or_none(prim_rst),
                     "window_seconds": primary.get("limit_window_seconds", 604800),
                     "status": "한도 도달" if prim_used >= 100.0 else "활성",
                 }
@@ -544,6 +567,7 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
                                     "used_percent": round(sec_used, 2),
                                     "remaining_percent": round(100.0 - sec_used, 2),
                                     "reset_time_kst": fmt_ts_to_kst(sec_rst),
+                                    "reset_epoch": _num_or_none(sec_rst),
                                     "status": "활성",
                                 }
                             else:
@@ -555,6 +579,7 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
                                 "used_percent": round(prim_used, 2),
                                 "remaining_percent": round(100.0 - prim_used, 2),
                                 "reset_time_kst": fmt_ts_to_kst(prim_rst),
+                                "reset_epoch": _num_or_none(prim_rst),
                                 "window_minutes": primary.get("window_minutes", 10080),
                                 "status": "한도 도달" if prim_used >= 100.0 else "활성",
                             } if primary else None
@@ -585,6 +610,10 @@ def get_codex_usage(ttl_sec: float = 30.0) -> dict:
         except Exception:
             continue
     return {"error": "No recent Codex rollout with rate_limits found"}
+
+
+def _num_or_none(value) -> float | None:
+    return float(value) if type(value) in (int, float) else None
 
 
 def _codex_windows(primary, secondary):
@@ -634,7 +663,7 @@ def _is_iso_past(iso_str) -> bool:
         return False
 
 
-def get_claude_status() -> dict:
+def get_claude_status(max_cache_age: float | None = None) -> dict:
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
     has_oauth = False
     sub_type = "Max / Pro (OAuth)"
@@ -674,7 +703,8 @@ def get_claude_status() -> dict:
     source = None
     stale = False
     reset_reconciled = False
-    if os.path.exists(cache_path) and (datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) < CLAUDE_CACHE_MAX_AGE_SECONDS):
+    cache_age_limit = CLAUDE_CACHE_MAX_AGE_SECONDS if max_cache_age is None else max_cache_age
+    if os.path.exists(cache_path) and (datetime.datetime.now().timestamp() - os.path.getmtime(cache_path) < cache_age_limit):
         try:
             with open(cache_path, "r", encoding="utf-8") as cf:
                 data = json.load(cf)
@@ -732,6 +762,7 @@ def get_claude_status() -> dict:
                 "used_percent": round(fh_util, 2),
                 "remaining_percent": round(100.0 - fh_util, 2),
                 "reset_time_kst": fmt_iso_to_kst(fh_rst) if fh_rst else "대기 (미사용)",
+                "reset_epoch": _iso_to_epoch(fh_rst),
                 "status": "가용 (리셋 완료)" if fh_reset else ("가용 (대기)" if not fh_rst else ("한도 도달" if fh_util >= 100.0 else "활성")),
             }
 
@@ -1573,12 +1604,26 @@ def _clean_parent_title(name: str | None, title: str | None, cwd: str | None) ->
     return "Codex Session"
 
 
+PS_CACHE_TTL_SEC = 2.0
+_PS_CACHE: dict = {}
+
+
+def _ps_pid_args() -> str:
+    """One `ps -eo pid=,args=` per scan, shared by the Codex and Claude tree builders."""
+    now = time.monotonic()
+    if _PS_CACHE and now - _PS_CACHE["at"] < PS_CACHE_TTL_SEC:
+        return _PS_CACHE["out"]
+    out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True, stderr=subprocess.DEVNULL, timeout=2)
+    _PS_CACHE.update(at=now, out=out)
+    return out
+
+
 def _running_codex_cwds_and_snippets() -> tuple[set[str], list[str]]:
     cwds: set[str] = set()
     snippets: list[str] = []
     try:
-        out = subprocess.check_output(["ps", "-eo", "args"], text=True, stderr=subprocess.DEVNULL, timeout=2)
-        for line in out.splitlines():
+        for row in _ps_pid_args().splitlines():
+            line = row.strip().partition(" ")[2].strip()
             if "codex" not in line or "grep" in line:
                 continue
             if "codex exec" in line or "codex resume" in line:
@@ -1782,9 +1827,9 @@ def get_claude_agent_tree() -> list[dict]:
     # Exact CLI options avoid matching session IDs merely mentioned in prompts.
     argv_options: dict[int, dict] = {}
     try:
-        output = subprocess.check_output(
-            ["ps", "-eo", "pid=,args="], text=True, stderr=subprocess.DEVNULL, timeout=2)
-        for line in output.splitlines():
+        for line in _ps_pid_args().splitlines():
+            if "claude" not in line:
+                continue  # is_claude below needs "claude" in argv; skip shlex for the rest
             try:
                 pid_text, command = line.strip().split(None, 1)
                 args = shlex.split(command)
@@ -3050,6 +3095,12 @@ def collect_usage(include_agent_trees=True) -> dict:
         "codex_local": get_codex_usage(),
         "claude_local": get_claude_status(),
     }
+    try:
+        # Upgrades started-but-100% windows to 활성 and records reset observations.
+        import subscription_wake
+        subscription_wake.annotate_window_activity(report)
+    except Exception:
+        pass
     report["recommended_routing"] = select_best_pool(report)
     # Keep the recommendation near the top so --pretty | head shows the result.
     report = {"timestamp_kst": report.pop("timestamp_kst"),
