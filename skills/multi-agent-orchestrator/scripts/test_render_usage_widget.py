@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -18,6 +19,9 @@ DEV = os.path.expanduser('~/dev')
 
 class RenderingTests(unittest.TestCase):
     def setUp(self):
+        mode = mock.patch.dict(os.environ, {'MAESTRO_ORCA_ENABLED': '1'})
+        mode.start()
+        self.addCleanup(mode.stop)
         patcher = mock.patch.object(widget, '_worker_registry', return_value={})
         self.addCleanup(patcher.stop)
         patcher.start()
@@ -112,7 +116,7 @@ class RenderingTests(unittest.TestCase):
         for node_id, sid in (('node-cdx-cdx-lead', 'cdx-lead'), ('node-claude-cl-lead', 'cl-lead'),
                              ('node-sub-claude-cl-busy', 'cl-busy'), ('node-sub-cdx-cdx-lead-cdx-mate', 'cdx-mate')):
             self.assertIn(f"openSession(event, '{node_id}', '{sid}', ", body)
-        self.assertEqual(body.count('title="Orca에서 열기"'), 4)
+        self.assertEqual(body.count('title="Antigravity에서 열기"'), 4)
         self.assertNotIn('Antigravity 전환', active)
         self.assertNotIn("importOrCopySession('node-claude-cl-lead'", body)
         self.assertIn("importOrCopySession('node-cdx-cdx-other'", active)
@@ -251,13 +255,32 @@ class RenderingTests(unittest.TestCase):
         with mock.patch.object(widget, '_load_persisted_widget_state', return_value={}):
             original = widget.inject_live_data(template, {'agent_trees': {'codex': nodes}})
         bundled = widget.compact_widget_html(original)
-        payload = re.search(r'atob\("([^"]+)"\)', bundled).group(1)
-        restored = gzip.decompress(base64.b64decode(payload)).decode()
+        match = re.search(r'atob\("([^"]+)"\)', bundled)
+        if match:
+            compressed = base64.b64decode(match.group(1))
+        else:
+            packed = re.search(r"const p='(.*?)',a=", bundled, re.S).group(1)
+            alphabet = ''.join(chr(c) for c in range(1, 128) if c not in (10, 13, 39, 60, 92))
+            compressed = bytearray()
+            for offset in range(0, len(packed), 7):
+                value = 0
+                for digit in packed[offset:offset+7]:
+                    value = value * 122 + alphabet.index(digit)
+                compressed.extend(value.to_bytes(6, 'big'))
+            size = int(re.search(r'b.slice\(0,(\d+)\)', bundled).group(1))
+            compressed = compressed[:size]
+        restored = gzip.decompress(compressed).decode()
         # Bundling intentionally drops ordinary comments and indentation, but keeps live-data markers.
         expected = re.sub(r"/\*(?!__).*?\*/", "", original, flags=re.S)
         expected = re.sub(r"<!--(?!__).*?-->", "", expected, flags=re.S)
         expected = re.sub(r"\n[ \t]+", "\n", expected)
-        self.assertEqual(restored, expected)
+        # Oversized artifacts may minify JavaScript; preserve every HTML/CSS region.
+        strip_scripts = lambda value: re.sub(r"<script>.*?</script>", "<script></script>", value, flags=re.S)
+        self.assertEqual(strip_scripts(restored), strip_scripts(expected))
+        if shutil.which('node'):
+            for script in re.findall(r"<script>(.*?)</script>", restored, re.S):
+                checked = subprocess.run(['node', '--check'], input=script, text=True, capture_output=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertLess(len(restored), len(original))
         for marker in ('__SERVER_STATE_JSON_START__', '__ACCOUNTS_JSON_START__', '__ACTIVE_TREE_HTML_START__'):
             self.assertIn(marker, restored)
@@ -615,6 +638,9 @@ def usage_merge(procs, pids, totals):
 
 class ResourceRenderingTests(unittest.TestCase):
     def setUp(self):
+        mode = mock.patch.dict(os.environ, {'MAESTRO_ORCA_ENABLED': '1'})
+        mode.start()
+        self.addCleanup(mode.stop)
         patcher = mock.patch.object(widget, '_worker_registry', return_value={})
         self.addCleanup(patcher.stop)
         patcher.start()
@@ -847,3 +873,63 @@ class ResourceRenderingTests(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
+
+
+class AntigravityOnlyRenderingTests(unittest.TestCase):
+    setUp = RenderingTests.setUp
+    def test_orca_rows_and_host_inventory_are_absent_when_disabled(self):
+        now = datetime.now(timezone.utc)
+        trees = {'antigravity': [{'conversation_id': 'agy-only-test', 'status': 'RUNNING',
+                 'last_modified_time': now.isoformat(), 'title': 'AGY main',
+                 'workspaces': ['file://' + DEV]}],
+                 'codex': [{'thread_id': 'orca-hidden', 'source': 'cli', 'is_running': True,
+                            'updated_at': now.timestamp(), 'cwd': os.path.expanduser('~/orca/workspaces/hidden')}],
+                 'claude': [{'session_id': 'orca-hidden-claude', 'terminal': 'orca',
+                             'is_running': True, 'updated_at': now.timestamp(), 'cwd': DEV}]}
+        with mock.patch.dict(os.environ, {'MAESTRO_ORCA_ENABLED': '0'}):
+            active, closed, count, _ = widget.build_active_and_closed_trees_html({'agent_trees': trees}, {})
+            pill = widget.build_host_pill_html(count)
+        self.assertNotIn('orca-hidden', active + closed)
+        self.assertNotIn('node-orca-wt-', active + closed)
+        self.assertNotIn('Orca 터미널', pill)
+        self.assertNotIn('워크트리', pill)
+        self.assertIn('에이전트 1', pill)
+        self.assertIn('Antigravity에서 열기', active)
+
+
+class AntigravityNavigationAndBundleTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js required')
+    def test_fleet_click_sends_exact_cascade_without_orca_api(self):
+        for name in ('usage_widget_template.html', 'render_usage_widget.py'):
+            source = Path(widget.__file__).with_name(name).read_text()
+            start = source.index('    let openSessionGeneration = 0;')
+            end = source.index('\n    function markImportedButton' if name.endswith('.html') else '\n    renderQuotas();', start)
+            script = source[start:end]
+            runner = """
+const vm = require('node:vm'), assert = require('node:assert/strict');
+const messages = [], location = {pathname:'/orca/pc-maestro/', origin:'https://maestro.example'};
+const window = {location,parent:{postMessage:(data,origin)=>messages.push({data,origin})}};
+const context = {window, location, copyText(){},showToast(){},fetch(){throw Error('unexpected API call')}};
+vm.createContext(context);vm.runInContext(SOURCE, context);
+vm.runInContext("openSession(null,'node-agy-test','12345678-1234-1234-1234-123456789abc','label','/repo')",context).then(()=>{
+assert.deepEqual(JSON.parse(JSON.stringify(messages)),[{data:{type:'maestro-open-antigravity',nodeId:'node-agy-test',cascadeId:'12345678-1234-1234-1234-123456789abc',repo:'/repo'},origin:'https://maestro.example'}]);
+});
+""".replace('SOURCE', json.dumps(script))
+            result = subprocess.run(['node'], input=runner, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js required')
+    def test_large_standalone_ascii_bundle_decodes_losslessly(self):
+        import random
+        content = base64.b64encode(random.Random(42).randbytes(48000)).decode()
+        original = '<!DOCTYPE html><pre>' + content + '</pre>'
+        bundled = widget.compact_widget_html(original)
+        self.assertLess(len(bundled.encode()), 58000)
+        script = re.search(r'<script>(.*?)</script>', bundled, re.S).group(1)
+        runner = """
+const vm=require('node:vm'),assert=require('node:assert/strict');let restored='';
+const document={open(){},close(){},write(s){restored=s},body:{}};
+vm.runInNewContext(SOURCE,{document,Blob,Response,Uint8Array,DecompressionStream}).then(()=>assert.equal(restored,EXPECTED));
+""".replace('SOURCE', json.dumps(script)).replace('EXPECTED',json.dumps(original))
+        result = subprocess.run(['node'],input=runner,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)

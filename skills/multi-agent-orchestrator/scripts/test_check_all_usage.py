@@ -804,3 +804,55 @@ class ClaudeTerminalSessionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AntigravityOnlyTests(unittest.TestCase):
+    def test_only_cascade_descendants_survive_including_nested_workers(self):
+        from check_all_usage import antigravity_only_trees
+        trees = {'antigravity': [{'conversation_id': 'agy'}],
+                 'codex': [{'thread_id': 'orca', 'cwd': '~/orca/workspaces/test'},
+                           {'thread_id': 'leaf', 'parent_id': 'worker'},
+                           {'thread_id': 'worker', 'parent_conversation_id': 'agy'}],
+                 'claude': [{'session_id': 'standalone', 'terminal': 'orca'}]}
+        visible = antigravity_only_trees(trees)
+        self.assertEqual({n['thread_id'] for n in visible['codex']}, {'worker', 'leaf'})
+        self.assertEqual(visible['claude'], [])
+
+    def test_mode_honors_override_and_stopped_service(self):
+        import check_all_usage as usage
+        from unittest import mock
+        with mock.patch.dict(os.environ, {'MAESTRO_ORCA_ENABLED': '0'}):
+            self.assertTrue(usage.antigravity_only_mode())
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                usage.subprocess, 'run', return_value=mock.Mock(returncode=3)):
+            self.assertTrue(usage.antigravity_only_mode())
+
+    def test_stale_and_repeated_error_crons_hidden_without_hiding_jobs(self):
+        import check_all_usage as usage
+        from unittest import mock
+        import tempfile
+        from pathlib import Path
+        import datetime
+        now = 1800000000
+        def stamp(seconds):
+            return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / 'transcript.jsonl'
+            def check(age, errors, system_recent=False):
+                rows = [{'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'status': 'DONE',
+                         'created_at': stamp(now-age)}]
+                rows += [{'type': 'GENERIC', 'status': 'ERROR'}] * errors
+                if system_recent:
+                    rows += [{'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM', 'status': 'DONE',
+                              'created_at': stamp(now)}]
+                rows += [{'type': 'GENERIC', 'created_at': stamp(now-5), 'content':
+                          'background task with task id: p/task-42\nTask Description: Cron: 0 * * * *'},
+                         {'type': 'GENERIC', 'created_at': stamp(now-5), 'content':
+                          'background task with task id: p/task-43\nTask Description: ordinary job'}]
+                transcript.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with mock.patch.object(usage.os.path, 'expanduser', return_value=str(transcript)):
+                    return {t['kind'] for t in usage.extract_active_bg_tasks('p', now_sec=now)}
+            self.assertEqual(check(86399, 0), {'cron', 'job'})
+            self.assertEqual(check(86401, 0, True), {'job'})
+            self.assertEqual(check(60, 3), {'job'})
+            self.assertEqual(check(60, 2), {'cron', 'job'})

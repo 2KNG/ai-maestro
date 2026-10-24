@@ -1433,18 +1433,48 @@ WIDGET_TEMPLATE = r"""<!DOCTYPE html>
       setTimeout(() => { btn.textContent = prev; }, 1000);
     }
 
-    function openSession(e, nodeId, cid, label, repo) {
+    let openSessionGeneration = 0;
+    async function openSession(e, nodeId, cid, label, repo) {
       if (e) { e.stopPropagation(); e.preventDefault(); }
+      const button = e?.currentTarget;
+      const generation = ++openSessionGeneration;
+
+      const fleetEmbedded = window.parent !== window && /^\/(?:orca\/[^/]+-maestro|maestro\/[^/]+)\//.test(location.pathname);
+      if (fleetEmbedded) {
+        window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin);
+        return;
+      }
+
       const text = cid ? `conversation://${cid}` : (nodeId || '');
       if (text && navigator.clipboard) navigator.clipboard.writeText(text);
-      if (window.parent && window.parent !== window) {
-        try { window.parent.postMessage({ type: 'maestro-open-orca', nodeId, cascadeId: cid, repo }, window.location.origin); } catch (_) {}
+      const bridge = location.protocol.startsWith('http') && location.host
+        ? location.origin + location.pathname.replace(/\/[^/]*$/, '') : 'http://127.0.0.1:18765';
+      try {
+        const r = await fetch(bridge + '/api/open-session', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId, cascadeId: cid, label, repo, view: fleetEmbedded ? 'chat' : 'terminal' })
+        });
+        const j = await r.json();
+        if (generation !== openSessionGeneration) return;
+        if (!r.ok || !j?.ok) throw new Error('session unavailable');
+        if (j.target === 'antigravity') {
+          if (fleetEmbedded && j.antigravityTarget) {
+            window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin);
+            return;
+          }
+          if (j.conversationUri && navigator.clipboard) navigator.clipboard.writeText(j.conversationUri);
+          if (button) button.title = j.message || 'Antigravity 창 열기를 요청했습니다';
+          return;
+        }
+        if (fleetEmbedded) {
+          try { window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin); } catch (_) {}
+        }
+        return;
+      } catch (_) {}
+      if (generation === openSessionGeneration && button) {
+        button.textContent = '!';
+        button.title = '세션을 열지 못했습니다';
       }
-      fetch('http://127.0.0.1:18765/api/open-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodeId, cascadeId: cid, label, repo })
-      }).catch(() => {});
     }
 
     renderQuotas();
@@ -1829,7 +1859,7 @@ def _open_btn_html(node_id: str, cid: str, label: str, repo: str = "") -> str:
     return (
         f'<button type="button" class="icon-act-btn open" '
         f'onclick="event.stopPropagation(); openSession(event, \'{node_id}\', \'{cid}\', \'{esc_label}\', \'{esc_repo}\')" '
-        f'title="Orca에서 열기" aria-label="Orca에서 열기">'
+        f'title="Antigravity에서 열기" aria-label="Antigravity에서 열기">'
         f'<svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg></button>'
     )
 
@@ -2582,39 +2612,9 @@ def _parse_render_background_tasks(tpath):
 
 
 def _extract_active_bg_tasks(cid: str, now_sec: float) -> list[dict]:
-    """Extract and classify active background tasks into daemon, timer, cron, or job."""
-    if not cid:
-        return []
-    tpath = os.path.expanduser(f"~/.gemini/antigravity/brain/{cid}/.system_generated/logs/transcript.jsonl")
-    if not os.path.exists(tpath):
-        return []
-    from spawn_evidence import cached
-    try:
-        tasks = cached(tpath, "render-background-tasks", _parse_render_background_tasks)
-    except OSError:
-        return []
-
-    out = []
-    for tv in tasks.values():
-        if tv["done"]:
-            continue
-        desc = tv["desc"]
-        age_s = _age_sec_from_iso(tv.get("created_at") or "")
-        if tv["kind"] == "timer":
-            dur_m = re.search(r"Timer:\s*(\d+)s", desc)
-            dur_s = int(dur_m.group(1)) if dur_m else 90
-            if age_s > dur_s + 15:
-                continue
-        elif tv["kind"] == "job":
-            # Non-daemon one-off jobs older than 15 minutes are stale unless actively running
-            if age_s > 900:
-                continue
-        elif tv["kind"] == "daemon":
-            # Daemons from before today's session (>12h) are stale
-            if age_s > 43200:
-                continue
-        out.append(tv)
-    return out
+    """Use the collector's lifecycle and cron health policy in both views."""
+    from check_all_usage import extract_active_bg_tasks
+    return extract_active_bg_tasks(cid, now_sec=now_sec)
 
 
 def _finalize_child_rows(rows: list[str]) -> str:
@@ -3259,6 +3259,12 @@ def build_active_and_closed_trees_html(data: dict, state: dict) -> tuple[str, st
             node["has_active_cli"] = True
     cdx_list = _merge_live_process_workers(cdx_list, "codex", live_processes, now_sec)
     claude_list = _merge_live_process_workers(claude_list, "claude", live_processes, now_sec)
+    from check_all_usage import antigravity_only_mode, antigravity_only_trees
+    if data.get("antigravity_only", antigravity_only_mode()):
+        visible = antigravity_only_trees({"antigravity": list(ag_by_cid.values()),
+                                        "codex": cdx_list, "claude": claude_list})
+        cdx_list, claude_list = visible["codex"], visible["claude"]
+        orca_terminals = {}
     live_codex_ids.update(n["thread_id"] for n in cdx_list if n.get("live_process"))
     live_claude_ids.update(n["session_id"] for n in claude_list if n.get("live_process"))
     live_codex_proc_ids = {p.get("session_id") for p in live_processes
@@ -4538,21 +4544,14 @@ def build_optional_pc_telemetry_html(open_drawer: bool = False) -> str:
 HOST_PILL_BLOCK_RE = re.compile(r"<!--__HOST_PILL_START__-->.*?<!--__HOST_PILL_END__-->", re.S)
 
 
-def build_host_pill_html() -> str:
-    """Host + Orca runtime pill (hostname is read at render time, never stored in the template)."""
+def build_host_pill_html(agent_count: int = 0) -> str:
+    """Host identity and visible agent count, independent of Orca inventory."""
     import socket
     host = socket.gethostname()
-    try:
-        import orca_bridge
-        snap = orca_bridge.snapshot()
-        orca_text = orca_bridge.summary_line(snap)
-    except Exception:
-        snap, orca_text = {}, ""
     where = "🌐 SSH 원격" if os.environ.get("SSH_CONNECTION") else "🖥 로컬"
-    label = f"{where} · {host}" + (f" · {orca_text}" if snap.get("running") else "")
-    title = f"{where} · {host}" + (f" · {orca_text}" if orca_text else "")
+    label = f"{where} · {host} · 에이전트 {agent_count}"
     return ("<!--__HOST_PILL_START__-->"
-            f'<span class="remote-pill" title="{_html_esc(title)}">{_html_esc(label)}</span>'
+            f'<span class="remote-pill" title="{_html_esc(label)}">{_html_esc(label)}</span>'
             "<!--__HOST_PILL_END__-->")
 
 
@@ -4596,15 +4595,15 @@ def inject_live_data(template: str, data: dict) -> str:
         strip_html = build_top_quota_strip_html(accounts)
         html = QUOTA_STRIP_BLOCK_RE.sub(lambda _m: strip_html, html, count=1)
 
+    active_html, closed_html, act_cnt, cls_cnt = build_active_and_closed_trees_html(data, state)
     if HOST_PILL_BLOCK_RE.search(html):
-        pill_html = build_host_pill_html()
+        pill_html = build_host_pill_html(act_cnt)
         html = HOST_PILL_BLOCK_RE.sub(lambda _m: pill_html, html, count=1)
 
     if PC_TELEMETRY_BLOCK_RE.search(html):
         pc_html = build_optional_pc_telemetry_html(open_drawer=bool(state.get('pcMonOpen', False)))
         html = PC_TELEMETRY_BLOCK_RE.sub(lambda _m: pc_html, html, count=1)
 
-    active_html, closed_html, act_cnt, cls_cnt = build_active_and_closed_trees_html(data, state)
     if ACTIVE_TREE_BLOCK_RE.search(html):
         html = ACTIVE_TREE_BLOCK_RE.sub(lambda _m: active_html, html, count=1)
     if CLOSED_TREE_BLOCK_RE.search(html):
@@ -4626,7 +4625,48 @@ def compact_widget_html(html: str) -> str:
     slim = re.sub(r"/\*(?!__).*?\*/", "", html, flags=re.S)
     slim = re.sub(r"<!--(?!__).*?-->", "", slim, flags=re.S)
     slim = re.sub(r"\n[ \t]+", "\n", slim)
-    payload = base64.b64encode(gzip.compress(slim.encode("utf-8"), compresslevel=9, mtime=0)).decode("ascii")
+    if len(gzip.compress(slim.encode("utf-8"), compresslevel=9)) * 4 // 3 + 800 >= 58000:
+        # Minify only oversized artifacts. Keep public function names for inline handlers.
+        import shutil
+        terser = shutil.which("terser")
+        if terser:
+            def minify_script(match):
+                try:
+                    result = subprocess.run([terser, "--compress", "--mangle", "--comments", "/__/"],
+                        input=match.group(1), text=True, capture_output=True, timeout=20)
+                    if result.returncode == 0 and result.stdout.strip():
+                        return "<script>" + result.stdout.strip() + "</script>"
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                return match.group(0)
+            slim = re.sub(r"<script>(.*?)</script>", minify_script, slim, flags=re.S)
+    compressed = gzip.compress(slim.encode("utf-8"), compresslevel=9, mtime=0)
+    payload = base64.b64encode(compressed).decode("ascii")
+    if len(payload) + 800 >= 58000:
+        # Six bytes fit in seven base-122 ASCII digits. Exclude JS string and HTML
+        # delimiters, NUL and line breaks; no external decoder or asset is needed.
+        alphabet = "".join(chr(c) for c in range(1, 128) if c not in (10, 13, 39, 60, 92))
+        digits = []
+        for offset in range(0, len(compressed), 6):
+            value = int.from_bytes(compressed[offset:offset + 6].ljust(6, b"\0"), "big")
+            chunk = []
+            for _ in range(7):
+                value, digit = divmod(value, 122)
+                chunk.append(alphabet[digit])
+            digits.extend(reversed(chunk))
+        packed = "".join(digits)
+        return (
+            '<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<body style="background:#0b1120;color:#e5e7eb;margin:0"><script>'
+            "(async()=>{try{const p='" + packed + "',a=[];for(let c=1;c<128;c++)"
+            "if(![10,13,39,60,92].includes(c))a.push(String.fromCharCode(c));"
+            "const b=[];for(let i=0;i<p.length;i+=7){let n=0;for(let j=0;j<7;j++)n=n*122+a.indexOf(p[i+j]);"
+            "const t=Array(6);for(let j=5;j>=0;j--){t[j]=n%256;n=Math.floor(n/256)}b.push(...t)}"
+            f"const s=new Blob([Uint8Array.from(b.slice(0,{len(compressed)}))]).stream().pipeThrough(new DecompressionStream('gzip'));"
+            "const h=await new Response(s).text();document.open();document.write(h);document.close();"
+            "}catch(e){document.body.textContent='Widget load failed: '+e.message}})();</script>"
+        )
+
     return (
         '<!DOCTYPE html><html lang="ko" style="background:#0b1120;color:#e5e7eb"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

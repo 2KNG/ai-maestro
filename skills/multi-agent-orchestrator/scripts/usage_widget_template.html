@@ -1860,7 +1860,7 @@
       border-color: rgba(79, 70, 229, 0.24);
       color: #4338ca;
     }
-  
+
     .ctx-vbar {
       width: 4px; height: 12px; border-radius: 2px;
       background: rgba(148, 163, 184, 0.22);
@@ -2898,37 +2898,46 @@
       toastTimer = setTimeout(() => { bar.classList.add('hidden'); }, 3800);
     }
 
+    let openSessionGeneration = 0;
     async function openSession(e, nodeId, cid, label, repo) {
-      if (e) {
-        e.stopPropagation();
-        e.preventDefault();
-      }
+      if (e) { e.stopPropagation(); e.preventDefault(); }
+      const generation = ++openSessionGeneration;
+
+      const fleetEmbedded = window.parent !== window && /^\/(?:orca\/[^/]+-maestro|maestro\/[^/]+)\//.test(location.pathname);
       const safeLabel = label || nodeId || '세션';
-      if (cid) {
-        copyText(`conversation://${cid}`);
-      } else if (nodeId) {
-        copyText(nodeId);
+      if (cid) copyText(`conversation://${cid}`);
+      else if (nodeId) copyText(nodeId);
+      showToast(`'${safeLabel}' Antigravity로 전환 중...`);
+      if (fleetEmbedded) {
+        window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin);
+        return;
       }
-      if (window.parent && window.parent !== window) {
-        try { window.parent.postMessage({ type: 'maestro-open-orca', nodeId, cascadeId: cid, repo }, window.location.origin); } catch (_) {}
-      }
-      showToast(`'${safeLabel}' Orca 패인으로 전환 중...`);
 
       try {
         const r = await fetch(`${BRIDGE_URL}/api/open-session`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nodeId, cascadeId: cid, label: safeLabel, repo: repo || '' })
+          body: JSON.stringify({ nodeId, cascadeId: cid, label: safeLabel, repo: repo || '', view: fleetEmbedded ? 'chat' : 'terminal' })
         });
         const j = await r.json();
-        if (j && j.ok) {
-          showToast(`✓ Orca 패인으로 전환되었습니다 ('${safeLabel}')`);
-        } else {
-          showToast(`✓ 세션 정보 복사 완료 ('${safeLabel}')`);
+        if (generation !== openSessionGeneration) return;
+        if (r.ok && j?.ok) {
+          if (j.target === 'antigravity') {
+            if (fleetEmbedded && j.antigravityTarget) {
+              window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin);
+              return;
+            }
+            if (j.conversationUri) copyText(j.conversationUri);
+            showToast(j.message || 'Antigravity 창 열기를 요청했습니다');
+            return;
+          }
+          if (fleetEmbedded) {
+            try { window.parent.postMessage({ type: 'maestro-open-antigravity', nodeId, cascadeId: cid, repo }, window.location.origin); } catch (_) {}
+          }
+          return;
         }
-      } catch (_) {
-        showToast(`✓ 세션 정보 복사 완료 ('${safeLabel}')`);
-      }
+      } catch (_) {}
+      if (generation === openSessionGeneration) showToast(`'${safeLabel}' 세션을 열지 못했습니다`);
     }
 
     function markImportedButton(node) {
@@ -2946,7 +2955,7 @@
           openBtn.type = 'button';
           openBtn.className = 'icon-act-btn open';
           openBtn.innerHTML = '<svg width="12" height="12" aria-hidden="true"><use href="#ico-open-ext"/></svg>';
-          openBtn.title = 'Orca에서 열기';
+          openBtn.title = 'Antigravity에서 열기';
           openBtn.setAttribute('aria-label', openBtn.title);
           openBtn.onclick = (e) => openSession(e, id, cid, label, repo);
           btn.replaceWith(openBtn);

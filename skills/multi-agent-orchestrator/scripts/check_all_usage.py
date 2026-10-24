@@ -977,6 +977,68 @@ def _extract_agy_turn_timing(cid, created_time_iso, last_mod_iso) -> dict:
                                 fallback_start=created_time_iso, fallback_end=last_mod_iso)
 
 
+def antigravity_only_mode() -> bool:
+    """An explicit mode wins; otherwise a stopped Orca service means AGY only."""
+    mode = os.environ.get("MAESTRO_ORCA_ENABLED")
+    if mode is not None:
+        return mode == "0"
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", "orca-remote.service"],
+                              timeout=2, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode != 0
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+
+
+def antigravity_only_trees(trees: dict) -> dict:
+    """Keep native cascades and workers with an explicit ancestry to a cascade."""
+    agy = trees.get("antigravity") or []
+    known = set()
+    def visit(nodes):
+        for node in nodes:
+            if node.get("conversation_id"):
+                known.add(node["conversation_id"])
+            visit(node.get("children") or [])
+    visit(agy)
+    pending = [(kind, node) for kind in ("codex", "claude") for node in trees.get(kind) or []]
+    result = {"antigravity": agy, "codex": [], "claude": []}
+    while pending:
+        remaining = []
+        for kind, node in pending:
+            parents = {node.get(key) for key in ("parent_id", "parent_cid", "parent_conversation_id",
+                       "parent_session_id", "parent_thread_id")}
+            if (parents - {None, ""}) & known:
+                result[kind].append(node)
+                known.update(node[key] for key in ("thread_id", "session_id", "id") if node.get(key))
+            else:
+                remaining.append((kind, node))
+        if len(remaining) == len(pending):
+            break
+        pending = remaining
+    return result
+
+
+def _cron_parent_health(path):
+    last_user = None
+    errors = 0
+    with open(path, encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                step = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(step, dict):
+                continue
+            if (step.get("type") == "USER_INPUT" and step.get("source") == "USER_EXPLICIT"
+                    and step.get("status") == "DONE"):
+                stamp = _timing_timestamp(step.get("created_at"))
+                if stamp is not None and (last_user is None or stamp > last_user):
+                    last_user, errors = stamp, 0
+            elif step.get("status") == "ERROR" or step.get("type") == "ERROR_MESSAGE":
+                errors += 1
+    return last_user, errors
+
+
 def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict]:
     """Extract and classify active background tasks into daemon, timer, cron, or job.
 
@@ -996,9 +1058,16 @@ def extract_active_bg_tasks(cid: str, now_sec: float | None = None) -> list[dict
     except OSError:
         return []
 
+    healthy_cron = True
+    if any(task.get("kind") == "cron" and not task.get("done") for task in tasks.values()):
+        try:
+            last_user, errors = cached(tpath, "cron-parent-health", _cron_parent_health)
+            healthy_cron = last_user is not None and now_sec - last_user <= 86400 and errors < 3
+        except OSError:
+            healthy_cron = False
     out = []
     for tv in tasks.values():
-        if tv["done"]:
+        if tv["done"] or (tv["kind"] == "cron" and not healthy_cron):
             continue
         desc = tv["desc"]
         age_s = max(0, int(now_sec - (_timing_timestamp(tv.get("created_at") or 0) or now_sec))) if tv.get("created_at") else 0
@@ -3119,7 +3188,12 @@ def collect_usage(include_agent_trees=True) -> dict:
             report["process_resources"] = build_process_resources(report["agent_trees"])
         except Exception as exc:  # telemetry must never break quota reporting
             report["process_resources"] = {"error": type(exc).__name__}
-        report["orca"] = get_orca_summary()
+        if antigravity_only_mode():
+            report["agent_trees"] = antigravity_only_trees(report["agent_trees"])
+            report["antigravity_only"] = True
+            report["orca"] = {"running": False, "terminals": [], "worktrees": 0}
+        else:
+            report["orca"] = get_orca_summary()
     return report
 
 

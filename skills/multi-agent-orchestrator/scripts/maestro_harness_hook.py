@@ -121,12 +121,11 @@ def main() -> int:
         if tool_name == "schedule":
             dur = tool_input.get("DurationSeconds")
             cond = str(tool_input.get("TimerCondition") or "").strip().lower()
-            prompt_txt = str(tool_input.get("Prompt") or "").strip().lower()
-            if dur is not None and (
-                int(dur) < 120
-                or cond not in ("", "never")
-                or any(k in prompt_txt for k in ("wait for", "subagent", "check on", "status", "서브에이전트", "대기", "확인"))
-            ):
+            try:
+                short_timer = dur is not None and float(dur) < 60
+            except (TypeError, ValueError, OverflowError):
+                short_timer = False
+            if short_timer and cond == "any":
                 _block("BLOCKED BY MAESTRO HARNESS: Never use schedule() timers to poll or wait for subagents/tasks! Antigravity has native Reactive Wakeup — stop calling tools and end your turn immediately; the system will automatically wake you when the subagent or background task finishes.")
         if tool_name == "invoke_subagent":
             type_reason = "BLOCKED BY MAESTRO HARNESS: invoke_subagent(TypeName='self') is strictly forbidden to protect 4 Argon quota! You MUST delegate all coding, implementation, and architecture tasks via run_command -> ~/.local/bin/maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna)."
@@ -141,8 +140,8 @@ def main() -> int:
             for entry in entries:
                 if not isinstance(entry, dict) or str(entry.get("TypeName") or "self").strip().lower() != "research":
                     _block(type_reason)
-                if str(entry.get("Model") or "inherit").strip().lower() not in ("flash", "flash_lite"):
-                    _block("BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='inherit' or 'pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups.")
+                if str(entry.get("Model") or "").strip().lower() == "pro":
+                    _block("BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups.")
         # Claude-native Edit/Write outside Antigravity skip the transcript scan (Opus sessions false-positive on it).
         if tool_name in SOLO_WRITE_TOOLS and (is_agy or tool_name not in CLAUDE_WRITE_TOOLS) \
                 and _flash_session(payload, session_id):

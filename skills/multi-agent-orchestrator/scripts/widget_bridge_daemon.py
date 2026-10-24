@@ -502,6 +502,65 @@ def open_in_orca(node_id: str, cascade_id: str, repo: str, label: str) -> dict:
     return {"ok": switched, "target": "orca", "handle": handle, "worktree": worktree}
 
 
+def open_in_antigravity(cascade_id: str, *, web=False, repo="") -> dict:
+    """Return an exact web route, or request focus from the native host app."""
+    result = {"ok": False, "target": "antigravity", "cascadeId": cascade_id,
+              "sessionFocused": False}
+    if not isinstance(cascade_id, str) or not _UUID_RE.fullmatch(cascade_id):
+        return {**result, "error": "invalid_antigravity_session"}
+    trees = (_cached_usage_data or {}).get("agent_trees") or {}
+    def known(nodes):
+        return any(isinstance(node, dict) and (node.get("conversation_id") == cascade_id
+            or known(node.get("children") or [])) for node in nodes)
+    if not known(trees.get("antigravity") or []) and not os.path.isdir(os.path.join(BRAIN_DIR, cascade_id)):
+        return {**result, "error": "antigravity_session_unavailable"}
+    if web:
+        # Fleet validates its Dashboard frame and builds the node-scoped route.
+        # This acknowledges a navigation target, not a loaded conversation.
+        return {**result, "ok": True, "antigravityTarget": {"conversationId": cascade_id}}
+    def workspace(nodes):
+        for node in nodes:
+            if node.get("conversation_id") == cascade_id:
+                return node.get("cwd") or next(iter(node.get("workspaces") or []), "")
+            child = workspace(node.get("children") or [])
+            if child:
+                return child
+        return ""
+    candidate = workspace(trees.get("antigravity") or []) or repo
+    if isinstance(candidate, str):
+        candidate = candidate.removeprefix("file://")
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(HOME_DIR, "dev", candidate)
+        repo = candidate if os.path.isdir(candidate) else ""
+    else:
+        repo = ""
+    executable = os.path.join(HOME_DIR, ".local/bin/antigravity")
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        return {**result, "error": "antigravity_app_unavailable"}
+    try:
+        subprocess.Popen([executable] + ([repo] if repo else []), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        return {**result, "error": "antigravity_app_unavailable"}
+    try:
+        subprocess.run(["wmctrl", "-xa", "antigravity"], timeout=3,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {**result, "ok": True, "accepted": True, "navigation": "host-app-requested",
+            "conversationUri": "conversation://" + cascade_id,
+            "message": "Antigravity 창 열기를 요청했습니다. 해당 창에서 대화를 선택하세요."}
+
+
+def open_session_target(node_id, cascade_id, repo, label, *, chat=False, state=None):
+    """Keep the stopped Orca runtime out of Antigravity-only navigation."""
+    from check_all_usage import antigravity_only_mode
+    if antigravity_only_mode():
+        target = ((state or {}).get("importedCascades") or {}).get(node_id) or cascade_id
+        return open_in_antigravity(target, web=chat, repo=repo)
+    return open_in_orca(node_id, cascade_id, repo, label)
+
+
 def _nvm_bin_dirs() -> list[str]:
     """Node bin directories installed by nvm, newest version first."""
     import glob
@@ -892,7 +951,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 if m:
                     unarchive_codex_thread(m.group(1))
 
-            result = open_in_orca(node_id, cascade_id, repo, label)
+            result = open_session_target(node_id, cascade_id, repo, label, chat=body.get("view") == "chat", state=st)
             self._set_cors(200)
             self.wfile.write(
                 json.dumps(
@@ -900,7 +959,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         **result,
                         "nodeId": node_id,
                         "cascadeId": cascade_id,
-                        "message": f"'{label}' Orca 패인으로 전환되었습니다" if result["ok"] else f"'{label}' Orca 패인을 찾지 못했습니다",
+                        "message": result.get("message") or (f"'{label}' Antigravity로 전환 중..." if result["ok"] else f"'{label}' 세션을 열지 못했습니다"),
                     },
                     ensure_ascii=False,
                 ).encode("utf-8")

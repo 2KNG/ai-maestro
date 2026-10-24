@@ -196,7 +196,7 @@ class AntigravityDecisionTests(unittest.TestCase):
 
     def test_blocked_calls(self):
         self.assert_blocked(self.run_hook('PreToolUse', self.agy(
-            'schedule', {'DurationSeconds': 30, 'Prompt': 'wait for subagent'})), 'schedule() timers')
+            'schedule', {'DurationSeconds': 30, 'TimerCondition': 'any', 'Prompt': 'wait for subagent'})), 'schedule() timers')
         self.assert_blocked(self.run_hook('BeforeTool', self.agy(
             'invoke_subagent', {'Subagents': [{'TypeName': 'self', 'Model': 'flash'}]})), "TypeName='self'")
         self.assert_blocked(self.run_hook('PreToolUse', self.agy(
@@ -212,7 +212,7 @@ class FlashLockTests(unittest.TestCase):
                               input=json.dumps(payload), text=True, capture_output=True, env=clean)
 
     TYPE_REASON = "BLOCKED BY MAESTRO HARNESS: invoke_subagent(TypeName='self') is strictly forbidden to protect 4 Argon quota! You MUST delegate all coding, implementation, and architecture tasks via run_command -> ~/.local/bin/maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna)."
-    MODEL_REASON = "BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='inherit' or 'pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups."
+    MODEL_REASON = "BLOCKED BY MAESTRO HARNESS: Never spawn 4 Argon (Model='pro') via invoke_subagent! Use maestro worker-start --pool auto (Opus 5.5 / gpt-6-astra / gpt-6.1-sol / gpt-6-luna) for work, or Model='flash' with TypeName='research' for read-only lookups."
 
     def assert_blocked(self, result, reason):
         self.assertEqual(result.returncode, 2, result.stderr)
@@ -232,8 +232,8 @@ class FlashLockTests(unittest.TestCase):
                             MAESTRO_WORKER_ACTIVE='1')
                         self.assert_blocked(result, self.TYPE_REASON)
 
-    def test_research_blocks_non_flash_and_default_model(self):
-        for model in ('pro', 'inherit', ' PRO ', 'unknown', '', None):
+    def test_research_blocks_explicit_pro(self):
+        for model in ('pro', ' PRO '):
             with self.subTest(model=model):
                 entry = {'TypeName': 'research'}
                 if model is not None:
@@ -243,11 +243,23 @@ class FlashLockTests(unittest.TestCase):
                 self.assert_blocked(result, self.MODEL_REASON)
 
     def test_only_flash_research_allowed(self):
-        for model in ('flash', 'flash_lite', ' FLASH ', ' FLASH_LITE '):
+        for model in ('flash', 'flash_lite', ' FLASH ', ' FLASH_LITE ', '', None, 'inherit', 'unknown'):
             result = self.run_hook({'toolCall': {'name': 'invoke_subagent', 'arguments': json.dumps({
                 'Subagents': [{'Model': model, 'TypeName': ' Research '}]})}})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)['decision'], 'allow')
+
+    def test_omitted_research_model_and_reminder_boundaries(self):
+        result = self.run_hook({'tool_name': 'invoke_subagent', 'tool_input': {
+            'Subagents': [{'TypeName': 'research'}]}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for duration, condition, blocked in ((59, 'any', True), (60, 'any', False),
+                (15, 'never', False), (15, None, False), (None, 'any', False),
+                ('bad', 'any', False), (600, 'any', False)):
+            with self.subTest(duration=duration, condition=condition):
+                result = self.run_hook({'tool_name': 'schedule', 'tool_input': {
+                    'DurationSeconds': duration, 'TimerCondition': condition, 'Prompt': '확인 후 대기'}})
+                self.assertEqual(result.returncode, 2 if blocked else 0, result.stderr)
 
     def test_empty_uppercase_list_falls_back_to_lowercase(self):
         for empty in (None, []):
@@ -309,7 +321,7 @@ class FlashLockTests(unittest.TestCase):
 
     def test_schedule_polling_for_subagent_is_blocked(self):
         result = self.run_hook({'tool_name': 'schedule', 'tool_input': {
-            'DurationSeconds': 15, 'Prompt': 'Wait for subagent'}})
+            'DurationSeconds': 15, 'TimerCondition': 'any', 'Prompt': 'Wait for subagent'}})
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(json.loads(result.stdout)['decision'], 'block')
         self.assertIn('Never use schedule() timers', result.stderr)

@@ -333,3 +333,15 @@ class WidgetSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AntigravityOnlyNavigationTests(unittest.TestCase):
+    CID = "12345678-1234-1234-1234-123456789abc"
+    def test_antigravity_only_ignores_old_orca_pane_and_passes_workspace(self):
+        with mock.patch.dict(os.environ, {'MAESTRO_ORCA_ENABLED': '0'}), \
+             mock.patch.object(bridge, '_session_orca_hint', return_value=('term_old', '/old')), \
+             mock.patch.object(bridge, 'open_in_antigravity', return_value={'ok': True}) as agy, \
+             mock.patch.object(bridge, 'open_in_orca') as orca:
+            bridge.open_session_target('node-agy-123', self.CID, '/project', 'main')
+            agy.assert_called_once_with(self.CID, web=False, repo='/project')
+            orca.assert_not_called()
