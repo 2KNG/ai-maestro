@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ai-maestro Runtime Orchestration Harness Hook (maestro_harness_hook.py)
-Antigravity payloads (`conversationId` / `toolCall`) get `{"decision":"allow"}` JSON. Claude Code / Orca
+Antigravity tool hooks get `{"decision":"allow"}`; other events get `{}` JSON. Claude Code / Orca
 payloads get empty stdout on allow (exit 0), so no hook schema errors and no context tokens. Main sessions
 in both environments track solo/read streaks; Claude Code gets a one-line reminder on the next prompt only
 after a solo-heavy turn. Sub-workers (MAESTRO_WORKER_ACTIVE=1) skip tracking but keep the depth and
@@ -44,11 +44,15 @@ def _is_agy(payload: dict) -> bool:
     return "conversationId" in payload or "toolCall" in payload
 
 
-def _allow(payload: dict) -> None:
+def _allow(payload: dict, event: str = "") -> None:
     # Claude Code: empty stdout on exit 0 = pass-through with 0 context tokens and 0 schema errors.
-    # Antigravity: expects {"decision":"allow"}.
-    if _is_agy(payload):
+    # Antigravity response schemas differ between tool and invocation events.
+    if not _is_agy(payload):
+        return
+    if event in ("PreToolUse", "BeforeTool"):
         print('{"decision":"allow"}')
+    else:
+        print("{}")
 
 
 WORKER_START_MARKERS = ("maestro worker-start", "agy-orca worker-start", "maestro.py worker-start", "agy_orca.py worker-start")
@@ -159,7 +163,7 @@ def main() -> int:
 
     # Sub-workers and Claude Code subagent tool calls (agent_id) are not main-session solo work.
     if os.environ.get("MAESTRO_WORKER_ACTIVE") == "1" or payload.get("agent_id"):
-        _allow(payload)
+        _allow(payload, event)
         return 0
 
     st = _load_session_state(session_id)
@@ -172,7 +176,7 @@ def main() -> int:
         st["delegated_in_turn"] = False
         _save_session_state(session_id, st)
         if is_agy:
-            _allow(payload)
+            _allow(payload, event)
         elif prev_streak >= 2 or prev_read_streak >= 4:
             # Claude Code injects UserPromptSubmit stdout as context: one line, only after a solo-heavy turn.
             print(SOLO_REMINDER)
@@ -193,10 +197,10 @@ def main() -> int:
         elif tool_name in SOLO_WRITE_TOOLS or (tool_name in ("run_command", "Bash") and not _is_delegation_command(cmd_line)):
             st["solo_streak"] = int(st.get("solo_streak", 0)) + 1
             _save_session_state(session_id, st)
-        _allow(payload)
+        _allow(payload, event)
         return 0
 
-    _allow(payload)
+    _allow(payload, event)
     return 0
 
 if __name__ == "__main__":

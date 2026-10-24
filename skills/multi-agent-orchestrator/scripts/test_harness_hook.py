@@ -121,6 +121,12 @@ class ClaudeCodePassThroughTests(unittest.TestCase):
         self.assert_silent(result)
         self.assertEqual(self.read_state(session)['solo_streak'], 0)
 
+    def test_claude_tool_and_prompt_allow_stdout_is_empty(self):
+        session = f'claude-schema-{os.getpid()}'
+        self.assert_silent(self.tool(session, 'Read', {'file_path': '/tmp/x'}))
+        self.assert_silent(self.run_hook('UserPromptSubmit', self.claude_payload(
+            'UserPromptSubmit', session, prompt='hello')))
+
     def test_unescaped_backticks_in_worker_start_are_blocked(self):
         for cmd in ('maestro worker-start --pool auto --spec "fix `ssh orin` issue"',
                     'maestro worker-start --spec "run $(whoami)"',
@@ -187,12 +193,24 @@ class AntigravityDecisionTests(unittest.TestCase):
                 with self.subTest(event=event, name=name):
                     self.assert_allowed(self.run_hook(event, self.agy(name, args)))
 
-    def test_pre_invocation_prints_only_allow_even_after_streak(self):
+    def test_pre_invocation_prints_empty_response_even_after_streak(self):
         payload = self.agy('replace_file_content', {}, conv='agy-streak')
         for _ in range(5):
             self.run_hook('PreToolUse', payload)
         payload.pop('toolCall')
-        self.assert_allowed(self.run_hook('PreInvocation', payload))
+        result = self.run_hook('PreInvocation', payload)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '{}\n')
+        self.assertEqual(result.stderr, '')
+
+    def test_event_responses_with_payload_event_fallback(self):
+        for event in ('PreInvocation', 'PreToolUse', 'BeforeTool'):
+            payload = self.agy('view_file', {})
+            payload['hook_event_name'] = event
+            result = self.run_hook('', payload)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = '{"decision":"allow"}\n' if event != 'PreInvocation' else '{}\n'
+            self.assertEqual(result.stdout, expected)
 
     def test_blocked_calls(self):
         self.assert_blocked(self.run_hook('PreToolUse', self.agy(
